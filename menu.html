@@ -1,0 +1,614 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圖文選單編輯器</title>
+    <!-- Version: 2026.05.08.V291_Postback_Fix -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .sidebar-transition { transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+    </style>
+</head>
+
+<body class="bg-slate-100 flex h-screen overflow-hidden text-slate-800">
+
+    <aside id="sidebar" class="w-[360px] shrink-0 bg-[#F8F9FA] border-r border-slate-200 h-full flex flex-col sidebar-transition relative z-40 shadow-xl">
+        <div class="px-5 py-4 border-b border-slate-200 flex justify-between items-center bg-white">
+            <h2 class="font-black text-slate-800 text-[17px]"><i class="fas fa-layer-group text-[#06C755] mr-2"></i>圖文選單編輯器</h2>
+            <button onclick="toggleSidebar()" class="text-slate-400 hover:text-slate-600 transition p-1.5 rounded-lg hover:bg-slate-100"><i class="fas fa-chevron-left text-lg"></i></button>
+        </div>
+        
+        <div class="flex-1 overflow-y-auto hide-scrollbar">
+            <div class="p-5 space-y-5 border-b border-slate-200 bg-white">
+                <div>
+                    <label class="block text-sm font-bold text-slate-700 mb-2">1. 載入底圖 (JPG/PNG)</label>
+                    <input type="file" id="image-upload" accept="image/jpeg, image/png" class="hidden">
+                    <button onclick="document.getElementById('image-upload').click()" class="w-full py-3 bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm transition active:scale-95">上傳選單圖片檔</button>
+                </div>
+                <div><label class="block text-sm font-bold text-slate-700 mb-1">2. 選單名稱</label><input type="text" id="save-filename" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-bold text-slate-600 bg-slate-50" value="New Rich Menu" maxlength="300"></div>
+                <div><label class="block text-sm font-bold text-slate-700 mb-1">3. 選單列文字 (ChatBar)</label><input type="text" id="rich-menu-chatbar" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-bold text-slate-600 bg-slate-50" value="選單" maxlength="14" placeholder="最多 14 個字"></div>
+            </div>
+            
+            <div id="editor-ui" class="bg-[#F8F9FA] pb-6 space-y-4"></div>
+        </div>
+
+        <div class="p-5 bg-white border-t border-slate-200 shrink-0">
+            <label class="block text-sm font-bold text-slate-700 mb-2">JSON 輸出</label>
+            <textarea id="json-output" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono h-24 bg-slate-50 resize-none" readonly></textarea>
+        </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col h-full relative overflow-hidden bg-slate-100">
+        <button id="expand-btn" onclick="toggleSidebar()" class="absolute top-4 left-4 z-50 bg-white text-slate-600 border border-slate-200 shadow-md rounded-lg p-2.5 transition hidden"><i class="fas fa-bars text-lg"></i></button>
+
+        <div class="bg-white/90 border-b border-gray-200 w-full py-3 flex justify-between items-center px-6 sticky top-0 z-30 shadow-sm">
+            <button onclick="MenuModule.toggleDrawMode()" id="menu-draw-btn" class="px-10 py-2.5 rounded-md text-sm font-black bg-slate-800 text-white shadow-md">開始劃定區域</button>
+            <div class="flex items-center space-x-2">
+                <button onclick="StorageModule.toggleDrawer()" class="px-6 py-2.5 rounded-md text-sm font-black text-orange-600 bg-orange-50 border border-orange-200 shadow-sm flex items-center gap-2"><i class="fas fa-folder-open"></i> 檔案庫</button>
+                <button onclick="MenuModule.openDeployModal()" class="px-8 py-2.5 rounded-md text-sm font-black text-white bg-indigo-600 shadow-md">部署至 LINE</button>
+            </div>
+        </div>
+
+        <div class="p-10 flex flex-col items-center w-full h-full overflow-y-auto">
+            <div id="menu-canvas-container" class="bg-white p-4 rounded-2xl shadow-2xl border border-gray-200 relative min-w-[600px] min-h-[400px] flex items-center justify-center">
+                <canvas id="menu-canvas"></canvas>
+                <div id="canvas-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 bg-slate-50/80 pointer-events-none"><i class="far fa-images text-6xl mb-4 text-slate-300"></i><p class="font-black text-lg tracking-widest text-slate-400">請從左側上傳底圖</p></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 檔案庫抽屜 -->
+    <div id="right-drawer-overlay" onclick="StorageModule.toggleDrawer()" class="hidden fixed inset-0 bg-slate-800/20 z-40 backdrop-blur-sm"></div>
+    <aside id="right-drawer" class="fixed right-0 top-0 h-full w-[360px] bg-[#F8F9FA] shadow-2xl translate-x-full transition-transform duration-300 z-50 flex flex-col border-l border-slate-200">
+        <div class="px-6 py-5 border-b border-slate-200 flex justify-between items-center bg-white"><h2 class="font-black text-slate-800 text-lg">選單檔案庫</h2><button onclick="StorageModule.toggleDrawer()" class="text-slate-400 p-2 hover:bg-slate-50"><i class="fas fa-times"></i></button></div>
+        <div class="p-6 bg-white border-b border-slate-200 flex gap-2"><button onclick="StorageModule.saveCurrent(true)" class="flex-1 py-3 bg-slate-800 text-white rounded-xl font-bold shadow-md text-xs">另存新檔</button><button onclick="StorageModule.saveCurrent(false)" class="flex-1 py-3 bg-green-50 text-[#06C755] border border-[#06C755] rounded-xl font-bold text-xs">更新現有</button></div>
+        <div class="flex-1 overflow-y-auto p-5 space-y-4" id="saved-files-list"></div>
+    </aside>
+
+    <!-- 部署彈窗 -->
+    <div id="deploy-modal" class="hidden fixed inset-0 bg-black/60 z-[100] flex items-center justify-center backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl w-[90%] max-w-lg p-8">
+            <h3 class="font-black text-xl mb-2 text-indigo-900">確認部署至 LINE</h3>
+            <p class="text-sm text-slate-500 font-bold mb-6">系統將直接連線至 LINE 伺服器進行版面抽換。確定執行？</p>
+            
+            <input type="text" id="deploy-api-url" class="w-full border border-slate-200 p-3 rounded-lg bg-slate-50 font-mono text-xs text-slate-400 mb-4" readonly>
+            
+            <div id="deploy-error-msg" class="hidden bg-red-50 border border-red-100 text-red-600 p-4 rounded-xl text-sm font-bold mb-6 whitespace-pre-wrap leading-relaxed shadow-sm"></div>
+            
+            <div class="flex justify-end gap-3 mt-4">
+                <button onclick="MenuModule.closeDeployModal()" class="px-6 py-3 rounded-xl text-sm font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 transition">取消</button>
+                <button id="deploy-submit-btn" onclick="MenuModule.executeDeploy()" class="px-8 py-3 rounded-xl text-sm font-black text-white bg-indigo-600 shadow-md hover:bg-indigo-700 transition flex items-center gap-2">啟動部署</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleSidebar() { const s = document.getElementById('sidebar'); const e = document.getElementById('expand-btn'); if (s.classList.contains('-ml-[360px]')) { s.classList.remove('-ml-[360px]'); e.classList.add('hidden'); } else { s.classList.add('-ml-[360px]'); e.classList.remove('hidden'); } }
+        
+        const ApiHelper = { 
+            call: async (act, pl = {}) => { 
+                try {
+                    if (window.parent && window.parent !== window && typeof window.parent.ACT_ADMIN_API_CALL === 'function') {
+                        return await window.parent.ACT_ADMIN_API_CALL(act, pl, false);
+                    }
+                } catch(e) {
+                    throw e;
+                }
+                const url = (window.parent && window.parent.WORKER_URL) ? window.parent.WORKER_URL : 'https://hooktea.fangwl591021.workers.dev/'; 
+                const hasParentSystemAccess = () => {
+                    try {
+                        const raw = window.parent?.localStorage?.getItem('act_crm_access') || localStorage.getItem('act_crm_access') || '{}';
+                        const access = JSON.parse(raw);
+                        return !!(access.isAdmin || access.canSystemTools);
+                    } catch(e) {
+                        return false;
+                    }
+                };
+                const needsAdmin = (act === 'DEPLOY_RICH_MENU' || act === 'UPLOAD_IMAGE') && !hasParentSystemAccess();
+                const getParentSessionPwd = () => {
+                    try { return window.parent?.sessionStorage?.getItem('act_admin_pwd') || ''; } catch(e) { return ''; }
+                };
+                const setSessionPwd = (pwd) => {
+                    sessionStorage.setItem('act_admin_pwd', pwd);
+                    try { window.parent?.sessionStorage?.setItem('act_admin_pwd', pwd); } catch(e) {}
+                };
+                const clearSessionPwd = () => {
+                    sessionStorage.removeItem('act_admin_pwd');
+                    try { window.parent?.sessionStorage?.removeItem('act_admin_pwd'); } catch(e) {}
+                };
+                const buildPayload = (forcePrompt = false) => {
+                    const payload = { ...pl };
+                    if (!needsAdmin) return payload;
+                    if (forcePrompt) clearSessionPwd();
+                    const savedPwd = sessionStorage.getItem('act_admin_pwd') || getParentSessionPwd();
+                    if (savedPwd) {
+                        payload.adminPwd = savedPwd;
+                    } else {
+                        const pwd = window.prompt('請輸入管理密碼以授權此操作');
+                        if (!pwd) throw new Error('Admin authorization required');
+                        setSessionPwd(pwd);
+                        payload.adminPwd = pwd;
+                    }
+                    return payload;
+                };
+
+                let idToken = null;
+                let accessToken = null;
+                let userProfile = {};
+                try {
+                    const parentLiff = window.parent?.liff;
+                    if (parentLiff && typeof parentLiff.isLoggedIn === 'function' && parentLiff.isLoggedIn()) {
+                        idToken = typeof parentLiff.getIDToken === 'function' ? parentLiff.getIDToken() : null;
+                        accessToken = typeof parentLiff.getAccessToken === 'function' ? parentLiff.getAccessToken() : null;
+                        userProfile = window.parent?.liffProfile?.value || window.parent?.liffProfile || {};
+                    }
+                } catch(e) {}
+
+                const send = async (payload) => {
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: act, payload, userProfile, idToken, accessToken })
+                    });
+
+                    const text = await res.text();
+                    try {
+                        return JSON.parse(text);
+                    } catch(e) {
+                        throw new Error(`伺服器回傳了無效格式！\n\n[原始回應]\n${text.substring(0, 150)}...`);
+                    }
+                };
+
+                let json = await send(buildPayload(false));
+                if (json.status !== 'success' && needsAdmin && /Admin authorization required/i.test(json.message || '')) {
+                    json = await send(buildPayload(true));
+                }
+                if (json.status !== 'success') {
+                    throw new Error(json.message || '後端執行失敗，但沒有提供具體錯誤訊息。');
+                }
+                return json.data; 
+            } 
+        };
+
+        window.MenuModule = (function() {
+            var canvas, isDrawingMode = false, isMouseDown = false, currentRect, startX, startY, currentImgHeight = 843, savedBase64Image = null, deployBase64Image = null, currentMenuConfig = null;
+            return {
+                init: function() { 
+                    canvas = new fabric.Canvas('menu-canvas', { selection: true }); 
+                    this.bindEvents(); 
+                    
+                    document.getElementById('image-upload').addEventListener('change', (e) => { 
+                        const file = e.target.files[0]; 
+                        if (!file) return; 
+                        
+                        const btn = document.querySelector('button[onclick="document.getElementById(\'image-upload\').click()"]');
+                        const origHtml = btn.innerHTML;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>雲端 R2 上傳中...';
+                        btn.disabled = true;
+
+                        const reader = new FileReader(); 
+                        reader.onload = (f) => {
+                            const img = new Image();
+                            img.onload = async () => {
+                                const cvs = document.createElement('canvas');
+                                cvs.width = img.width; cvs.height = img.height;
+                                const ctx = cvs.getContext('2d');
+                                ctx.drawImage(img, 0, 0);
+
+                                let quality = 0.9;
+                                let b64 = cvs.toDataURL('image/jpeg', quality);
+                                while (b64.length > 1000000 && quality > 0.3) {
+                                    quality -= 0.1;
+                                    b64 = cvs.toDataURL('image/jpeg', quality);
+                                }
+
+                                if (b64.length > 1048576) {
+                                    alert('❌ 圖片尺寸過大，無法安全壓縮至 1MB 以下，請自行處理後再上傳');
+                                    btn.innerHTML = origHtml; btn.disabled = false; return;
+                                }
+
+                                try {
+                                    const res = await ApiHelper.call('UPLOAD_IMAGE', { imageBase64: b64 });
+                                    if (res && res.url) {
+                                        // 只替換底圖，保留目前選單名稱、熱區與 action 參數。
+                                        const currentConfig = JSON.stringify(MenuModule.getCurrentConfig());
+                                        MenuModule.setDeployBase64(b64);
+                                        MenuModule.load(file.name, encodeURIComponent(currentConfig), res.url);
+                                    } else {
+                                        throw new Error('R2 URL 回傳失敗');
+                                    }
+                                } catch (err) {
+                                    // 若失敗則退回使用純 Base64，但仍保留原本熱區設定。
+                                    const currentConfig = JSON.stringify(MenuModule.getCurrentConfig());
+                                    MenuModule.setDeployBase64(b64);
+                                    MenuModule.load(file.name, encodeURIComponent(currentConfig), b64);
+                                } finally {
+                                    btn.innerHTML = origHtml; btn.disabled = false;
+                                }
+                            };
+                            img.src = f.target.result;
+                        }; 
+                        reader.readAsDataURL(file); 
+                    }); 
+                },
+                getCurrentBase64: () => {
+                    if (deployBase64Image && deployBase64Image.startsWith('data:image')) {
+                        return deployBase64Image;
+                    }
+                    if (savedBase64Image && savedBase64Image.startsWith('data:image')) {
+                        return savedBase64Image;
+                    }
+                    if (canvas && canvas.backgroundImage && canvas.backgroundImage._element) {
+                        try {
+                            const tempCvs = document.createElement('canvas');
+                            tempCvs.width = canvas.backgroundImage.width;
+                            tempCvs.height = canvas.backgroundImage.height;
+                            const tCtx = tempCvs.getContext('2d');
+                            tCtx.drawImage(canvas.backgroundImage._element, 0, 0);
+                            return tempCvs.toDataURL('image/jpeg', 0.9);
+                        } catch(e) {
+                            console.error("Canvas 轉換 Base64 失敗:", e);
+                        }
+                    }
+                    return savedBase64Image;
+                },
+                setDeployBase64: (base64) => {
+                    if (base64 && base64.startsWith('data:image')) deployBase64Image = base64;
+                },
+                getCurrentConfig: function() {
+                    const output = document.getElementById('json-output').value;
+                    try {
+                        const parsed = JSON.parse(output || "{}");
+                        if (parsed && Array.isArray(parsed.areas)) return JSON.parse(JSON.stringify(parsed));
+                    } catch(e) {}
+                    if (currentMenuConfig && Array.isArray(currentMenuConfig.areas)) {
+                        return JSON.parse(JSON.stringify(currentMenuConfig));
+                    }
+                    const scale = canvas && canvas.getWidth() ? 2500 / canvas.getWidth() : 1;
+                    const areas = canvas ? canvas.getObjects('rect').map(o => ({
+                        bounds: {
+                            x: Math.max(0, Math.round(o.left * scale)),
+                            y: Math.max(0, Math.round(o.top * scale)),
+                            width: Math.round(o.getScaledWidth() * scale),
+                            height: Math.round(o.getScaledHeight() * scale)
+                        },
+                        action: JSON.parse(JSON.stringify(o.action || { type: 'message', text: '' }))
+                    })) : [];
+                    return {
+                        size: { width: 2500, height: currentImgHeight },
+                        selected: true,
+                        name: document.getElementById('save-filename').value,
+                        chatBarText: document.getElementById('rich-menu-chatbar').value,
+                        areas
+                    };
+                },
+                load: function(name, jsonStr, base64) {
+                    try {
+                        savedBase64Image = base64; 
+                        if (base64 && base64.startsWith('data:image')) deployBase64Image = base64;
+                        document.getElementById('canvas-placeholder').style.display = 'none';
+                        var data = {}; try { data = JSON.parse(decodeURIComponent(jsonStr || "{}")); } catch(e) {}
+                        if (data.name) document.getElementById('save-filename').value = data.name;
+                        if (data.chatBarText) document.getElementById('rich-menu-chatbar').value = data.chatBarText;
+                        
+                        var tempImg = new Image();
+                        tempImg.crossOrigin = "anonymous";
+                        tempImg.onload = () => {
+                            var ratio = tempImg.height / tempImg.width; currentImgHeight = Math.round(2500 * ratio);
+                            canvas.setWidth(600); canvas.setHeight(600 * ratio);
+                            fabric.Image.fromURL(base64, (img) => { 
+                                canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas), { scaleX: 600 / img.width, scaleY: (600 * ratio) / img.height }); 
+                                this.importAreas(data.areas || [], 600 / 2500);
+                            }, { crossOrigin: 'anonymous' });
+                        }; 
+                        tempImg.onerror = () => { alert('載入底圖失敗，格式可能有誤或網址失效'); };
+                        tempImg.src = base64;
+                    } catch (err) {
+                        alert('載入選單發生錯誤');
+                        console.error(err);
+                    }
+                },
+                bindEvents: function() {
+                    canvas.on('mouse:down', (o) => { if (!isDrawingMode || canvas.findTarget(o.e)) return; isMouseDown = true; var pointer = canvas.getPointer(o.e); startX = pointer.x; startY = pointer.y; currentRect = new fabric.Rect({ left: startX, top: startY, width: 0, height: 0, fill: 'rgba(84, 192, 97, 0.3)', stroke: '#54C061', strokeWidth: 1 }); currentRect.action = { type: 'message', text: '' }; canvas.add(currentRect); });
+                    canvas.on('mouse:move', (o) => { if (!isMouseDown) return; var pointer = canvas.getPointer(o.e); currentRect.set({ left: Math.min(startX, pointer.x), top: Math.min(startY, pointer.y), width: Math.abs(startX - pointer.x), height: Math.abs(startY - pointer.y) }); canvas.renderAll(); });
+                    canvas.on('mouse:up', () => { if (!isMouseDown) return; isMouseDown = false; isDrawingMode = false; document.getElementById('menu-draw-btn').innerText = '開始劃定區域'; this.updateOutput(); });
+                    canvas.on('object:modified', () => this.updateOutput());
+                },
+                toggleDrawMode: function() { isDrawingMode = true; document.getElementById('menu-draw-btn').innerText = '繪製區域中...'; },
+                updateOutput: function() {
+                    var scale = 2500 / canvas.getWidth();
+                    var areas = canvas.getObjects('rect').map(o => {
+                        let x = Math.max(0, Math.round(o.left * scale));
+                        let y = Math.max(0, Math.round(o.top * scale));
+                        let w = Math.round(o.getScaledWidth() * scale);
+                        let h = Math.round(o.getScaledHeight() * scale);
+                        
+                        if (x + w > 2500) w = 2500 - x;
+                        if (y + h > currentImgHeight) h = currentImgHeight - y;
+
+                        return { bounds: { x: x, y: y, width: w, height: h }, action: o.action };
+                    });
+                    var res = { size: { width: 2500, height: currentImgHeight }, selected: true, name: document.getElementById('save-filename').value, chatBarText: document.getElementById('rich-menu-chatbar').value, areas: areas };
+                    currentMenuConfig = JSON.parse(JSON.stringify(res));
+                    document.getElementById('json-output').value = JSON.stringify(res, null, 2); this.renderAreaEditor(areas); this.refreshCanvasLabels();
+                },
+                refreshCanvasLabels: function() { canvas.getObjects('text').forEach(l => canvas.remove(l)); canvas.getObjects('rect').forEach((r, idx) => { canvas.add(new fabric.Text('#' + (idx + 1), { left: r.left + 5, top: r.top + 5, fontSize: 14, fill: '#fff', backgroundColor: '#54C061', selectable: false })); }); },
+                renderAreaEditor: function(areas) {
+                    var container = document.getElementById('editor-ui'); container.innerHTML = '';
+                    const esc = (value) => String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    areas.forEach((a, idx) => {
+                        var div = document.createElement('div'); div.className = "p-5 mx-5 my-2 bg-white border border-slate-200 rounded-2xl shadow-sm";
+                        a.action = a.action || { type: "uri", uri: "" };
+                        var type = a.action.type || "uri";
+                        var html = `<div class='font-black mb-3 text-xs text-slate-400 uppercase tracking-tighter'>區域 #${idx+1}</div>
+                        <select class='w-full border mb-3 p-3 rounded-lg text-[14px] font-bold bg-slate-50' onchange='MenuModule.updateAreaProp(${idx}, "type", this.value)'>
+                            <option value="uri" ${type==="uri"?"selected":""}>開啟網址 (URI)</option>
+                            <option value="message" ${type==="message"?"selected":""}>傳送文字 (Message)</option>
+                            <option value="postback" ${type==="postback"?"selected":""}>回傳指令 (Postback)</option>
+                            <option value="richmenuswitch" ${type==="richmenuswitch"?"selected":""}>切換選單 (Switch)</option>
+                        </select>`;
+                        
+                        if (type === 'uri') {
+                            html += `<input class='w-full border p-3 text-xs font-mono rounded-lg' value="${esc(a.action.uri)}" placeholder='https://' onchange='MenuModule.updateAreaProp(${idx}, "uri", this.value)'>`;
+                        } else if (type === 'message') {
+                            html += `<input class='w-full border p-3 text-xs rounded-lg' value="${esc(a.action.text)}" placeholder='點擊後發送的文字' onchange='MenuModule.updateAreaProp(${idx}, "text", this.value)'>`;
+                        } else if (type === 'postback') {
+                            html += `<input class='w-full border mb-2 p-3 text-xs font-mono rounded-lg bg-indigo-50 border-indigo-200 text-indigo-700 font-bold placeholder-indigo-300' value="${esc(a.action.data)}" placeholder='回傳 Data (須跟後台"觸發關鍵字"完全相同)' onchange='MenuModule.updateAreaProp(${idx}, "data", this.value)'>
+                                     <input class='w-full border p-3 text-xs rounded-lg' value="${esc(a.action.displayText || a.action.text)}" placeholder='畫面上顯示的文字 (讓學員知道有點成功)' onchange='MenuModule.updateAreaProp(${idx}, "displayText", this.value)'>`;
+                        } else if (type === 'richmenuswitch') {
+                            html += `<input class='w-full border mb-2 p-3 text-xs font-mono rounded-lg' value="${esc(a.action.richMenuAliasId)}" placeholder='別名 Alias ID' onchange='MenuModule.updateAreaProp(${idx}, "richMenuAliasId", this.value)'>
+                                     <input class='w-full border p-3 text-xs rounded-lg' value="${esc(a.action.data)}" placeholder='參數 data' onchange='MenuModule.updateAreaProp(${idx}, "data", this.value)'>`;
+                        }
+                        
+                        html += `<button onclick='MenuModule.removeAreaFromCanvas(${idx})' class='w-full mt-3 py-2 bg-red-50 text-red-500 rounded-lg text-xs font-bold hover:bg-red-100 transition'>刪除區域</button>`;
+                        
+                        div.innerHTML = html; container.appendChild(div);
+                    });
+                },
+                updateAreaProp: function(idx, prop, val) { 
+                    var objects = canvas.getObjects('rect'); 
+                    if(objects[idx]) { 
+                        if(prop==="type") { 
+                            var old = objects[idx].action; 
+                            objects[idx].action = { type: val }; 
+                            if(val==="uri") objects[idx].action.uri = old.uri || ""; 
+                            else if(val==="message") objects[idx].action.text = old.text || ""; 
+                            else if(val==="postback") {
+                                objects[idx].action.data = old.data || "";
+                                objects[idx].action.displayText = old.displayText || old.text || "";
+                            }
+                            else if(val==="richmenuswitch") {
+                                objects[idx].action.richMenuAliasId = old.richMenuAliasId || "";
+                                objects[idx].action.data = old.data || "";
+                            }
+                        } else { 
+                            objects[idx].action[prop] = val; 
+                        } 
+                        this.updateOutput(); 
+                    } 
+                },
+                removeAreaFromCanvas: function(idx) { var objects = canvas.getObjects('rect'); if(objects[idx]) { canvas.remove(objects[idx]); this.updateOutput(); } },
+                importAreas: function(areas, scale) { canvas.getObjects('rect').forEach(o => canvas.remove(o)); areas.forEach(a => { var r = new fabric.Rect({ left: a.bounds.x * scale, top: a.bounds.y * scale, width: a.bounds.width * scale, height: a.bounds.height * scale, fill: 'rgba(84, 192, 97, 0.3)', stroke: '#54C061', strokeWidth: 1 }); r.action = JSON.parse(JSON.stringify(a.action || { type: 'message', text: '' })); canvas.add(r); }); canvas.renderAll(); this.updateOutput(); },
+                openDeployModal: () => { 
+                    document.getElementById('deploy-api-url').value = (window.parent && window.parent.WORKER_URL) ? window.parent.WORKER_URL : 'https://hooktea.fangwl591021.workers.dev/'; 
+                    document.getElementById('deploy-error-msg').classList.add('hidden');
+                    document.getElementById('deploy-modal').classList.remove('hidden'); 
+                },
+                closeDeployModal: () => {
+                    document.getElementById('deploy-error-msg').classList.add('hidden');
+                    document.getElementById('deploy-modal').classList.add('hidden');
+                },
+                
+                executeDeploy: async function() { 
+                    const menuObjStr = document.getElementById('json-output').value;
+                    const errBox = document.getElementById('deploy-error-msg');
+                    errBox.classList.add('hidden');
+                    
+                    const showError = (msg) => {
+                        errBox.innerText = `🚫 發生錯誤：\n${msg}`;
+                        errBox.classList.remove('hidden');
+                    };
+
+                    if (!menuObjStr || menuObjStr === '{}') return showError('請先上傳底圖並劃定至少一個區域！');
+                    
+                    const menuObj = JSON.parse(menuObjStr);
+                    
+                    if (!menuObj.name) return showError('左側「選單名稱」不可為空！');
+                    if (!menuObj.chatBarText) return showError('左側「選單列文字」不可為空！');
+                    if (!menuObj.areas || menuObj.areas.length === 0) return showError('請至少在畫面上劃定一個熱區！');
+                    
+                    // ✅ 深度淨化 Action：確保 Postback 的 Data 必填，並且正確支援 displayText
+                    for (let i = 0; i < menuObj.areas.length; i++) {
+                        const action = menuObj.areas[i].action;
+                        if (action.type === 'message' && !action.text) return showError(`區域 #${i+1} 尚未填寫「傳送文字」內容！`);
+                        if (action.type === 'uri' && !action.uri) return showError(`區域 #${i+1} 尚未填寫「開啟網址」連結！`);
+                        if (action.type === 'postback' && !action.data) return showError(`區域 #${i+1} 尚未填寫「回傳 Data」！這是觸發後台功能的必填參數。`);
+                        
+                        const pureAction = { type: action.type };
+                        if (action.type === 'uri') pureAction.uri = action.uri;
+                        if (action.type === 'message') pureAction.text = action.text;
+                        if (action.type === 'postback') {
+                            pureAction.data = action.data;
+                            if (action.displayText) pureAction.displayText = action.displayText;
+                            else if (action.text) pureAction.displayText = action.text;
+                        }
+                        if (action.type === 'richmenuswitch') {
+                            pureAction.richMenuAliasId = action.richMenuAliasId;
+                            pureAction.data = action.data;
+                        }
+                        menuObj.areas[i].action = pureAction;
+                    }
+
+                    const h = menuObj.size.height;
+                    if (Math.abs(h - 1686) < 100) menuObj.size.height = 1686;
+                    else if (Math.abs(h - 843) < 100) menuObj.size.height = 843;
+                    else return showError(`您上傳的圖片比例不符合 LINE 規範！\n目前尺寸為：2500x${h}\nLINE 規定必須為：2500x1686 (大選單) 或 2500x843 (小選單)\n請重新裁切圖片後上傳。`);
+
+                    const b64ToSend = this.getCurrentBase64();
+                    if (!b64ToSend || !b64ToSend.startsWith('data:image')) {
+                        return showError('❌ 缺少「選單底圖」！LINE 官方規定部署時必須夾帶圖片。請在畫面上重新上傳您的圖片。');
+                    }
+
+                    const btn = document.getElementById('deploy-submit-btn');
+                    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>部署中...';
+                    btn.disabled = true;
+                    
+                    try {
+                        const data = await ApiHelper.call('DEPLOY_RICH_MENU', { 
+                            richMenuConfig: menuObj, 
+                            imageBase64: b64ToSend,
+                            areas: menuObj.areas,
+                            size: menuObj.size,
+                            name: menuObj.name,
+                            chatBarText: menuObj.chatBarText
+                        }); 
+                        if(data) {
+                            alert('✅ 部署成功！請至 LINE 官方帳號查看最新選單。'); 
+                            this.closeDeployModal(); 
+                        }
+                    } catch (e) {
+                        showError(e.message);
+                    } finally {
+                        btn.innerHTML = '啟動部署';
+                        btn.disabled = false;
+                    }
+                }
+            };
+        })();
+
+        window.StorageModule = (function() {
+            let currentSaves = [], currentId = null;
+            const saveTimeValue = (item) => {
+                const isoTime = Date.parse(item?.updatedAt || '');
+                if (Number.isFinite(isoTime)) return isoTime;
+                const dateTime = Date.parse(item?.date || '');
+                if (Number.isFinite(dateTime)) return dateTime;
+                const idTime = Number(String(item?.id || '').replace(/\D/g, ''));
+                return Number.isFinite(idTime) ? idTime : 0;
+            };
+            const sortSaves = (saves) => (Array.isArray(saves) ? saves : []).slice().sort((a, b) => saveTimeValue(b) - saveTimeValue(a));
+            const readLocalSaves = () => {
+                try { return JSON.parse(localStorage.getItem('rich_menu_saves') || '[]'); } catch(e) { return []; }
+            };
+            const cacheLocalSaves = (saves) => {
+                try { localStorage.setItem('rich_menu_saves', JSON.stringify((saves || []).slice(0, 5))); } catch(e) {}
+            };
+            return {
+                toggleDrawer: function() { const d = document.getElementById('right-drawer'); const o = document.getElementById('right-drawer-overlay'); if (d.classList.contains('translate-x-full')) { d.classList.remove('translate-x-full'); o.classList.remove('hidden'); this.renderList(); } else { d.classList.add('translate-x-full'); o.classList.add('hidden'); } },
+                saveCurrent: async function(isNew) {
+                    const base64 = MenuModule.getCurrentBase64();
+                    if(!base64) return alert('請先載入圖片');
+
+                    let json = {};
+                    try { json = JSON.parse(document.getElementById('json-output').value); } catch(e) {}
+
+                    const name = document.getElementById('save-filename').value;
+                    const imageToSave = MenuModule.getCurrentBase64();
+                    const id = (isNew || !currentId) ? Date.now().toString() : currentId;
+                    try {
+                        const res = await ApiHelper.call('ADMIN_SAVE_RICH_MENU', { id, name, data: json, image: imageToSave });
+                        currentId = res?.item?.id || id;
+                        currentSaves = sortSaves(res?.saves || []);
+                        cacheLocalSaves(currentSaves);
+                        await this.renderList(false);
+                        alert('✅ 儲存成功，其他 Admin 重新整理後也可看到。');
+                    } catch(e) {
+                        alert('❌ 儲存失敗：' + e.message);
+                    }
+                },
+                loadFromIndex: function(idx) {
+                    try {
+                        const item = currentSaves[idx]; if(!item) return; 
+                        currentId = item.id; 
+                        document.getElementById('save-filename').value = item.name; 
+                        document.getElementById('rich-menu-chatbar').value = item.data?.chatBarText || "選單"; 
+                        MenuModule.load(item.name, encodeURIComponent(JSON.stringify(item.data)), item.image); 
+                        this.toggleDrawer();
+                    } catch(e) {
+                        alert('❌ 載入失敗，檔案可能已損毀');
+                    }
+                },
+                deleteFromIndex: async function(idx) {
+                    if(!confirm('確定永久刪除此選單紀錄？')) return;
+                    const item = currentSaves[idx];
+                    if (!item) return;
+                    try {
+                        const res = await ApiHelper.call('ADMIN_DELETE_RICH_MENU_SAVE', { id: item.id });
+                        currentSaves = sortSaves(res?.saves || []);
+                        cacheLocalSaves(currentSaves);
+                        await this.renderList(false);
+                    } catch(e) {
+                        alert('❌ 刪除失敗：' + e.message);
+                    }
+                },
+                renderList: async function(allowMigrate = true) {
+                    const container = document.getElementById('saved-files-list');
+                    container.innerHTML = '<div class="text-center text-slate-400 font-bold py-8"><i class="fas fa-spinner fa-spin mr-2"></i>載入選單檔案庫...</div>';
+                    try {
+                        let remoteSaves = await ApiHelper.call('ADMIN_GET_RICH_MENU_SAVES', {});
+                        remoteSaves = Array.isArray(remoteSaves) ? remoteSaves : [];
+                        const localSaves = readLocalSaves();
+                        const migrated = localStorage.getItem('rich_menu_saves_cloud_migrated') === 'true';
+                        if (allowMigrate && !migrated && localSaves.length) {
+                            const remoteIds = new Set(remoteSaves.map(item => String(item?.id || '')));
+                            for (const item of localSaves) {
+                                if (item && item.id && !remoteIds.has(String(item.id))) {
+                                    await ApiHelper.call('ADMIN_SAVE_RICH_MENU', item);
+                                }
+                            }
+                            localStorage.setItem('rich_menu_saves_cloud_migrated', 'true');
+                            remoteSaves = await ApiHelper.call('ADMIN_GET_RICH_MENU_SAVES', {});
+                        }
+                        currentSaves = sortSaves(remoteSaves);
+                        cacheLocalSaves(currentSaves);
+                    } catch(e) {
+                        console.error(e);
+                        currentSaves = [];
+                        container.innerHTML = `<div class="bg-red-50 border border-red-100 text-red-600 p-4 rounded-xl text-sm font-bold">雲端檔案庫載入失敗：${e.message}<div class="mt-2 text-xs text-red-500">請重新登入後再開啟圖文選單；檔案庫現在以雲端為準，不再讀取本機暫存。</div></div>`;
+                        return;
+                    }
+                    if (!currentSaves.length) {
+                        const localSaves = readLocalSaves();
+                        container.innerHTML = localSaves.length
+                            ? `<div class="bg-amber-50 border border-amber-100 text-amber-700 p-4 rounded-xl text-sm font-bold">雲端目前沒有檔案，但這台瀏覽器有 ${localSaves.length} 份本機舊檔。<button onclick="StorageModule.migrateLocalToCloud()" class="mt-3 w-full py-2 bg-amber-600 text-white rounded-lg font-black">遷移本機舊檔到雲端</button></div>`
+                            : '<div class="text-center text-slate-400 font-bold py-8">目前沒有已儲存的選單</div>';
+                        return;
+                    }
+                    container.innerHTML = currentSaves.map((item, idx) => `
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative">
+                            <button onclick="StorageModule.deleteFromIndex(${idx})" class="absolute top-4 right-4 text-slate-300 hover:text-red-500"><i class="fas fa-trash-alt"></i></button>
+                            <div class="font-black text-sm mb-1">${item.name}</div>
+                            <div class="text-[11px] text-slate-400 mb-1">${item.date || ''}</div>
+                            <div class="text-[11px] text-slate-400 mb-4">${item.updatedByName ? `儲存者：${item.updatedByName}` : ''}</div>
+                            <button onclick="StorageModule.loadFromIndex(${idx})" class="w-full py-2 bg-orange-50 text-orange-600 font-black rounded-xl border border-orange-100 text-[13px]">載入選單</button>
+                        </div>
+                    `).join('');
+                },
+                migrateLocalToCloud: async function() {
+                    const container = document.getElementById('saved-files-list');
+                    const localSaves = readLocalSaves();
+                    if (!localSaves.length) return this.renderList(false);
+                    container.innerHTML = '<div class="text-center text-slate-400 font-bold py-8"><i class="fas fa-spinner fa-spin mr-2"></i>正在遷移本機舊檔到雲端...</div>';
+                    try {
+                        for (const item of localSaves) {
+                            if (item && item.id) await ApiHelper.call('ADMIN_SAVE_RICH_MENU', item);
+                        }
+                        localStorage.setItem('rich_menu_saves_cloud_migrated', 'true');
+                        await this.renderList(false);
+                        alert('已遷移到雲端，其他 admin 重新整理後即可看到。');
+                    } catch(e) {
+                        container.innerHTML = `<div class="bg-red-50 border border-red-100 text-red-600 p-4 rounded-xl text-sm font-bold">遷移失敗：${e.message}</div>`;
+                    }
+                }
+            };
+        })(); 
+        MenuModule.init();
+    </script>
+</body>
+</html>

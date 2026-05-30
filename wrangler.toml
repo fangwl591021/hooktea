@@ -1,0 +1,12 @@
+name = "hooktea"
+main = "worker.js"
+compatibility_date = "2026-04-06"
+account_id = "8058cf61f0cd44c4edd78080b193033a"
+
+[[kv_namespaces]]
+binding = "ACTION_DATA"
+id = "6838e4176140433281b3a120a9fe964a"
+
+[[r2_buckets]]
+binding = "act-image"
+bucket_name = "hooktea-image"

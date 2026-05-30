@@ -1,0 +1,157 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>宏學影音館</title>
+    <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        [v-cloak] { display: none !important; }
+        body { background: #f4f5f7; color: #111827; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .video-card { transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+        .video-card:active { transform: scale(.98); }
+    </style>
+</head>
+<body>
+    <div id="app" v-cloak class="min-h-screen bg-[#F4F5F7]">
+        <header class="sticky top-0 z-40 bg-white border-b border-slate-100">
+            <div class="max-w-5xl mx-auto px-4 py-4">
+                <div class="flex items-center justify-between gap-4 mb-3">
+                    <div>
+                        <h1 class="text-[22px] font-black tracking-tight text-slate-950">宏學影音館</h1>
+                        <p class="text-[13px] font-bold text-slate-400 mt-1">隨選觀看宏學課程影片</p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[22px] font-black text-[#06C755]">{{ filteredVideos.length }}</div>
+                        <div class="text-[11px] font-bold text-slate-400">支影片</div>
+                    </div>
+                </div>
+                <div class="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
+                    <button v-for="teacher in videoTeachers" :key="teacher" @click="setActiveTeacher(teacher)" class="shrink-0 px-4 py-2 rounded-full text-[13px] font-black border transition" :class="activeTeacher === teacher ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200'">{{ teacher }}</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="max-w-5xl mx-auto px-4 py-5 pb-12">
+            <div v-if="isLoading" class="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 font-bold">
+                <i class="fas fa-spinner fa-spin text-2xl mb-3 block text-[#06C755]"></i>
+                影片載入中...
+            </div>
+
+            <div v-else-if="errorMessage" class="bg-red-50 border border-red-100 text-red-600 rounded-2xl p-6 font-bold leading-relaxed">
+                <i class="fas fa-circle-exclamation mr-2"></i>{{ errorMessage }}
+            </div>
+
+            <template v-else>
+                <section v-if="selectedVideo" class="bg-white rounded-2xl overflow-hidden border border-slate-100 shadow-sm mb-5">
+                    <div class="w-full aspect-video bg-slate-900 relative flex items-center justify-center text-white">
+                        <div class="text-center">
+                            <i class="fas fa-play-circle text-6xl text-[#06C755] mb-4"></i>
+                            <div class="text-[15px] font-black">使用 Google Drive 官方播放器觀看</div>
+                            <div class="text-[12px] font-bold text-slate-400 mt-1">避免頁內播放黑畫面或只有聲音</div>
+                        </div>
+                    </div>
+                    <div class="p-5">
+                        <div class="text-[13px] font-black text-[#06C755] mb-1">{{ selectedVideo.teacher }} ・ 第 {{ selectedVideo.episode }} 集</div>
+                        <h2 class="text-[20px] font-black text-slate-950 leading-snug">{{ selectedVideo.title }}</h2>
+                        <div class="flex items-center justify-between gap-3 mt-3">
+                            <div class="text-[12px] text-slate-400 font-bold">{{ selectedVideo.createdAt || '' }}</div>
+                            <a :href="selectedVideo.viewUrl" target="_blank" rel="noopener" class="text-[13px] font-black text-white bg-[#06C755] px-4 py-2 rounded-full shadow-sm"><i class="fas fa-up-right-from-square mr-1.5"></i>開啟播放</a>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="grid grid-cols-2 gap-3 sm:gap-4">
+                    <button v-for="video in filteredVideos" :key="video.id" @click="openDriveVideo(video)" class="video-card text-left bg-white rounded-2xl border shadow-sm overflow-hidden" :class="selectedVideo?.id === video.id ? 'border-[#06C755] ring-2 ring-[#06C755]/20' : 'border-slate-100'">
+                        <div class="aspect-video bg-slate-100 flex items-center justify-center text-[#06C755]">
+                            <i class="fas fa-play-circle text-5xl"></i>
+                        </div>
+                        <div class="p-4">
+                            <div class="text-[11px] font-black text-slate-400 mb-1">{{ video.teacher }} ・ 第 {{ video.episode }} 集</div>
+                            <div class="text-[14px] sm:text-[16px] font-black text-slate-950 leading-snug">{{ video.title }}</div>
+                        </div>
+                    </button>
+                </section>
+
+                <div v-if="!filteredVideos.length" class="bg-white rounded-2xl border border-dashed border-slate-200 p-12 text-center text-slate-400 font-bold">
+                    <i class="fas fa-video text-3xl mb-3 block text-slate-300"></i>
+                    目前沒有可播放影片
+                </div>
+            </template>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted } = Vue;
+        const WORKER_URL = 'https://hooktea.fangwl591021.workers.dev/';
+
+        createApp({
+            setup() {
+                const videos = ref([]);
+                const selectedVideo = ref(null);
+                const activeTeacher = ref('全部');
+                const isLoading = ref(true);
+                const errorMessage = ref('');
+
+                const callApi = async (action, payload = {}) => {
+                    const res = await fetch(WORKER_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action, payload })
+                    });
+                    const json = await res.json();
+                    if (json.status !== 'success') throw new Error(json.message || '後端執行失敗');
+                    return json.data;
+                };
+
+                const videoTeachers = computed(() => ['全部', ...Array.from(new Set(videos.value.map(v => v.teacher).filter(Boolean)))]);
+                const filteredVideos = computed(() => {
+                    const list = activeTeacher.value === '全部' ? videos.value : videos.value.filter(v => v.teacher === activeTeacher.value);
+                    return list.slice().sort((a, b) => {
+                        if (activeTeacher.value === '全部') {
+                            const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'zh-Hant');
+                            if (teacherCompare !== 0) return teacherCompare;
+                        }
+                        return Number(a.episode || 0) - Number(b.episode || 0);
+                    });
+                });
+
+                const openDriveVideo = (video) => {
+                    selectedVideo.value = video;
+                    if (video?.viewUrl) window.open(video.viewUrl, '_blank', 'noopener');
+                };
+
+                const setActiveTeacher = async (teacher) => {
+                    activeTeacher.value = teacher;
+                    const first = (teacher === '全部' ? videos.value : videos.value.filter(v => v.teacher === teacher))
+                        .slice()
+                        .sort((a, b) => Number(a.episode || 0) - Number(b.episode || 0))[0];
+                    selectedVideo.value = first || null;
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                };
+
+                const loadVideos = async () => {
+                    isLoading.value = true;
+                    errorMessage.value = '';
+                    try {
+                        const data = await callApi('GET_VIDEOS');
+                        videos.value = Array.isArray(data) ? data : [];
+                        selectedVideo.value = videos.value[0] || null;
+                    } catch (e) {
+                        errorMessage.value = e.message || '影片載入失敗';
+                    } finally {
+                        isLoading.value = false;
+                    }
+                };
+
+                onMounted(loadVideos);
+
+                return { videos, selectedVideo, activeTeacher, isLoading, errorMessage, videoTeachers, filteredVideos, setActiveTeacher, openDriveVideo };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

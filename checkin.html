@@ -1,0 +1,235 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>現場簽到系統</title>
+    <!-- Version: 2026.04.19.V67_Error_Field_Fix -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        [v-cloak] { display: none !important; }
+        body { background-color: #f1f5f9; color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
+        
+        .input-field { width: 100%; border: 1px solid #cbd5e1; border-radius: 12px; padding: 14px 16px; font-size: 16px; outline: none; transition: 0.2s; background: #fff; }
+        .input-field:focus { border-color: #06C755; box-shadow: 0 0 0 3px rgba(6, 199, 85, 0.1); }
+        
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1e293b; color: white; padding: 12px 24px; border-radius: 99px; font-size: 14px; font-weight: 600; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.1); transition: opacity 0.3s; }
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+    </style>
+</head>
+
+<body>
+    <div id="app" v-cloak class="max-w-md mx-auto min-h-screen flex flex-col relative pb-10">
+        
+        <!-- 頂部標題列 -->
+        <header class="bg-white px-5 py-4 sticky top-0 z-50 flex items-center justify-between shadow-sm">
+            <h1 class="text-xl font-black tracking-tight" :class="isLoggedIn ? 'text-slate-800' : 'text-[#06C755]'">
+                {{ isLoggedIn ? '現場名單簽到' : '宏學導師專屬通道' }}
+            </h1>
+            <div v-if="isLoggedIn" class="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
+                已登入
+            </div>
+        </header>
+
+        <!-- 畫面 A：安全驗證閘門 -->
+        <div v-if="!isLoggedIn" class="flex-grow flex flex-col items-center justify-center p-6">
+            <div class="w-full bg-white p-8 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 text-center">
+                <div class="w-20 h-20 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center text-4xl mx-auto mb-6 shadow-inner">
+                    <i class="fas fa-clipboard-user"></i>
+                </div>
+                <h2 class="text-xl font-bold text-slate-800 mb-2">請輸入專屬簽到密碼</h2>
+                <p class="text-sm text-slate-500 mb-6 font-medium">為保護學員個資，請向管理員索取密碼</p>
+                
+                <div class="space-y-4">
+                    <input type="password" v-model="password" class="input-field text-center font-bold tracking-widest text-lg" placeholder="輸入密碼" @keyup.enter="handleLogin">
+                    
+                    <button @click="handleLogin" :disabled="isLoading" class="w-full py-4 bg-[#06C755] text-white rounded-xl font-bold text-lg shadow-lg shadow-green-100 hover:bg-[#05b04a] transition active:scale-[0.98]">
+                        <i v-if="isLoading" class="fas fa-spinner fa-spin mr-2"></i>
+                        {{ isLoading ? '驗證中...' : '確認登入' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 畫面 B：簽到名單列表 -->
+        <div v-else class="flex-grow p-4">
+            
+            <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm mb-5">
+                <div class="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">當前課程</div>
+                <h2 class="text-lg font-black text-slate-800 leading-snug">{{ courseName }}</h2>
+                <div class="mt-4 flex gap-2">
+                    <div class="flex-1 bg-slate-50 p-3 rounded-xl text-center border border-slate-100">
+                        <div class="text-xs text-slate-500 font-bold mb-1">應到</div>
+                        <div class="text-xl font-black text-slate-700">{{ orders.length }}</div>
+                    </div>
+                    <div class="flex-1 bg-green-50 p-3 rounded-xl text-center border border-green-100">
+                        <div class="text-xs text-green-600 font-bold mb-1">已出席</div>
+                        <div class="text-xl font-black text-green-700">{{ attendedCount }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <div v-for="o in orders" :key="o.orderId" class="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between transition-colors" :class="{'bg-green-50/50 border-green-100': o.attendance === 'ATTENDED'}">
+                    
+                    <div class="flex-grow pr-4">
+                        <div class="flex items-center gap-2 mb-1">
+                            <div class="font-bold text-slate-800 text-lg truncate">{{ o.name }}</div>
+                            <span v-if="o.status === 'PAID'" class="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-md">已付款</span>
+                            <span v-else class="bg-orange-100 text-orange-600 text-[10px] font-bold px-2 py-0.5 rounded-md">未付款</span>
+                        </div>
+                        <div class="text-xs text-slate-400 font-mono font-medium">手機末碼: <span class="text-slate-600 font-bold">***{{ o.phoneMasked }}</span></div>
+                    </div>
+                    
+                    <!-- 簽到大按鈕區 -->
+                    <div class="flex gap-2 shrink-0">
+                        <!-- 出席按鈕 -->
+                        <button @click="toggleAttendance(o, 'ATTENDED')" :disabled="isUpdating" 
+                                class="w-[50px] h-[50px] rounded-full border-2 flex items-center justify-center text-xl transition-all shadow-sm active:scale-90"
+                                :class="o.attendance === 'ATTENDED' ? 'bg-green-500 text-white border-green-500 shadow-green-200' : 'bg-slate-50 text-slate-300 border-slate-200 hover:border-green-300 hover:text-green-500'">
+                            <i class="fas fa-check"></i>
+                        </button>
+                        <!-- 缺席按鈕 -->
+                        <button @click="toggleAttendance(o, 'ABSENT')" :disabled="isUpdating" 
+                                class="w-[50px] h-[50px] rounded-full border-2 flex items-center justify-center text-xl transition-all shadow-sm active:scale-90"
+                                :class="o.attendance === 'ABSENT' ? 'bg-red-500 text-white border-red-500 shadow-red-200' : 'bg-slate-50 text-slate-300 border-slate-200 hover:border-red-300 hover:text-red-500'">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+                
+                <div v-if="orders.length === 0" class="text-center text-slate-400 font-medium py-10 bg-white rounded-2xl border border-slate-100 shadow-sm">
+                    目前無人報名此課程
+                </div>
+            </div>
+            
+            <div class="mt-8 text-center text-xs text-slate-400 font-bold">
+                資料已與後台雲端同步
+            </div>
+
+        </div>
+
+        <!-- 自訂訊息提示 (Toast) -->
+        <transition name="fade">
+            <div v-if="toastMsg" class="toast">
+                {{ toastMsg }}
+            </div>
+        </transition>
+
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted } = Vue;
+        const WORKER_URL = 'https://hooktea.fangwl591021.workers.dev/';
+
+        createApp({
+            setup() {
+                const courseId = ref('');
+                const password = ref('');
+                const isLoggedIn = ref(false);
+                const isLoading = ref(false);
+                const isUpdating = ref(false);
+                const courseName = ref('');
+                const orders = ref([]);
+                const toastMsg = ref('');
+                let toastTimer = null;
+
+                onMounted(() => {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    courseId.value = urlParams.get('id');
+                    if (!courseId.value) {
+                        showToast('❌ 網址錯誤：缺少課程 ID');
+                    }
+                });
+
+                const showToast = (msg) => {
+                    toastMsg.value = msg;
+                    if (toastTimer) clearTimeout(toastTimer);
+                    toastTimer = setTimeout(() => { toastMsg.value = ''; }, 2500);
+                };
+
+                const handleLogin = async () => {
+                    if (!courseId.value) return showToast('網址錯誤，無法登入');
+                    if (!password.value) return showToast('請輸入密碼');
+                    
+                    isLoading.value = true;
+                    try {
+                        const res = await fetch(WORKER_URL, { 
+                            method: 'POST', 
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                action: 'TEACHER_LOGIN', 
+                                payload: { courseId: courseId.value, password: password.value } 
+                            }) 
+                        });
+                        const json = await res.json();
+                        if (json.status !== 'success') throw new Error(json.message || '系統異常');
+                        
+                        courseName.value = json.data.courseName;
+                        orders.value = json.data.orders;
+                        isLoggedIn.value = true;
+                        showToast('✅ 登入成功');
+                    } catch (e) {
+                        showToast(e.message);
+                    } finally {
+                        isLoading.value = false;
+                    }
+                };
+
+                const toggleAttendance = async (order, targetStatus) => {
+                    // 如果點擊目前已選的狀態，則取消標記 (清空)
+                    const newStatus = order.attendance === targetStatus ? "" : targetStatus;
+                    const oldStatus = order.attendance;
+                    
+                    // UI 先行響應，體驗更佳
+                    order.attendance = newStatus;
+                    isUpdating.value = true;
+                    
+                    try {
+                        const res = await fetch(WORKER_URL, { 
+                            method: 'POST', 
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                action: 'TEACHER_UPDATE_ATTENDANCE', 
+                                payload: { 
+                                    courseId: courseId.value, 
+                                    password: password.value, 
+                                    orderId: order.orderId, 
+                                    attendance: newStatus 
+                                } 
+                            }) 
+                        });
+                        const json = await res.json();
+                        if (json.status !== 'success') throw new Error(json.message || '系統異常');
+                        
+                        if(newStatus === 'ATTENDED') showToast('✅ 已標記出席');
+                        else if(newStatus === 'ABSENT') showToast('🔴 已標記缺席');
+                        else showToast('➖ 已取消標記');
+                        
+                    } catch (e) {
+                        // 失敗則還原 UI
+                        order.attendance = oldStatus;
+                        showToast('❌ 更新失敗: ' + e.message);
+                        
+                        // 若發生驗證錯誤，強制登出
+                        if(e.message.includes('驗證')) isLoggedIn.value = false;
+                    } finally {
+                        isUpdating.value = false;
+                    }
+                };
+
+                const attendedCount = computed(() => orders.value.filter(o => o.attendance === 'ATTENDED').length);
+
+                return {
+                    password, isLoggedIn, isLoading, isUpdating, courseName, orders, toastMsg,
+                    handleLogin, toggleAttendance, attendedCount
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

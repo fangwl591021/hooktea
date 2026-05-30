@@ -1,0 +1,220 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>宏學 · 預約諮詢排班系統</title>
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        [v-cloak] { display: none; }
+        body { background: #F1F5F9; font-family: system-ui, -apple-system, sans-serif; }
+        .slot-grid { display: grid; grid-template-columns: 80px repeat(30, 1fr); gap: 1px; background: #e2e8f0; border-radius: 12px; overflow-x: auto; min-width: 100%; }
+        .slot-cell { background: white; min-height: 48px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 12px; transition: all 0.1s ease; }
+        .slot-open { background-color: #dcfce7 !important; color: #166534; font-weight: 800; }
+        .slot-booked { background-color: #fee2e2 !important; color: #991b1b; cursor: not-allowed; opacity: 0.8; }
+        .slot-time-label { background: #f8fafc; font-weight: 800; color: #334155; display: flex; align-items: center; justify-content: center; position: sticky; left: 0; z-index: 10; }
+        .btn-primary { background-color: #06C755; transition: all 0.2s; }
+        .btn-primary:hover { background-color: #05a647; transform: scale(0.98); }
+        .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(3px); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+        .modal-body { background: white; max-width: 500px; width: 90%; border-radius: 24px; overflow: hidden; }
+    </style>
+</head>
+<body>
+<div id="app" v-cloak>
+    <div class="min-h-screen flex flex-col">
+        <!-- 頂欄：返回鍵 -->
+        <header class="bg-white border-b border-slate-200 px-5 py-4 sticky top-0 z-30 shadow-sm flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button @click="goBackToAdmin" class="text-slate-600 hover:text-[#06C755] transition flex items-center gap-2 bg-slate-100 hover:bg-slate-200 rounded-full px-5 py-2.5 font-bold text-sm">
+                    <i class="fas fa-arrow-left"></i> ← 返回管理後台
+                </button>
+                <div class="h-6 w-px bg-slate-300"></div>
+                <h1 class="text-xl font-black text-slate-800"><i class="fas fa-calendar-check text-[#06C755] mr-2"></i>預約諮詢 · 導師排班系統</h1>
+            </div>
+            <div class="flex items-center gap-3">
+                <button @click="refreshAllData" class="px-4 py-2 rounded-lg bg-slate-100 text-slate-600 text-sm font-bold hover:bg-slate-200">
+                    <i class="fas fa-sync-alt mr-1" :class="{'fa-spin': isLoading}"></i> 同步
+                </button>
+                <div class="flex items-center gap-1.5 bg-green-50 px-3 py-1.5 rounded-full">
+                    <span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#06C755]"></span></span>
+                    <span class="text-xs font-bold text-green-700">連線正常</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="flex-1 p-6 space-y-6 max-w-[1600px] mx-auto w-full">
+            <!-- 導師列表 + 核准功能 -->
+            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                <div class="flex flex-wrap justify-between items-center mb-4">
+                    <h2 class="text-lg font-black text-slate-800"><i class="fas fa-chalkboard-user text-[#06C755] mr-2"></i>專業導師群</h2>
+                    <div class="text-sm text-slate-400">點擊導師卡片進行排班管理</div>
+                </div>
+                
+                <!-- 核准新導師區塊 -->
+                <div class="mb-6 p-4 bg-amber-50 rounded-xl border border-amber-200">
+                    <div class="font-bold text-amber-700 text-sm mb-3"><i class="fas fa-user-plus mr-1"></i>核准師資入駐</div>
+                    <div class="flex flex-wrap gap-3 items-end">
+                        <div class="flex-1 min-w-[180px]"><label class="text-xs font-bold text-slate-500">選擇學員</label><select v-model="approveForm.uid" class="input-field !py-2 text-sm"><option value="">-- 選擇 --</option><option v-for="u in users" :key="u.userId" :value="u.userId">{{ u.name }} ({{ u.phone }})</option></select></div>
+                        <div class="w-28"><label class="text-xs font-bold text-slate-500">時段租金</label><input type="number" v-model="approveForm.rent" class="input-field !py-2 text-sm"></div>
+                        <div class="w-28"><label class="text-xs font-bold text-slate-500">抽成%</label><input type="number" v-model="approveForm.comm" class="input-field !py-2 text-sm"></div>
+                        <button @click="handleApproveTeacher" :disabled="!approveForm.uid || isLoading" class="bg-[#06C755] text-white px-5 py-2 rounded-lg font-bold text-sm disabled:opacity-50">核准為導師</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div v-for="teacher in teachers" :key="teacher.userId" @click="selectTeacher(teacher)" class="border rounded-xl p-4 cursor-pointer transition-all hover:shadow-md hover:border-[#06C755]" :class="activeTeacher && activeTeacher.userId === teacher.userId ? 'border-[#06C755] bg-[#f0fdf4] shadow-md' : 'border-slate-200 bg-white'">
+                        <div class="flex justify-between">
+                            <div><div class="font-black text-lg">{{ teacher.name }}</div><div class="text-xs text-slate-400">{{ teacher.userId?.slice(-6) }}</div></div>
+                            <div v-if="activeTeacher?.userId === teacher.userId" class="bg-[#06C755] text-white rounded-full w-6 h-6 flex items-center justify-center text-xs"><i class="fas fa-check"></i></div>
+                        </div>
+                        <div class="mt-3 flex gap-2 text-xs font-bold flex-wrap">
+                            <span class="bg-indigo-50 text-indigo-700 px-2 py-1 rounded">租金 {{ teacher.config?.rent || 50 }} P</span>
+                            <span class="bg-amber-50 text-amber-700 px-2 py-1 rounded">抽成 {{ teacher.config?.comm || 10 }}%</span>
+                            <span class="bg-[#06C755]/10 text-[#06C755] px-2 py-1 rounded">收費 ${{ formatPrice(teacher.config?.price || 0) }}</span>
+                        </div>
+                        <div class="mt-2 text-[11px] text-slate-500"><i class="far fa-clock"></i> 點擊排班</div>
+                    </div>
+                </div>
+                <div v-if="!teachers.length" class="text-center py-12 text-slate-400 bg-slate-50 rounded-xl mt-4"><i class="fas fa-user-slash text-3xl mb-2 block"></i>尚無核准導師，請先使用上方功能核准</div>
+            </div>
+
+            <!-- 排班控制台 -->
+            <div v-if="activeTeacher" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="p-5 border-b bg-slate-50 flex flex-wrap justify-between items-center gap-3">
+                    <div><h3 class="text-xl font-black text-slate-800">{{ activeTeacher.name }} <span class="text-sm font-normal text-slate-500">· 30天時段排班</span></h3></div>
+                    <div class="flex items-center gap-4">
+                        <div v-if="draftOpenSlots.length || draftCloseSlots.length" class="bg-white rounded-xl px-4 py-2 flex items-center gap-3 shadow-sm">
+                            <span class="text-sm font-bold">待結算:</span>
+                            <span class="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-xs font-bold">+{{ draftOpenSlots.length }}</span>
+                            <span class="bg-red-100 text-red-700 px-2 py-0.5 rounded-full text-xs font-bold">-{{ draftCloseSlots.length }}</span>
+                            <span class="bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full text-xs">💎扣 {{ (draftOpenSlots.length * (activeTeacher.config?.rent || 0)).toLocaleString() }} 點</span>
+                            <button @click="clearDrafts" class="text-slate-500 border px-3 py-1 rounded-lg text-xs bg-white">取消</button>
+                            <button @click="submitDrafts" :disabled="isLoading" class="bg-[#06C755] text-white px-4 py-1.5 rounded-lg text-sm font-bold">確認結算</button>
+                        </div>
+                        <button @click="activeTeacher = null" class="text-slate-400 hover:text-red-500"><i class="fas fa-times-circle text-xl"></i></button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto p-4">
+                    <div class="slot-grid" style="min-width: 1800px;">
+                        <div class="slot-cell slot-time-label font-bold">日期</div>
+                        <div v-for="date in dates" :key="date.fullDate" class="text-center py-2 bg-slate-50 text-[12px] font-bold">
+                            <div class="text-slate-500">{{ date.weekDay }}</div>
+                            <div class="text-base font-black">{{ date.day }}</div>
+                        </div>
+                        <template v-for="time in timeSlots" :key="time">
+                            <div class="slot-cell slot-time-label font-bold">{{ time }}</div>
+                            <div v-for="date in dates" :key="date.fullDate" @click="handleToggleSlot(activeTeacher.userId, date.fullDate, time)" class="slot-cell border" :class="getSlotStyle(activeTeacher.userId, date.fullDate, time)">
+                                <i v-if="getSlotStatus(activeTeacher.userId, date.fullDate, time) === 'OPEN' && !isDraftClose(activeTeacher.userId, date.fullDate, time)" class="fas fa-check-circle text-xs"></i>
+                                <i v-if="getSlotStatus(activeTeacher.userId, date.fullDate, time) === 'BOOKED'" class="fas fa-lock text-[11px]"></i>
+                                <span v-if="isDraftOpen(activeTeacher.userId, date.fullDate, time)" class="text-[11px] font-bold text-green-600">待開</span>
+                                <span v-if="isDraftClose(activeTeacher.userId, date.fullDate, time)" class="text-[11px] font-bold text-red-400 line-through">關</span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                <div class="p-3 bg-slate-50 text-xs text-slate-500 flex justify-between"><span><i class="fas fa-square text-[#DCFCE7]"></i> 開放可預約 <i class="fas fa-square text-[#FEE2E2] ml-3"></i> 已被預約(不可動) <i class="fas fa-pen text-green-600 ml-3"></i> 批次異動</span><span>租金 {{ activeTeacher.config?.rent }} 點/時段</span></div>
+            </div>
+            <div v-if="!activeTeacher && teachers.length" class="bg-white rounded-xl border-dashed border-2 p-12 text-center text-slate-400"><i class="fas fa-hand-pointer text-4xl mb-3"></i><p>請點擊上方導師卡片進行排班管理</p></div>
+        </div>
+    </div>
+
+    <div v-if="toastMessage" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl text-sm font-bold z-50"><i class="fas fa-info-circle mr-2"></i>{{ toastMessage }}</div>
+
+    <div v-if="editingSysConfig" class="modal-mask" @click.self="editingSysConfig = null"><div class="modal-body p-6"><h3 class="font-bold text-lg mb-4">系統抽成設定</h3><div><label>時段租金 (扣點)</label><input type="number" v-model="editingSysConfig.rent" class="input-field mb-3"></div><div><label>平台抽成 (%)</label><input type="number" v-model="editingSysConfig.comm" class="input-field mb-4"></div><div class="flex gap-3"><button @click="editingSysConfig = null" class="flex-1 py-2 bg-slate-100 rounded">取消</button><button @click="saveSysConfig" class="flex-1 py-2 bg-indigo-600 text-white rounded">儲存</button></div></div></div>
+</div>
+
+<script>
+const { createApp, ref, onMounted } = Vue;
+const WORKER_URL = 'https://hooktea.fangwl591021.workers.dev/';
+
+createApp({
+    setup() {
+        const users = ref([]); const teachers = ref([]); const slots = ref([]);
+        const isLoading = ref(false); const activeTeacher = ref(null);
+        const draftOpenSlots = ref([]); const draftCloseSlots = ref([]);
+        const toastMessage = ref('');
+        const approveForm = ref({ uid: '', rent: 50, comm: 10 });
+        const editingSysConfig = ref(null);
+        const dates = ref([]); const timeSlots = ['09:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00'];
+
+        const formatPrice = v => Number(v || 0).toLocaleString();
+        const showToast = (msg) => { toastMessage.value = msg; setTimeout(() => toastMessage.value = '', 2500); };
+        const callApi = async (act, pl = {}) => {
+            isLoading.value = true;
+            try {
+                let token = null;
+                try {
+                    if (typeof liff !== 'undefined' && typeof liff.isLoggedIn === 'function') {
+                        token = liff.isLoggedIn() ? liff.getIDToken() : null;
+                    }
+                } catch (err) {}
+                const requestPayload = { ...pl };
+                if (sessionStorage.getItem('act_admin_pwd')) requestPayload.adminPwd = sessionStorage.getItem('act_admin_pwd');
+                const res = await fetch(WORKER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: act, payload: requestPayload, idToken: token }) });
+                const json = await res.json();
+                if (json.status !== 'success') throw new Error(json.message);
+                return json.data;
+            } catch(e) { showToast(`❌ ${e.message}`); return null; } finally { isLoading.value = false; }
+        };
+
+        const fetchData = async () => {
+            const data = await callApi('ADMIN_GET_DATA');
+            if(data) { users.value = data.users || []; teachers.value = (data.teachers || []).map(t => ({ ...t, config: t.config || { rent: 50, comm: 10, price: 0 } })); }
+            const slotData = await callApi('ADMIN_GET_SLOTS');
+            if(slotData) slots.value = slotData;
+        };
+
+        const getSlotStatus = (uid, date, time) => { const f = slots.value.find(s => s.teacherUid === uid && s.date === date && s.time === time); return f ? f.status : 'CLOSED'; };
+        const isDraftOpen = (uid, date, time) => draftOpenSlots.value.some(s => s.uid === uid && s.date === date && s.time === time);
+        const isDraftClose = (uid, date, time) => draftCloseSlots.value.some(s => s.uid === uid && s.date === date && s.time === time);
+        const getSlotStyle = (uid, date, time) => {
+            if(isDraftOpen(uid,date,time)) return 'bg-green-100 border-green-400 border-dashed';
+            if(isDraftClose(uid,date,time)) return 'bg-slate-100 line-through opacity-60';
+            const s = getSlotStatus(uid,date,time);
+            if(s === 'OPEN') return 'slot-open';
+            if(s === 'BOOKED') return 'slot-booked';
+            return 'bg-white';
+        };
+
+        const handleToggleSlot = (uid, date, time) => {
+            if(getSlotStatus(uid,date,time) === 'BOOKED') return showToast('已被預約無法修改');
+            const oi = draftOpenSlots.value.findIndex(s => s.uid === uid && s.date === date && s.time === time);
+            if(oi > -1) { draftOpenSlots.value.splice(oi,1); return; }
+            const ci = draftCloseSlots.value.findIndex(s => s.uid === uid && s.date === date && s.time === time);
+            if(ci > -1) { draftCloseSlots.value.splice(ci,1); return; }
+            if(getSlotStatus(uid,date,time) === 'OPEN') draftCloseSlots.value.push({ uid, date, time });
+            else draftOpenSlots.value.push({ uid, date, time });
+        };
+
+        const clearDrafts = () => { draftOpenSlots.value = []; draftCloseSlots.value = []; };
+        const submitDrafts = async () => {
+            if(!activeTeacher.value) return;
+            const totalCost = draftOpenSlots.value.length * (activeTeacher.value.config?.rent || 0);
+            if(!confirm(`送出排班異動？\n新增:${draftOpenSlots.value.length} / 關閉:${draftCloseSlots.value.length}\n扣點:${totalCost}`)) return;
+            const res = await callApi('ADMIN_BATCH_TOGGLE_SLOTS', { teacherUid: activeTeacher.value.userId, draftOpen: draftOpenSlots.value, draftClose: draftCloseSlots.value });
+            if(res?.success) { showToast('✅ 結算完成'); clearDrafts(); fetchData(); }
+            else showToast('❌ 失敗，可能餘額不足');
+        };
+
+        const selectTeacher = (t) => { if(activeTeacher.value?.userId !== t.userId) { clearDrafts(); activeTeacher.value = t; } };
+        const handleApproveTeacher = async () => {
+            const target = users.value.find(u => u.userId === approveForm.value.uid);
+            if(!target) return showToast('請選擇學員');
+            if(await callApi('ADMIN_APPROVE_TEACHER', { teacherUid: target.userId, teacherName: target.name, rentPrice: approveForm.value.rent, commissionRate: approveForm.value.comm })) {
+                showToast(`✅ ${target.name} 已成為導師`); approveForm.value = { uid: '', rent: 50, comm: 10 }; fetchData();
+            }
+        };
+        const refreshAllData = async () => { await fetchData(); showToast('資料已同步'); };
+        const goBackToAdmin = () => { if(confirm('返回管理後台？')) window.location.href = './admin.html'; };
+
+        const initDates = () => { const d = new Date(), days = ['日','一','二','三','四','五','六'], arr=[]; for(let i=0;i<30;i++){ const nd=new Date(d); nd.setDate(d.getDate()+i); arr.push({ fullDate: nd.toISOString().split('T')[0], day: nd.getDate(), weekDay: days[nd.getDay()] }); } dates.value = arr; };
+        onMounted(() => { initDates(); fetchData(); });
+        return { users, teachers, slots, isLoading, activeTeacher, draftOpenSlots, draftCloseSlots, toastMessage, approveForm, editingSysConfig, dates, timeSlots, formatPrice, getSlotStatus, getSlotStyle, isDraftOpen, isDraftClose, handleToggleSlot, clearDrafts, submitDrafts, selectTeacher, handleApproveTeacher, refreshAllData, goBackToAdmin };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

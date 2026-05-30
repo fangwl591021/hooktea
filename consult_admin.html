@@ -1,0 +1,624 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>人生進化ACTION</title>
+    <!-- Version: 2026.05.03.V274_Consult_Admin_Complete_Fix -->
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        [v-cloak] { display: none !important; }
+        body { 
+            background-color: #F8FAFC; 
+            color: #1e293b; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            overscroll-behavior-y: none; 
+        }
+        .slot-grid { display: grid; grid-template-columns: 80px repeat(30, 1fr); gap: 1px; background: #e2e8f0; }
+        .slot-cell { background: white; height: 48px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 12px; transition: all 0.1s; }
+        .slot-cell:hover { background-color: #f8fafc; }
+        .slot-open { background-color: #dcfce7 !important; color: #166534; font-weight: 800; border: 1px solid #86efac; z-index: 1; }
+        .slot-booked { background-color: #fee2e2 !important; color: #991b1b; cursor: not-allowed; }
+        .slot-time-label { background: #f8fafc; font-weight: 800; color: #64748b; }
+        .btn-green { 
+            background-color: #06C755; 
+            color: white; 
+            font-weight: 800; 
+            padding: 10px 24px; 
+            border-radius: 8px; 
+            transition: 0.2s; 
+            display: inline-flex; 
+            align-items: center; 
+            gap: 8px; 
+        }
+        .btn-green:hover { background-color: #05a647; }
+        .btn-green:disabled { opacity: 0.5; cursor: not-allowed; }
+        .input-field { 
+            width: 100%; 
+            border: 1px solid #cbd5e1; 
+            border-radius: 8px; 
+            padding: 12px; 
+            font-size: 15px; 
+            outline: none; 
+            background: #fff; 
+            font-weight: 600; 
+            text-align: center; 
+        }
+        .input-field:focus { border-color: #06C755; box-shadow: 0 0 0 2px rgba(6, 199, 85, 0.1); }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .smooth-scroll { -webkit-overflow-scrolling: touch; }
+        .animate-fade-in { animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="p-0 m-0">
+    <div id="app" v-cloak class="min-h-screen flex flex-col">
+        
+        <!-- 登入驗證區塊 -->
+        <div v-if="!isAuthenticated" class="min-h-screen flex items-center justify-center bg-[#F8FAFC] px-4 relative text-center">
+            <div class="max-w-[360px] w-full bg-white rounded-2xl shadow-sm p-8 border border-slate-200 relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-full h-1.5 bg-[#06C755]"></div>
+                <div class="mb-8">
+                    <div class="w-14 h-14 bg-[#f0fdf4] text-[#06C755] rounded-xl flex items-center justify-center text-2xl mx-auto mb-4 border border-[#dcfce7]">
+                        <i class="fas fa-calendar-check"></i>
+                    </div>
+                    <h2 class="text-xl font-bold text-slate-800">講師排班</h2>
+                    <p class="text-slate-500 text-sm mt-1.5 font-medium">管理可預約時段</p>
+                </div>
+                <div class="space-y-4">
+                    <button @click="lineLogin" :disabled="isLoading" class="w-full py-3.5 bg-[#06C755] text-white rounded-lg font-bold text-sm shadow-sm hover:bg-[#05b04a] transition flex items-center justify-center gap-2 active:scale-95">
+                        <i v-if="isLoading" class="fas fa-spinner fa-spin"></i><i v-else class="fab fa-line text-lg"></i>
+                        {{ isLoading ? '身分驗證中...' : 'LINE 授權一鍵登入' }}
+                    </button>
+                    <div class="relative flex items-center py-3">
+                        <div class="flex-grow border-t border-slate-100"></div>
+                        <span class="shrink-0 px-3 text-[11px] text-slate-400 font-bold uppercase tracking-widest">或使用備用密碼</span>
+                        <div class="flex-grow border-t border-slate-100"></div>
+                    </div>
+                    <input type="text" v-model="loginForm.account" placeholder="管理員帳號" class="input-field bg-slate-50">
+                    <input type="password" v-model="loginForm.password" placeholder="登入密碼" class="input-field bg-slate-50" @keyup.enter="handleLogin">
+                    <button @click="handleLogin" class="w-full py-3 bg-slate-800 text-white rounded-lg font-bold text-sm shadow-sm hover:bg-slate-700 transition mt-2">密碼登入</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系統主畫面 (完全自適應手機與電腦) -->
+        <div v-else class="flex flex-col h-screen animate-fade-in">
+            <!-- 頂部 Header -->
+            <header class="bg-white border-b border-slate-200 p-3 md:p-4 flex justify-between items-center sticky top-0 z-40 shadow-sm flex-wrap gap-2 shrink-0">
+                <div class="flex items-center gap-2 md:gap-4">
+                    <a href="./admin.html" class="w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center bg-slate-50 text-slate-500 hover:bg-slate-100 transition"><i class="fas fa-arrow-left"></i></a>
+                    <h1 class="text-base md:text-xl font-black text-slate-800 flex items-center">
+                        預約排班中控台 <span class="hidden md:inline-block text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md border border-indigo-100 ml-2">獨立模組</span>
+                    </h1>
+                </div>
+                <div class="flex gap-2 md:gap-3">
+                    <button @click="fetchData(false)" class="px-3 md:px-4 py-1.5 md:py-2 text-xs md:text-sm font-bold text-slate-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:bg-slate-50 transition flex items-center gap-1.5 md:gap-2">
+                        <i class="fas fa-sync-alt text-[#06C755]" :class="{'fa-spin': isLoading}"></i> 重整
+                    </button>
+                    <button @click="logout" class="px-3 md:px-4 py-1.5 md:py-2 text-xs md:text-sm font-bold text-red-500 bg-red-50 border border-red-100 rounded-lg shadow-sm hover:bg-red-100 transition">
+                        登出
+                    </button>
+                </div>
+            </header>
+
+            <!-- 內容區塊 (電腦版為左右排版，手機版為上下排版) -->
+            <main class="flex-grow flex flex-col md:flex-row overflow-hidden bg-[#F8FAFC]">
+                
+                <!-- 導師清單側邊/橫向列 -->
+                <aside class="w-full md:w-72 bg-white border-b md:border-b-0 md:border-r border-slate-200 flex flex-row md:flex-col overflow-x-auto md:overflow-y-auto hide-scrollbar smooth-scroll shadow-sm z-30 shrink-0">
+                    <div class="p-3 md:p-4 border-r md:border-r-0 md:border-b border-slate-100 bg-slate-50/90 backdrop-blur-sm sticky left-0 md:top-0 z-20 shrink-0 flex flex-col justify-center min-w-[90px] md:min-w-0">
+                        <div class="hidden md:block text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Teacher List</div>
+                        <div class="font-black text-slate-800 text-[13px] md:text-lg text-center md:text-left">選擇導師</div>
+                    </div>
+                    
+                    <div v-if="teachers.length === 0" class="p-4 md:p-8 text-center text-slate-400 font-bold text-sm w-full whitespace-nowrap md:whitespace-normal">
+                        <i class="fas fa-user-slash text-2xl md:text-3xl mb-2 md:mb-3 block text-slate-200"></i>目前尚無導師
+                    </div>
+                    
+                    <!-- 導師卡片 -->
+                    <div v-for="t in teachers" :key="t.userId" @click="selectTeacher(t)" 
+                         class="shrink-0 w-44 md:w-auto p-2.5 md:p-4 border-r md:border-r-0 md:border-b border-slate-100 cursor-pointer transition-all relative overflow-hidden group flex items-center gap-2.5 md:gap-3"
+                         :class="activeTeacher?.userId === t.userId ? 'bg-green-50 border-b-4 md:border-b-0 border-[#06C755] md:border-l-4' : 'hover:bg-slate-50 border-b-4 md:border-b-0 border-transparent md:border-l-4'">
+                        <div class="w-10 h-10 md:w-12 md:h-12 rounded-full bg-white shadow-sm border border-slate-200 overflow-hidden shrink-0">
+                            <img :src="t.pictureUrl || 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=150&q=80'" class="w-full h-full object-cover">
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <div class="font-bold text-slate-800 truncate text-[13px] md:text-[15px] group-hover:text-[#06C755] transition-colors" :class="{'text-[#06C755]': activeTeacher?.userId === t.userId}">{{ t.name }}</div>
+                            <div class="text-[10px] md:text-[11px] text-slate-400 mt-0.5 md:mt-1 truncate bg-white inline-block px-1.5 py-0.5 rounded border border-slate-100">合約: {{ t.config?.rent || 0 }}P</div>
+                        </div>
+                    </div>
+                </aside>
+
+                <!-- 排班操作主畫面 -->
+                <section class="flex-1 min-w-0 min-h-0 relative flex flex-col bg-[#F8FAFC]">
+                    <div v-if="!activeTeacher" class="absolute inset-0 flex flex-col items-center justify-center text-slate-300 z-10 bg-[#F8FAFC]">
+                        <div class="w-20 h-20 md:w-24 md:h-24 bg-white rounded-full flex items-center justify-center shadow-sm border border-slate-100 mb-4">
+                            <i class="fas fa-calendar-alt text-3xl md:text-4xl text-[#06C755] opacity-50"></i>
+                        </div>
+                        <span class="font-bold text-sm md:text-lg text-slate-400">請從清單點擊導師開始排班</span>
+                    </div>
+                    
+                    <template v-else>
+                        <!-- 頂端控制面板 (固定不隨格線捲動) -->
+                        <div class="shrink-0 p-3 md:p-5 bg-white border-b border-slate-200 shadow-sm z-20 flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                            <div>
+                                <h2 class="text-lg md:text-xl font-black text-slate-800 flex items-center gap-2">
+                                    <i class="fas fa-user-edit text-[#06C755]"></i> {{ activeTeacher.name }} 的排班表
+                                </h2>
+                                <p class="text-[11px] md:text-xs text-slate-500 font-bold mt-1">先綁定可預約服務，再點擊下方網格開關時段。綠色為開放，紅色為被預約。</p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2 md:gap-3 w-full md:w-auto mt-1 md:mt-0">
+                                <div v-if="hasDrafts" class="text-[11px] md:text-sm font-bold text-orange-600 bg-orange-50 px-2 md:px-3 py-1.5 rounded-lg border border-orange-100 animate-pulse">有未儲存變更</div>
+                                <button v-if="hasDrafts" @click="clearDrafts" class="px-2 md:px-4 py-2 text-[12px] md:text-sm font-bold text-slate-500 hover:text-slate-700 transition ml-auto md:ml-0 border border-slate-200 rounded-lg">取消變更</button>
+                                <button v-if="hasDrafts" @click="submitDrafts" :disabled="isLoading" class="btn-green shadow-lg shadow-green-100 py-2 px-3 md:py-2.5 md:px-4 text-[13px] md:text-sm flex-1 md:flex-none justify-center">
+                                    <i v-if="isLoading" class="fas fa-spinner fa-spin"></i><i v-else class="fas fa-save"></i>確認結算 ({{ totalDraftCost }}P)
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 預約服務綁定 -->
+                        <div class="shrink-0 bg-white border-b border-slate-200 p-3 md:p-5">
+                            <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                                <div>
+                                    <div class="text-sm md:text-base font-black text-slate-800 flex items-center gap-2">
+                                        <i class="fas fa-link text-indigo-500"></i> 綁定預約服務
+                                    </div>
+                                    <p class="text-[11px] md:text-xs text-slate-500 font-bold mt-1">綁定後，前台才知道此講師可被預約哪一種服務；排班只負責開放時間。</p>
+                                </div>
+                                <button v-if="isAdminUser" @click="saveTeacherCourseBindings" :disabled="isLoading || !activeTeacher" class="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-black hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
+                                    <i class="fas fa-save mr-1"></i> 儲存綁定
+                                </button>
+                            </div>
+
+                            <div v-if="isAdminUser" class="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                                <label v-for="course in reservationCourses" :key="courseKey(course)" class="flex items-start gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-white cursor-pointer transition">
+                                    <input type="checkbox" class="mt-1 w-4 h-4 accent-[#06C755]" v-model="bindingCourseIds" :value="courseKey(course)">
+                                    <span class="min-w-0">
+                                        <span class="block text-sm font-black text-slate-800 truncate">{{ course.name || course.title || '未命名預約服務' }}</span>
+                                        <span class="block text-xs text-slate-400 font-bold mt-0.5 truncate">{{ course.priceLabel || course.priceText || course.price || 0 }} 元・{{ course.location || '未設定地點' }}</span>
+                                    </span>
+                                </label>
+                                <div v-if="reservationCourses.length === 0" class="text-sm font-bold text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-lg p-4">
+                                    尚未建立預約類課程，請先到課程管理新增「預約類」。
+                                </div>
+                            </div>
+
+                            <div v-else class="mt-3 flex flex-wrap gap-2">
+                                <span v-for="course in selectedTeacherCourses" :key="courseKey(course)" class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-700 text-sm font-black">
+                                    <i class="fas fa-calendar-check"></i>{{ course.name || course.title || '未命名預約服務' }}
+                                </span>
+                                <span v-if="selectedTeacherCourses.length === 0" class="text-sm font-bold text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-lg px-3 py-2">
+                                    尚未綁定預約服務，請由 Admin 指派。
+                                </span>
+                            </div>
+
+                            <div class="mt-4 grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-3 items-end">
+                                <div>
+                                    <label class="text-[12px] font-black text-slate-500 mb-1.5 block">本次開通時段對應服務</label>
+                                    <select v-model="selectedScheduleCourseId" class="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm font-black text-slate-700 bg-white outline-none focus:border-[#06C755]">
+                                        <option value="">-- 請先選擇要開通的預約服務 --</option>
+                                        <option v-for="course in selectedTeacherCourses" :key="courseKey(course)" :value="courseKey(course)">
+                                            {{ course.name || course.title || '未命名預約服務' }} / ${{ course.price || 0 }}
+                                        </option>
+                                    </select>
+                                </div>
+                                <div class="bg-slate-50 border border-slate-100 rounded-lg px-4 py-2 text-xs font-bold text-slate-500">
+                                    開通扣點：{{ activeTeacher.config?.rent || 0 }}P / 格
+                                    <span class="mx-1 text-slate-300">|</span>
+                                    完成抽成：{{ activeTeacher.config?.comm || 0 }}%
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 排班網格區塊 (獨立提供 2D 滑動) -->
+                        <div class="flex-1 min-h-0 overflow-auto smooth-scroll bg-[#F8FAFC] p-3 md:p-5 relative">
+                            <div class="border border-slate-200 rounded-xl shadow-sm bg-white inline-block min-w-full">
+                                <div class="slot-grid pb-2" style="min-width: 2000px;">
+                                    
+                                    <!-- 左上角絕對固定格子 -->
+                                    <div class="slot-cell slot-time-label sticky top-0 left-0 z-20 border-r border-b shadow-[2px_2px_5px_rgba(0,0,0,0.05)] text-[11px] md:text-[12px]">時段 \ 日期</div>
+                                    
+                                    <!-- 頂部日期橫排 (垂直滾動時吸頂) -->
+                                    <div v-for="d in dates" :key="d.fullDate" class="slot-cell bg-slate-50 border-b border-slate-200 flex flex-col py-1 h-auto sticky top-0 z-10 shadow-[0_2px_5px_rgba(0,0,0,0.02)]">
+                                        <!-- 加入月份顯示，更直覺 -->
+                                        <span class="text-[10px] text-slate-400 font-bold">{{ d.month }}/{{ d.day }}</span>
+                                        <span class="text-[13px] font-black text-slate-700">{{ d.weekDay }}</span>
+                                    </div>
+                                    
+                                    <template v-for="time in timeSlots" :key="time">
+                                        <!-- 左側時間直排 (水平滾動時吸左) -->
+                                        <div class="slot-cell slot-time-label sticky left-0 z-10 border-r border-b border-slate-100 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">{{ time }}</div>
+                                        
+                                        <!-- 實際操作格子 -->
+                                        <div v-for="d in dates" :key="d.fullDate" @click="handleToggleSlot(d.fullDate, time)" class="slot-cell border-b border-r border-slate-100" :class="getSlotStyle(d.fullDate, time)">
+                                            <i v-if="getSlotStatus(d.fullDate, time) === 'OPEN' && !isDraftClose(d.fullDate, time)" class="fas fa-check text-[11px]"></i>
+                                            <i v-if="getSlotStatus(d.fullDate, time) === 'BOOKED'" class="fas fa-lock text-[11px]"></i>
+                                            <span v-if="isDraftOpen(d.fullDate, time)" class="text-[10px] font-bold text-green-700">待新增</span>
+                                            <span v-if="isDraftClose(d.fullDate, time)" class="text-[10px] font-bold text-slate-500">待關閉</span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        const initVueApp = () => {
+            if (typeof Vue === 'undefined') {
+                setTimeout(initVueApp, 100);
+                return;
+            }
+
+            const { createApp, ref, computed, onMounted } = Vue;
+            const WORKER_URL = 'https://hooktea.fangwl591021.workers.dev/';
+            const CACHE_VERSION = 'v256';
+            const CACHE_KEY = `act_admin_cache_${CACHE_VERSION}`;
+
+            createApp({
+                setup() {
+                    const isAuthenticated = ref(false);
+                    const loginForm = ref({ account: '', password: '' });
+                    const isLoading = ref(false);
+                    const liffProfile = ref({});
+                    const isAdminUser = ref(false);
+                    
+                    const teachers = ref([]);
+                    const courses = ref([]);
+                    const slots = ref([]);
+                    const activeTeacher = ref(null);
+                    const bindingCourseIds = ref([]);
+                    const selectedScheduleCourseId = ref('');
+                    const draftOpen = ref([]);
+                    const draftClose = ref([]);
+                    const dates = ref([]);
+                    const timeSlots = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00'];
+
+                    const callApi = async (act, pl = {}, silent = false) => {
+                        try {
+                            let token = null;
+                            let lineAccessToken = null;
+                            try {
+                                if (typeof liff !== 'undefined' && typeof liff.isLoggedIn === 'function') {
+                                    token = liff.isLoggedIn() ? liff.getIDToken() : null;
+                                    lineAccessToken = liff.isLoggedIn() && typeof liff.getAccessToken === 'function' ? liff.getAccessToken() : null;
+                                }
+                            } catch (err) {}
+                            const requestPayload = { ...pl };
+                            if (loginForm.value.password) requestPayload.adminPwd = loginForm.value.password;
+                            else if (sessionStorage.getItem('act_admin_pwd')) requestPayload.adminPwd = sessionStorage.getItem('act_admin_pwd');
+                            const res = await fetch(WORKER_URL, { 
+                                method: 'POST', 
+                                headers: { 'Content-Type': 'application/json' }, 
+                                body: JSON.stringify({ action: act, payload: requestPayload, userProfile: liffProfile.value || {}, idToken: token, accessToken: lineAccessToken })
+                            });
+                            if (!res.ok) throw new Error('伺服器無回應或網路異常');
+                            const text = await res.text();
+                            let json;
+                            try { json = JSON.parse(text); } catch(e) { throw new Error(`後端回傳格式異常。\n(回應開頭: ${text.substring(0, 50)}...)`); }
+                            if (json.status !== 'success') throw new Error(json.message || `後台尚未授權此操作 (${act})`); 
+                            return json.data;
+                        } catch (e) { 
+                            if (!silent) alert(`❌ 系統提示：\n${e.message}`); 
+                            throw e;
+                        }
+                    };
+
+                    const ensureLineToken = () => {
+                        if (typeof liff === 'undefined' || typeof liff.isLoggedIn !== 'function') return null;
+                        if (!liff.isLoggedIn()) {
+                            liff.login({ redirectUri: window.location.href });
+                            return null;
+                        }
+                        const token = liff.getIDToken() || (typeof liff.getAccessToken === 'function' ? liff.getAccessToken() : null);
+                        if (!token) {
+                            if (typeof liff.logout === 'function') liff.logout();
+                            liff.login({ redirectUri: window.location.href });
+                            return null;
+                        }
+                        return token;
+                    };
+
+                    const loadCache = () => {
+                        if (localStorage.getItem('act_admin_logged_in') === 'true') {
+                            isAuthenticated.value = true;
+                            if (sessionStorage.getItem('act_admin_pwd')) isAdminUser.value = true;
+                            try {
+                                const c = JSON.parse(localStorage.getItem(CACHE_KEY));
+                                if (c) {
+                                    teachers.value = c.teachers || [];
+                                    courses.value = c.courses || [];
+                                    slots.value = c.slots || [];
+                                }
+                            } catch(e) {}
+                        }
+                    };
+
+                    const fetchData = async (silent = false) => {
+                        if (!silent && !teachers.value.length) isLoading.value = true;
+                        try {
+                            const data = await callApi('ADMIN_GET_DATA', {}, true);
+                            if (data && data.teachers) {
+                                teachers.value = data.teachers.map(t => ({ ...t, config: t.config || { rent: 0, comm: 0, price: 0 } }));
+                            }
+                            courses.value = Array.isArray(data?.courses) ? data.courses : [];
+                            
+                            const slotData = await callApi('ADMIN_GET_SLOTS', {}, true);
+                            if (slotData) {
+                                slots.value = Array.isArray(slotData) ? slotData : (slotData.slots || []);
+                            }
+
+                            if (data && slotData) {
+                                localStorage.setItem(CACHE_KEY, JSON.stringify({ ...data, slots: slots.value }));
+                                localStorage.setItem('act_admin_logged_in', 'true');
+                            }
+                            
+                            if (activeTeacher.value) {
+                                const stillExists = teachers.value.find(t => t.userId === activeTeacher.value.userId);
+                                if (!stillExists) activeTeacher.value = null;
+                                draftOpen.value = []; draftClose.value = [];
+                                syncTeacherBindingIds();
+                            }
+                        } catch(e) { console.error(e); alert('資料同步失敗：' + e.message); } finally { isLoading.value = false; }
+                    };
+
+                    const autoLineLogin = async () => {
+                        try {
+                            const data = await callApi('GET_SETTINGS', {}, true);
+                            let finalLiffId = String(data.liff_id || '').trim();
+                            if (finalLiffId.includes('liff.line.me/')) finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
+                            if (finalLiffId) {
+                                await liff.init({ liffId: finalLiffId });
+                                if (liff.isLoggedIn()) {
+                                    if (!ensureLineToken()) return;
+                                    liffProfile.value = await liff.getProfile();
+                                    const checkRes = await callApi('CHECK_USER', {}, true);
+                                    if (checkRes && (checkRes.isAdmin || checkRes.isTeacher || (checkRes.info && checkRes.info.memberTier && checkRes.info.memberTier.includes('導師')))) {
+                                        isAdminUser.value = !!checkRes.isAdmin;
+                                        isAuthenticated.value = true;
+                                        localStorage.setItem('act_admin_logged_in', 'true');
+                                        await fetchData(true);
+                                        if (!checkRes.isAdmin) {
+                                            teachers.value = teachers.value.filter(t => t.userId === liffProfile.value.userId);
+                                            if (teachers.value.length > 0) {
+                                                activeTeacher.value = teachers.value[0];
+                                                syncTeacherBindingIds();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) { console.log('Silent LIFF login skip:', e); }
+                    };
+
+                    const lineLogin = async () => {
+                        isLoading.value = true;
+                        try {
+                            const data = await callApi('GET_SETTINGS', {}, false);
+                            let finalLiffId = String(data.liff_id || '').trim();
+                            if (finalLiffId.includes('liff.line.me/')) finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
+                            if (!finalLiffId) throw new Error('管理員尚未設定系統主 LIFF ID');
+
+                            await liff.init({ liffId: finalLiffId });
+                            if (!ensureLineToken()) return;
+
+                            liffProfile.value = await liff.getProfile();
+                            const checkRes = await callApi('CHECK_USER', {}, false);
+
+                            if (checkRes && (checkRes.isAdmin || checkRes.isTeacher || (checkRes.info && checkRes.info.memberTier && checkRes.info.memberTier.includes('導師')))) {
+                                isAdminUser.value = !!checkRes.isAdmin;
+                                isAuthenticated.value = true;
+                                localStorage.setItem('act_admin_logged_in', 'true');
+                                await fetchData(false);
+                                if (!checkRes.isAdmin) {
+                                    teachers.value = teachers.value.filter(t => t.userId === liffProfile.value.userId);
+                                    if (teachers.value.length > 0) {
+                                        activeTeacher.value = teachers.value[0];
+                                        syncTeacherBindingIds();
+                                    }
+                                }
+                            } else { alert('⛔ 您沒有管理或導師權限，無法進入排班系統。'); }
+                        } catch (e) { alert(`登入失敗: ${e.message}`); } finally { isLoading.value = false; }
+                    };
+
+                    const handleLogin = () => {
+                        const acc = String(loginForm.value.account || '').trim().toLowerCase();
+                        const pwd = String(loginForm.value.password || '').trim();
+                        if (acc === 'admin' && pwd === '@1234') { 
+                            isAdminUser.value = true;
+                            isAuthenticated.value = true; 
+                            localStorage.setItem('act_admin_logged_in', 'true');
+                            sessionStorage.setItem('act_admin_pwd', pwd);
+                            fetchData(false); 
+                        } else { alert('帳號或密碼錯誤'); }
+                    };
+
+                    const logout = () => { 
+                        isAuthenticated.value = false; 
+                        localStorage.removeItem('act_admin_logged_in');
+                        localStorage.removeItem(CACHE_KEY);
+                        sessionStorage.removeItem('act_admin_pwd');
+                        isAdminUser.value = false;
+                        loginForm.value = { account: '', password: '' }; 
+                    };
+
+                    const normalizeText = (value) => String(value || '').normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, '');
+                    const courseKey = (course) => String(course?.id || course?.courseId || course?.name || course?.title || '');
+                    const isReservationCourse = (course) => String(course?.type || course?.category || '').includes('預約');
+                    const isTeacherCourse = (course, teacher) => {
+                        if (!course || !teacher) return false;
+                        const teacherUid = String(teacher.userId || '').trim();
+                        const courseTeacherUid = String(course.teacherUid || course.teacher_user_id || '').trim();
+                        if (teacherUid && courseTeacherUid && teacherUid === courseTeacherUid) return true;
+                        if (Array.isArray(course.teacherUids) && course.teacherUids.map(String).includes(teacherUid)) return true;
+                        const teacherName = normalizeText(teacher.name || teacher.displayName || '');
+                        const courseTeacherName = normalizeText(course.instructor || course.teacher || course.teacherName || '');
+                        return !!teacherName && !!courseTeacherName && teacherName === courseTeacherName;
+                    };
+                    const reservationCourses = computed(() => courses.value.filter(isReservationCourse));
+                    const selectedTeacherCourses = computed(() => reservationCourses.value.filter(course => isTeacherCourse(course, activeTeacher.value)));
+                    const selectedScheduleCourse = computed(() => selectedTeacherCourses.value.find(course => courseKey(course) === selectedScheduleCourseId.value) || null);
+
+                    const syncTeacherBindingIds = () => {
+                        bindingCourseIds.value = selectedTeacherCourses.value.map(courseKey);
+                        if (!selectedTeacherCourses.value.some(course => courseKey(course) === selectedScheduleCourseId.value)) {
+                            selectedScheduleCourseId.value = selectedTeacherCourses.value[0] ? courseKey(selectedTeacherCourses.value[0]) : '';
+                        }
+                    };
+
+                    const selectTeacher = (t) => {
+                        if (activeTeacher.value?.userId !== t.userId) {
+                            draftOpen.value = [];
+                            draftClose.value = [];
+                            activeTeacher.value = t;
+                            syncTeacherBindingIds();
+                        }
+                    };
+
+                    const saveTeacherCourseBindings = async () => {
+                        if (!activeTeacher.value || !isAdminUser.value) return;
+                        const selected = new Set(bindingCourseIds.value.map(String));
+                        const teacherUid = String(activeTeacher.value.userId || '').trim();
+                        const teacherName = activeTeacher.value.name || activeTeacher.value.displayName || '';
+                        const changes = reservationCourses.value
+                            .map(course => {
+                                const key = courseKey(course);
+                                const currentlyBound = isTeacherCourse(course, activeTeacher.value);
+                                const shouldBind = selected.has(key);
+                                if (currentlyBound === shouldBind) return null;
+                                if (shouldBind) {
+                                    return { ...course, teacherUid, instructor: teacherName };
+                                }
+                                const next = { ...course };
+                                if (String(next.teacherUid || '') === teacherUid) next.teacherUid = '';
+                                if (normalizeText(next.instructor || '') === normalizeText(teacherName)) next.instructor = '';
+                                if (Array.isArray(next.teacherUids)) next.teacherUids = next.teacherUids.map(String).filter(uid => uid !== teacherUid);
+                                return next;
+                            })
+                            .filter(Boolean);
+
+                        if (!changes.length) {
+                            alert('目前綁定沒有變更。');
+                            return;
+                        }
+                        if (!confirm(`確定更新 ${activeTeacher.value.name} 的預約服務綁定？\n異動項目：${changes.length} 筆`)) return;
+                        isLoading.value = true;
+                        try {
+                            for (const course of changes) {
+                                await callApi('ADMIN_UPDATE_COURSE', course, true);
+                            }
+                            await fetchData(true);
+                            syncTeacherBindingIds();
+                            alert('✅ 預約服務綁定已更新');
+                        } catch (e) {
+                            alert(`預約服務綁定失敗：${e.message}`);
+                        } finally {
+                            isLoading.value = false;
+                        }
+                    };
+
+                    const getStatus = (date, time) => {
+                        if (!activeTeacher.value) return 'CLOSED';
+                        const found = slots.value.find(s => s && s.teacherUid === activeTeacher.value.userId && s.date === date && s.time === time);
+                        return found ? found.status : 'CLOSED';
+                    };
+
+                    const isDraftOpen = (date, time) => draftOpen.value.some(s => s.date === date && s.time === time);
+                    const isDraftClose = (date, time) => draftClose.value.some(s => s.date === date && s.time === time);
+
+                    const getSlotStyle = (date, time) => {
+                        if (isDraftOpen(date, time)) return 'bg-green-50 text-green-600 border-green-300 border-dashed border-2 shadow-inner';
+                        if (isDraftClose(date, time)) return 'bg-slate-100 text-slate-400 line-through opacity-60';
+                        const s = getStatus(date, time);
+                        if (s === 'OPEN') return 'slot-open shadow-sm';
+                        if (s === 'BOOKED') return 'slot-booked opacity-80';
+                        return 'bg-white text-slate-200';
+                    };
+
+                    const handleToggleSlot = (date, time) => {
+                        if (!activeTeacher.value) return;
+                        const uid = activeTeacher.value.userId;
+                        const status = getStatus(date, time);
+                        if (status === 'BOOKED') { alert('此時段已被預約，無法更改！'); return; }
+                        if (status !== 'OPEN' && !selectedScheduleCourse.value) {
+                            alert('請先選擇本次要開通的預約服務。');
+                            return;
+                        }
+                        const oIdx = draftOpen.value.findIndex(s => s.date === date && s.time === time);
+                        const cIdx = draftClose.value.findIndex(s => s.date === date && s.time === time);
+                        if (oIdx > -1) { draftOpen.value.splice(oIdx, 1); return; }
+                        if (cIdx > -1) { draftClose.value.splice(cIdx, 1); return; }
+                        if (status === 'OPEN') {
+                            draftClose.value.push({ uid, date, time });
+                        } else {
+                            draftOpen.value.push({
+                                uid,
+                                date,
+                                time,
+                                courseId: courseKey(selectedScheduleCourse.value),
+                                courseName: selectedScheduleCourse.value.name || selectedScheduleCourse.value.title || '',
+                                coursePrice: Number(selectedScheduleCourse.value.price || 0)
+                            });
+                        }
+                    };
+
+                    const submitDrafts = async () => {
+                        if (!activeTeacher.value) return;
+                        const cost = draftOpen.value.length * (activeTeacher.value.config?.rent || 0);
+                        if (!confirm(`確定送出排班異動？\n新增開放：${draftOpen.value.length} 個時段\n關閉時段：${draftClose.value.length} 個時段\n將從紅包扣除：${cost} 點租金`)) return;
+                        isLoading.value = true;
+                        try {
+                            const res = await callApi('ADMIN_BATCH_TOGGLE_SLOTS', { teacherUid: activeTeacher.value.userId, courseId: courseKey(selectedScheduleCourse.value), courseName: selectedScheduleCourse.value?.name || selectedScheduleCourse.value?.title || '', coursePrice: Number(selectedScheduleCourse.value?.price || 0), draftOpen: draftOpen.value, draftClose: draftClose.value });
+                            if (res) { alert('✅ 排班結算完成！'); draftOpen.value = []; draftClose.value = []; await fetchData(true); }
+                        } catch (e) { console.error(e); } finally { isLoading.value = false; }
+                    };
+
+                    onMounted(() => {
+                        const today = new Date(); const names = ['日', '一', '二', '三', '四', '五', '六'];
+                        for (let i = 0; i < 30; i++) {
+                            const d = new Date(today); 
+                            d.setDate(today.getDate() + i);
+                            
+                            // 修正：使用本地時區，避免 toISOString() 產生日期落差
+                            const y = d.getFullYear();
+                            const m = String(d.getMonth() + 1).padStart(2, '0');
+                            const dayStr = String(d.getDate()).padStart(2, '0');
+                            
+                            dates.value.push({ 
+                                fullDate: `${y}-${m}-${dayStr}`, 
+                                month: d.getMonth() + 1,
+                                day: d.getDate(), 
+                                weekDay: names[d.getDay()] 
+                            });
+                        }
+                        loadCache();
+                        autoLineLogin();
+                    });
+
+                    return {
+                        isAuthenticated, loginForm, isLoading, liffProfile, isAdminUser,
+                        teachers, courses, slots, activeTeacher, bindingCourseIds, selectedScheduleCourseId, selectedScheduleCourse, reservationCourses, selectedTeacherCourses, draftOpen, draftClose, dates, timeSlots,
+                        lineLogin, handleLogin, logout, fetchData, selectTeacher,
+                        courseKey, saveTeacherCourseBindings,
+                        getSlotStatus: getStatus, isDraftOpen, isDraftClose, getSlotStyle, handleToggleSlot,
+                        hasDrafts: computed(() => draftOpen.value.length > 0 || draftClose.value.length > 0),
+                        totalDraftCost: computed(() => draftOpen.value.length * (activeTeacher.value?.config?.rent || 0)),
+                        clearDrafts: () => { draftOpen.value = []; draftClose.value = []; }, submitDrafts
+                    };
+                }
+            }).mount('#app');
+        };
+
+        // 確保 Vue 載入後才執行應用
+        initVueApp();
+    </script>
+</body>
+</html>
