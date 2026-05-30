@@ -263,7 +263,7 @@ function getWasabiConfig(env) {
   const endpoint = String(env.WASABI_ENDPOINT || (region ? `https://s3.${region}.wasabisys.com` : "")).replace(/\/+$/, "");
   const accessKeyId = String(env.WASABI_ACCESS_KEY_ID || env.WASABI_ACCESS_KEY || "").trim();
   const secretAccessKey = String(env.WASABI_SECRET_ACCESS_KEY || env.WASABI_SECRET_KEY || "").trim();
-  const rawPrefix = String(env.WASABI_BASE_PREFIX || "shops/action/").trim();
+  const rawPrefix = String(env.WASABI_BASE_PREFIX || "shops/hooktea/").trim();
   const basePrefix = rawPrefix ? `${rawPrefix.replace(/^\/+|\/+$/g, "")}/` : "";
   return {
     provider: "wasabi",
@@ -1735,7 +1735,7 @@ export default {
       return this.handleApiActions(request, env, ctx, corsHeaders);
     }
 
-    return new Response("Action API Node Active", { status: 200, headers: corsHeaders });
+    return new Response("Hooktea API Node Active", { status: 200, headers: corsHeaders });
   },
 
   async handleApiActions(request, env, ctx, corsHeaders) {
