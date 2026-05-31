@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HookTea AI 後台監控</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 text-slate-900">
+  <div class="min-h-screen flex">
+    <aside class="w-[360px] bg-white border-r border-slate-200 flex flex-col">
+      <div class="p-5 border-b border-slate-100">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h1 class="text-2xl font-black">HookTea AI 後台監控</h1>
+            <p class="text-sm text-slate-500 font-semibold mt-1">會員訊號、風險與推播草稿</p>
+          </div>
+          <a href="/admin.html" class="rounded-xl bg-slate-900 text-white px-3 py-2 text-xs font-black">後台</a>
+        </div>
+        <div class="grid grid-cols-3 gap-2 mt-5">
+          <div class="rounded-2xl bg-emerald-50 p-3">
+            <div class="text-xs font-bold text-emerald-700">會員</div>
+            <div id="stat-total" class="text-2xl font-black text-emerald-900">0</div>
+          </div>
+          <div class="rounded-2xl bg-amber-50 p-3">
+            <div class="text-xs font-bold text-amber-700">待處理</div>
+            <div id="stat-open" class="text-2xl font-black text-amber-900">0</div>
+          </div>
+          <div class="rounded-2xl bg-rose-50 p-3">
+            <div class="text-xs font-bold text-rose-700">高風險</div>
+            <div id="stat-risk" class="text-2xl font-black text-rose-900">0</div>
+          </div>
+        </div>
+        <input id="search" class="mt-4 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="搜尋姓名、ID、摘要或標籤">
+      </div>
+      <div id="thread-list" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+    </aside>
+
+    <main class="flex-1 min-w-0 bg-white flex flex-col">
+      <header class="p-5 border-b border-slate-200 flex items-center justify-between">
+        <div>
+          <h2 id="active-name" class="text-xl font-black">請選擇會員</h2>
+          <p id="active-summary" class="text-sm text-slate-500 mt-1"></p>
+        </div>
+        <div class="flex gap-2">
+          <button id="refresh" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black">重新整理</button>
+          <button id="backfill" class="rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-black">重算 AI 訊號</button>
+        </div>
+      </header>
+
+      <section class="grid grid-cols-[1fr_360px] flex-1 min-h-0">
+        <div class="flex flex-col min-w-0">
+          <div id="messages" class="flex-1 overflow-y-auto p-6 space-y-3 bg-slate-50"></div>
+          <div class="bg-slate-700 text-white text-sm font-semibold px-6 py-3">此頁提供 AI 監看、內部備註與推播草稿，不消耗 LINE reply token。</div>
+        </div>
+        <aside class="border-l border-slate-200 p-5 overflow-y-auto">
+          <div class="space-y-5">
+            <div>
+              <h3 class="font-black mb-2">AI 判讀</h3>
+              <div id="signals" class="space-y-2"></div>
+            </div>
+            <div>
+              <h3 class="font-black mb-2">內部備註</h3>
+              <textarea id="note" rows="4" class="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="輸入內部備註"></textarea>
+              <div class="flex gap-2 mt-2">
+                <input id="tag" class="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="新增標籤">
+                <button id="add-tag" class="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm font-black">加入</button>
+              </div>
+              <div id="tags" class="flex flex-wrap gap-2 mt-3"></div>
+              <button id="save-thread" class="mt-3 w-full rounded-xl bg-emerald-600 text-white px-4 py-3 text-sm font-black">儲存備註/標籤</button>
+            </div>
+            <div class="border-t border-slate-100 pt-5">
+              <h3 class="font-black mb-2">推播草稿</h3>
+              <input id="broadcast-title" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="推播名稱">
+              <textarea id="broadcast-text" rows="4" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="推播文字"></textarea>
+              <select id="broadcast-mode" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold outline-none focus:border-emerald-500 mb-2">
+                <option value="all">全部會員</option>
+                <option value="high">高風險會員</option>
+                <option value="tag">指定標籤</option>
+              </select>
+              <input id="broadcast-tag" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="指定標籤">
+              <div class="grid grid-cols-2 gap-2">
+                <button id="preview-broadcast" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black">預覽人數</button>
+                <button id="create-broadcast" class="rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-black">建立草稿</button>
+              </div>
+              <div id="broadcast-result" class="text-sm text-slate-500 font-semibold mt-3"></div>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const WORKER_URL = location.origin;
+    const state = { password: sessionStorage.getItem('act_admin_pwd') || '', threads: [], active: null };
+    const el = id => document.getElementById(id);
+    const esc = text => String(text || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+
+    async function fetchJson(url, options = {}) {
+      if (!state.password) {
+        state.password = prompt('請輸入 HookTea 後台管理密碼') || '';
+        sessionStorage.setItem('act_admin_pwd', state.password);
+      }
+      const headers = { ...(options.headers || {}), 'x-hooktea-admin-password': state.password };
+      if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+      const res = await fetch(url, { ...options, headers });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        if (res.status === 401 || res.status === 403) {
+          sessionStorage.removeItem('act_admin_pwd');
+          state.password = '';
+        }
+        throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
+      }
+      return data;
+    }
+
+    function renderThreads() {
+      const q = el('search').value.trim().toLowerCase();
+      const rows = state.threads.filter(t => !q || [t.name, t.id, t.summary, (t.tags || []).join(',')].join(' ').toLowerCase().includes(q));
+      el('thread-list').innerHTML = rows.map(t => `
+        <button data-id="${esc(t.id)}" class="thread w-full text-left rounded-2xl p-4 border ${state.active?.id === t.id ? 'border-emerald-500 bg-emerald-50' : 'border-slate-100 bg-white hover:bg-slate-50'}">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="font-black truncate">${esc(t.name || t.id)}</div>
+              <div class="text-xs text-slate-400 mt-1">${esc(t.id)}</div>
+            </div>
+            <span class="rounded-full px-2 py-1 text-xs font-black ${t.riskLevel === 'high' ? 'bg-rose-100 text-rose-700' : t.riskLevel === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}">${esc(t.riskLevel || 'low')}</span>
+          </div>
+          <p class="text-sm text-slate-600 mt-2 line-clamp-2">${esc(t.summary || '')}</p>
+          <div class="flex flex-wrap gap-1 mt-3">${(t.tags || []).slice(0, 4).map(tag => `<span class="rounded-full bg-slate-100 text-slate-600 px-2 py-1 text-xs font-bold">${esc(tag)}</span>`).join('')}</div>
+        </button>
+      `).join('');
+      document.querySelectorAll('.thread').forEach(btn => btn.addEventListener('click', () => loadThread(btn.dataset.id)));
+    }
+
+    function renderActive() {
+      const t = state.active;
+      if (!t) return;
+      el('active-name').textContent = t.name || t.id;
+      el('active-summary').textContent = t.summary || '';
+      el('note').value = t.note || '';
+      el('signals').innerHTML = Object.entries(t.signals || {}).map(([k, v]) => `
+        <div class="rounded-xl bg-slate-50 border border-slate-100 p-3">
+          <div class="text-xs font-bold text-slate-400">${esc(k)}</div>
+          <div class="font-black text-slate-800">${esc(v || '-')}</div>
+        </div>
+      `).join('');
+      el('tags').innerHTML = (t.tags || []).map(tag => `<button data-tag="${esc(tag)}" class="tag rounded-full bg-emerald-50 text-emerald-700 px-3 py-1 text-xs font-black">${esc(tag)} ×</button>`).join('');
+      document.querySelectorAll('.tag').forEach(btn => btn.addEventListener('click', () => {
+        state.active.tags = (state.active.tags || []).filter(x => x !== btn.dataset.tag);
+        renderActive();
+      }));
+      el('messages').innerHTML = (t.messages || []).map(m => `
+        <div class="rounded-2xl bg-white border border-slate-100 p-4 shadow-sm">
+          <div class="flex items-center justify-between gap-3">
+            <div class="font-black">${esc(m.title || m.type || '事件')}</div>
+            <div class="text-xs text-slate-400">${esc(m.createdAt || '')}</div>
+          </div>
+          <div class="text-sm text-slate-600 mt-2 whitespace-pre-wrap">${esc(m.text || '')}</div>
+        </div>
+      `).join('') || '<div class="text-slate-400 font-bold">目前沒有事件紀錄</div>';
+    }
+
+    async function loadThreads() {
+      const data = await fetchJson(`${WORKER_URL}/api/line-oa/audience`);
+      const overview = data.data?.overview || {};
+      el('stat-total').textContent = overview.totalThreads || 0;
+      el('stat-open').textContent = overview.openThreads || 0;
+      el('stat-risk').textContent = overview.highRiskThreads || 0;
+      const list = await fetchJson(`${WORKER_URL}/api/line-oa/threads`);
+      state.threads = list.data || [];
+      renderThreads();
+      if (!state.active && state.threads.length) await loadThread(state.threads[0].id);
+    }
+
+    async function loadThread(id) {
+      const data = await fetchJson(`${WORKER_URL}/api/line-oa/thread?id=${encodeURIComponent(id)}`);
+      state.active = data.data;
+      renderThreads();
+      renderActive();
+    }
+
+    async function saveThread() {
+      if (!state.active) return;
+      const data = await fetchJson(`${WORKER_URL}/api/line-oa/thread`, {
+        method: 'POST',
+        body: JSON.stringify({ id: state.active.id, note: el('note').value, tags: state.active.tags || [] })
+      });
+      state.active = data.data;
+      await loadThreads();
+      await loadThread(state.active.id);
+    }
+
+    async function previewBroadcast() {
+      const data = await fetchJson(`${WORKER_URL}/api/broadcast/preview`, {
+        method: 'POST',
+        body: JSON.stringify({ filters: { mode: el('broadcast-mode').value, tag: el('broadcast-tag').value } })
+      });
+      el('broadcast-result').textContent = `預估受眾：${data.data?.count || 0} 人`;
+    }
+
+    async function createBroadcast() {
+      const data = await fetchJson(`${WORKER_URL}/api/broadcast/jobs`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: el('broadcast-title').value,
+          text: el('broadcast-text').value,
+          filters: { mode: el('broadcast-mode').value, tag: el('broadcast-tag').value }
+        })
+      });
+      el('broadcast-result').textContent = `已建立草稿：${data.data?.id || ''}，受眾 ${data.data?.recipientCount || 0} 人`;
+    }
+
+    el('search').addEventListener('input', renderThreads);
+    el('refresh').addEventListener('click', () => loadThreads().catch(err => alert(err.message)));
+    el('backfill').addEventListener('click', () => fetchJson(`${WORKER_URL}/api/line-oa/backfill-signals`, { method: 'POST', body: '{}' }).then(loadThreads).catch(err => alert(err.message)));
+    el('add-tag').addEventListener('click', () => {
+      if (!state.active) return;
+      const tag = el('tag').value.trim();
+      if (tag && !(state.active.tags || []).includes(tag)) state.active.tags = [...(state.active.tags || []), tag];
+      el('tag').value = '';
+      renderActive();
+    });
+    el('save-thread').addEventListener('click', () => saveThread().catch(err => alert(err.message)));
+    el('preview-broadcast').addEventListener('click', () => previewBroadcast().catch(err => alert(err.message)));
+    el('create-broadcast').addEventListener('click', () => createBroadcast().catch(err => alert(err.message)));
+
+    loadThreads().catch(err => alert(err.message));
+  </script>
+</body>
+</html>

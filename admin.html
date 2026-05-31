@@ -98,6 +98,7 @@
                         <div @click="toggleGroup('groupB')" class="nav-group-header"><span>🛠️ 營運工具</span><i class="fas" :class="groups.groupB ? 'fa-chevron-down' : 'fa-chevron-right'"></i></div>
                         <div v-show="groups.groupB" class="animate-fade-in">
                             <a href="./consult_admin.html" class="nav-item text-indigo-600"><i class="fas fa-calendar-check w-6 text-center"></i>講師排班</a>
+                            <a href="./line-oa-monitor.html" class="nav-item text-emerald-600"><i class="fas fa-brain w-6 text-center"></i>AI 後台監控</a>
                             <div v-if="canManageRichMenu" @click="switchView('richmenu')" class="nav-item" :class="{'nav-active': view === 'richmenu'}"><i class="fas fa-layer-group w-6 text-center"></i>圖文選單</div>
                             <div v-if="isAdminRole" @click="switchView('paid_broadcast')" class="nav-item" :class="{'nav-active': view === 'paid_broadcast'}"><i class="fas fa-bullhorn w-6 text-center"></i>付費推播</div>
                             <div v-if="isAdminRole" @click="switchView('flex_rules')" class="nav-item" :class="{'nav-active': view === 'flex_rules'}"><i class="fas fa-robot w-6 text-center"></i>機器人與專區卡片</div>

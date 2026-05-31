@@ -1724,6 +1724,7 @@ const STATIC_HTML_FILES = new Set([
   "menu.html",
   "mobile_admin.html",
   "videos.html",
+  "line-oa-monitor.html",
 ]);
 
 async function serveStaticHtml(request, env, corsHeaders) {
@@ -1827,6 +1828,237 @@ async function updateLinePayOrder(env, ctx, orderId, transactionId, patch) {
   return orders[idx];
 }
 
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-line-signature, x-hooktea-admin-password",
+    },
+  });
+}
+
+async function requireHookTeaMonitorAdmin(request, env) {
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const expected = String(env.ADMIN_PASSWORD || settings.admin_password || "@1234").trim();
+  const url = new URL(request.url);
+  const provided = String(
+    request.headers.get("x-hooktea-admin-password") ||
+    url.searchParams.get("adminPassword") ||
+    ""
+  ).trim();
+  if (expected && provided === expected) return { ok: true };
+  return { ok: false, response: json({ success: false, error: "UNAUTHORIZED" }, 401) };
+}
+
+function splitTags(value) {
+  return String(value || "")
+    .split(/[,，\s]+/)
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+
+function inferHookTeaRisk(user = {}, orders = [], pointData = null, overlay = {}) {
+  const pending = orders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length;
+  const cancelled = orders.filter(o => String(o.status || "").toUpperCase() === "CANCELLED").length;
+  const balance = Number(pointData?.balance || 0);
+  const manualTags = splitTags(overlay.tags);
+  if (manualTags.some(t => /高風險|急|客訴|退款|取消/.test(t))) return "high";
+  if (pending >= 2 || cancelled >= 2) return "high";
+  if (pending >= 1 || balance > 0) return "medium";
+  return "low";
+}
+
+function buildHookTeaSummary(user = {}, orders = [], pointData = null, overlay = {}) {
+  const paid = orders.filter(o => String(o.status || "").toUpperCase() === "PAID").length;
+  const pending = orders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length;
+  const cancelled = orders.filter(o => String(o.status || "").toUpperCase() === "CANCELLED").length;
+  const points = Number(pointData?.balance || 0);
+  const parts = [];
+  if (paid) parts.push(`已付款 ${paid} 筆`);
+  if (pending) parts.push(`待付款 ${pending} 筆`);
+  if (cancelled) parts.push(`取消 ${cancelled} 筆`);
+  if (points) parts.push(`點數 ${points}`);
+  if (overlay.note) parts.push(`備註：${String(overlay.note).slice(0, 40)}`);
+  return parts.join("｜") || "尚無明顯互動紀錄";
+}
+
+async function listHookTeaUsers(env) {
+  const users = [];
+  let cursor;
+  do {
+    const page = await env.ACTION_DATA.list({ prefix: "USER_", cursor });
+    for (const key of page.keys || []) {
+      const data = await safeGetKV(env, key.name, null);
+      if (data) users.push({ ...data, userId: data.userId || key.name.replace(/^USER_/, "") });
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return users;
+}
+
+async function buildHookTeaMonitorRows(env) {
+  const users = await listHookTeaUsers(env);
+  const orders = await safeGetKV(env, "ORDERS", []);
+  const rows = [];
+  for (const user of users) {
+    const uid = String(user.userId || user.uid || "").trim();
+    if (!uid) continue;
+    const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === uid);
+    const pointData = await safeGetKV(env, `POINTS_${uid}`, null);
+    const overlay = await safeGetKV(env, `MONITOR_THREAD_${uid}`, {});
+    const tags = Array.from(new Set([
+      ...splitTags(user.tags || user.memberTags || user.memberTier || ""),
+      ...splitTags(overlay.tags),
+    ]));
+    const riskLevel = inferHookTeaRisk(user, userOrders, pointData, overlay);
+    rows.push({
+      id: uid,
+      userId: uid,
+      name: user.name || user.displayName || user.lineName || uid,
+      pictureUrl: user.pictureUrl || user.avatar || "",
+      status: overlay.status || "open",
+      tags,
+      note: overlay.note || "",
+      riskLevel,
+      summary: buildHookTeaSummary(user, userOrders, pointData, overlay),
+      lastMessageAt: user.updatedAt || user.createdAt || "",
+      signals: {
+        "會員等級": user.memberTier || user.role || "一般會員",
+        "待付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length,
+        "已付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PAID").length,
+        "點數餘額": Number(pointData?.balance || 0),
+        "風險": riskLevel,
+      },
+    });
+  }
+  rows.sort((a, b) => {
+    const rank = { high: 3, medium: 2, low: 1 };
+    return (rank[b.riskLevel] || 0) - (rank[a.riskLevel] || 0) || String(b.lastMessageAt).localeCompare(String(a.lastMessageAt));
+  });
+  return rows;
+}
+
+async function getHookTeaMonitorThread(env, id) {
+  const rows = await buildHookTeaMonitorRows(env);
+  const row = rows.find(item => item.id === id);
+  if (!row) return null;
+  const orders = await safeGetKV(env, "ORDERS", []);
+  const pointData = await safeGetKV(env, `POINTS_${id}`, { logs: [] });
+  const paymentLogs = await safeGetKV(env, "PAYMENT_LOGS", []);
+  const messages = [];
+  for (const order of (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === id).slice(0, 20)) {
+    messages.push({
+      type: "order",
+      title: `訂單 ${order.orderId || ""} ${order.status || ""}`.trim(),
+      text: `${order.productName || order.courseName || order.courseId || "訂單"}\n金額：${order.amount || 0}\n付款：${order.paymentMethod || ""}`,
+      createdAt: order.createdAt || order.updatedAt || "",
+    });
+  }
+  for (const log of (Array.isArray(pointData?.logs) ? pointData.logs : []).slice(0, 10)) {
+    messages.push({
+      type: "points",
+      title: `點數 ${log.type || ""}`,
+      text: `${log.reason || ""}\n點數：${log.amount || log.points || 0}`,
+      createdAt: log.createdAt || "",
+    });
+  }
+  for (const pay of (Array.isArray(paymentLogs) ? paymentLogs : []).filter(x => String(x.orderNo || "").includes(id)).slice(0, 10)) {
+    messages.push({
+      type: "payment",
+      title: `付款 ${pay.status || ""}`,
+      text: `${pay.message || ""}\n交易：${pay.tradeNo || ""}`,
+      createdAt: pay.timestamp || "",
+    });
+  }
+  return { ...row, messages };
+}
+
+async function handleHookTeaMonitorApi(request, env) {
+  const auth = await requireHookTeaMonitorAdmin(request, env);
+  if (!auth.ok) return auth.response;
+  const url = new URL(request.url);
+  if (url.pathname === "/api/line-oa/audience" && request.method === "GET") {
+    const rows = await buildHookTeaMonitorRows(env);
+    return json({ success: true, data: {
+      overview: {
+        totalThreads: rows.length,
+        openThreads: rows.filter(r => r.status !== "closed").length,
+        highRiskThreads: rows.filter(r => r.riskLevel === "high").length,
+        mediumRiskThreads: rows.filter(r => r.riskLevel === "medium").length,
+        activeThreads7d: rows.length,
+        activeThreads30d: rows.length,
+      },
+      riskThreads: rows.filter(r => r.riskLevel !== "low").slice(0, 20),
+      tags: Array.from(new Set(rows.flatMap(r => r.tags || []))).slice(0, 80),
+    }});
+  }
+  if (url.pathname === "/api/line-oa/threads" && request.method === "GET") {
+    return json({ success: true, data: await buildHookTeaMonitorRows(env) });
+  }
+  if (url.pathname === "/api/line-oa/thread" && request.method === "GET") {
+    const data = await getHookTeaMonitorThread(env, url.searchParams.get("id") || "");
+    return data ? json({ success: true, data }) : json({ success: false, error: "NOT_FOUND" }, 404);
+  }
+  if (url.pathname === "/api/line-oa/thread" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const id = String(body.id || "").trim();
+    if (!id) return json({ success: false, error: "MISSING_ID" }, 400);
+    await safePutKV(env, `MONITOR_THREAD_${id}`, {
+      note: String(body.note || ""),
+      tags: Array.isArray(body.tags) ? body.tags.join(",") : String(body.tags || ""),
+      status: String(body.status || "open"),
+      updatedAt: new Date().toISOString(),
+    });
+    return json({ success: true, data: await getHookTeaMonitorThread(env, id) });
+  }
+  if (url.pathname === "/api/line-oa/backfill-signals" && ["GET", "POST"].includes(request.method)) {
+    const rows = await buildHookTeaMonitorRows(env);
+    return json({ success: true, data: { scanned: rows.length, updated: rows.length } });
+  }
+  if (url.pathname === "/api/line-oa/backfill-postbacks" && ["GET", "POST"].includes(request.method)) {
+    return json({ success: true, data: { scanned: 0, updated: 0 } });
+  }
+  if (url.pathname === "/api/broadcast/preview" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const rows = await filterHookTeaBroadcastRows(env, body.filters || {});
+    return json({ success: true, data: { count: rows.length, recipients: rows.slice(0, 20) } });
+  }
+  if (url.pathname === "/api/broadcast/jobs" && request.method === "GET") {
+    return json({ success: true, data: await safeGetKV(env, "MONITOR_BROADCAST_JOBS", []) });
+  }
+  if (url.pathname === "/api/broadcast/jobs" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const rows = await filterHookTeaBroadcastRows(env, body.filters || {});
+    const jobs = await safeGetKV(env, "MONITOR_BROADCAST_JOBS", []);
+    const job = {
+      id: `JOB_${Date.now()}`,
+      title: String(body.title || "未命名推播草稿"),
+      text: String(body.text || ""),
+      filters: body.filters || {},
+      recipientCount: rows.length,
+      status: "draft",
+      createdAt: new Date().toISOString(),
+    };
+    await safePutKV(env, "MONITOR_BROADCAST_JOBS", [job, ...(Array.isArray(jobs) ? jobs : [])].slice(0, 100));
+    return json({ success: true, data: job });
+  }
+  return null;
+}
+
+async function filterHookTeaBroadcastRows(env, filters = {}) {
+  const rows = await buildHookTeaMonitorRows(env);
+  const mode = String(filters.mode || filters.audience || "all");
+  const tag = String(filters.tag || "").trim();
+  return rows.filter(row => {
+    if (mode === "high" && row.riskLevel !== "high") return false;
+    if (mode === "tag" && tag && !(row.tags || []).includes(tag)) return false;
+    return true;
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const corsHeaders = {
@@ -1850,6 +2082,16 @@ export default {
       headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
       headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-line-signature');
       return new Response(object.body, { headers });
+    }
+
+    if (url.pathname === "/ai-monitor") {
+      url.pathname = "/line-oa-monitor.html";
+      return Response.redirect(url.toString(), 302);
+    }
+
+    if (url.pathname.startsWith("/api/line-oa/") || url.pathname.startsWith("/api/broadcast/")) {
+      const apiResponse = await handleHookTeaMonitorApi(request, env);
+      if (apiResponse) return apiResponse;
     }
 
     const staticResponse = await serveStaticHtml(request, env, corsHeaders);
