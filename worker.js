@@ -1651,6 +1651,25 @@ async function fillMissingLineProfile(env, user) {
 
 async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const adminPassword = String(env.ADMIN_PASSWORD || settings.admin_password || "@1234").trim();
+  const payloadAdminPassword = String(payload?.adminPassword || "").trim();
+  if (adminPassword && payloadAdminPassword && payloadAdminPassword === adminPassword) {
+    return {
+      settings,
+      userData: { name: "HookTea Admin", displayName: "HookTea Admin", role: "admin" },
+      userId: "ADMIN_PASSWORD",
+      lineProfile: null,
+      isAdmin: true,
+      canCrmLogin: true,
+      canHeadquarter: true,
+      canSystemTools: true,
+      isTeacher: false,
+      hasVerifiedLineUser: false,
+      tokenVerificationError: null,
+      crmLineLoginEnabled: false,
+      adminPasswordOk: true,
+    };
+  }
   let verifiedLineProfile = null;
   let tokenVerificationError = null;
   try {

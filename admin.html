@@ -1630,6 +1630,8 @@
                             } catch (err) {}
 
                             const requestPayload = { ...pl };
+                            const adminPassword = sessionStorage.getItem('act_admin_pwd') || '';
+                            if (adminPassword) requestPayload.adminPassword = adminPassword;
 
                             const res = await fetch(WORKER_URL, {
                                 method: 'POST',
@@ -1804,31 +1806,18 @@
                         }
                         isLoading.value = true;
                         try {
-                            const data = await callApi('GET_SETTINGS', {}, false);
-                            let finalLiffId = String(data.liff_id || '').trim();
-                            if (finalLiffId.includes('liff.line.me/')) {
-                                finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
-                            }
-                            if (!finalLiffId) throw new Error('管理員尚未設定系統主 LIFF ID');
-                            if (typeof liff === 'undefined') throw new Error('LINE Login SDK 尚未載入，請重新整理後再試');
-
-                            await liff.init({ liffId: finalLiffId });
-                            if (!ensureLineToken()) return;
-
-                            liffProfile.value = await liff.getProfile();
+                            sessionStorage.setItem('act_admin_pwd', pwd);
+                            liffProfile.value = { userId: 'ADMIN_PASSWORD', displayName: 'HookTea Admin', pictureUrl: '' };
                             const checkRes = await callApi('CHECK_USER', {}, false);
-                            if (!checkRes?.userId || checkRes.userId === 'GUEST') {
-                                throw new Error('LINE 身分驗證失敗，請重新使用 LINE 授權登入');
-                            }
                             currentAccess.value = {
-                                isAdmin: !!checkRes.isAdmin,
-                                canCrmLogin: !!checkRes.canCrmLogin,
-                                canHeadquarter: !!checkRes.canHeadquarter,
-                                isTeacher: !!checkRes.isTeacher,
-                                canSystemTools: !!checkRes.canSystemTools,
-                                userId: checkRes.userId,
-                                name: checkRes.name || liffProfile.value.displayName || '',
-                                pictureUrl: checkRes.pictureUrl || liffProfile.value.pictureUrl || ''
+                                isAdmin: true,
+                                canCrmLogin: true,
+                                canHeadquarter: true,
+                                isTeacher: false,
+                                canSystemTools: true,
+                                userId: checkRes?.userId || 'ADMIN_PASSWORD',
+                                name: checkRes?.name || 'HookTea Admin',
+                                pictureUrl: checkRes?.pictureUrl || ''
                             };
                             const cachedAccess = JSON.parse(localStorage.getItem('act_crm_access') || '{}');
                             if (cachedAccess.userId && cachedAccess.userId !== currentAccess.value.userId) localStorage.removeItem(CACHE_KEY);
