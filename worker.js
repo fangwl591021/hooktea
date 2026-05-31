@@ -1335,7 +1335,7 @@ function selectBroadcastAudience(users, audience = {}) {
 }
 
 async function sendLineMulticast(env, recipients, messages) {
-  const token = String(env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
+  const token = getLineChannelAccessToken(env);
   if (!token) throw new Error("Cloudflare 尚未綁定 LINE_CHANNEL_ACCESS_TOKEN 金鑰！");
   const ids = [...new Set((recipients || []).map(user => String(user.userId || "").trim()).filter(Boolean))];
   const chunks = [];
@@ -1619,7 +1619,7 @@ async function verifyLineAccessToken(accessToken) {
 }
 
 async function fetchLineBotProfile(env, uid) {
-  const token = String(env.LINE_CHANNEL_ACCESS_TOKEN || "").trim();
+  const token = getLineChannelAccessToken(env);
   const userId = String(uid || "").trim();
   if (!token || !userId) return null;
   const res = await fetch(`https://api.line.me/v2/bot/profile/${encodeURIComponent(userId)}`, {
@@ -1840,6 +1840,14 @@ function json(data, status = 200) {
   });
 }
 
+function envValue(env, names) {
+  for (const name of names) {
+    const value = env[name];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
 async function requireHookTeaMonitorAdmin(request, env) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const expected = String(env.ADMIN_PASSWORD || settings.admin_password || "@1234").trim();
@@ -1853,6 +1861,99 @@ async function requireHookTeaMonitorAdmin(request, env) {
   return { ok: false, response: json({ success: false, error: "UNAUTHORIZED" }, 401) };
 }
 
+function getOpenAiApiKey(env) {
+  return envValue(env, ["OPENAI_API_KEY", "OpenAI API key", "OpenAI_API_key", "OPENAI KEY"]);
+}
+
+function getLineChannelAccessToken(env) {
+  return envValue(env, [
+    "LINE_CHANNEL_ACCESS_TOKEN",
+    "Line Message API Channel Access Token",
+    "LINE_MESSAGE_API_CHANNEL_ACCESS_TOKEN",
+    "LINE_ACCESS_TOKEN",
+  ]);
+}
+
+function extractResponseText(data) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  const chunks = [];
+  for (const item of data?.output || []) {
+    for (const content of item?.content || []) {
+      if (typeof content?.text === "string") chunks.push(content.text);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+function parseAiJson(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+async function generateHookTeaAiSignals(env, row, thread) {
+  const apiKey = getOpenAiApiKey(env);
+  if (!apiKey) return null;
+  const input = {
+    member: {
+      id: row.id,
+      name: row.name,
+      tags: row.tags || [],
+      summary: row.summary,
+      riskLevel: row.riskLevel,
+      signals: row.signals || {},
+    },
+    recentEvents: (thread?.messages || []).slice(0, 12).map(msg => ({
+      type: msg.type,
+      title: msg.title,
+      text: msg.text,
+      createdAt: msg.createdAt,
+    })),
+  };
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: envValue(env, ["OPENAI_MODEL", "OpenAI Model"]) || "gpt-4.1-mini",
+      temperature: 0.2,
+      input: [
+        {
+          role: "system",
+          content: "你是 HookTea 茶飲會員後台監控助理。只回 JSON，不要 Markdown。欄位：summary, riskLevel, tags, nextAction, sentiment。riskLevel 只能是 high, medium, low。tags 是繁中短標籤陣列。",
+        },
+        {
+          role: "user",
+          content: JSON.stringify(input),
+        },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI 分析失敗：${await res.text()}`);
+  const parsed = parseAiJson(extractResponseText(await res.json()));
+  if (!parsed) throw new Error("OpenAI 回覆格式不是 JSON");
+  const riskLevel = ["high", "medium", "low"].includes(parsed.riskLevel) ? parsed.riskLevel : row.riskLevel;
+  return {
+    aiSummary: String(parsed.summary || row.summary || "").slice(0, 180),
+    aiRiskLevel: riskLevel,
+    aiTags: Array.isArray(parsed.tags) ? parsed.tags.map(x => String(x).trim()).filter(Boolean).slice(0, 8) : [],
+    aiNextAction: String(parsed.nextAction || "").slice(0, 180),
+    aiSentiment: String(parsed.sentiment || "").slice(0, 40),
+  };
+}
+
 function splitTags(value) {
   return String(value || "")
     .split(/[,，\s]+/)
@@ -1861,6 +1962,7 @@ function splitTags(value) {
 }
 
 function inferHookTeaRisk(user = {}, orders = [], pointData = null, overlay = {}) {
+  if (["high", "medium", "low"].includes(overlay.aiRiskLevel)) return overlay.aiRiskLevel;
   const pending = orders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length;
   const cancelled = orders.filter(o => String(o.status || "").toUpperCase() === "CANCELLED").length;
   const balance = Number(pointData?.balance || 0);
@@ -1872,6 +1974,7 @@ function inferHookTeaRisk(user = {}, orders = [], pointData = null, overlay = {}
 }
 
 function buildHookTeaSummary(user = {}, orders = [], pointData = null, overlay = {}) {
+  if (overlay.aiSummary) return String(overlay.aiSummary).slice(0, 180);
   const paid = orders.filter(o => String(o.status || "").toUpperCase() === "PAID").length;
   const pending = orders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length;
   const cancelled = orders.filter(o => String(o.status || "").toUpperCase() === "CANCELLED").length;
@@ -1912,6 +2015,7 @@ async function buildHookTeaMonitorRows(env) {
     const tags = Array.from(new Set([
       ...splitTags(user.tags || user.memberTags || user.memberTier || ""),
       ...splitTags(overlay.tags),
+      ...splitTags(overlay.aiTags),
     ]));
     const riskLevel = inferHookTeaRisk(user, userOrders, pointData, overlay);
     rows.push({
@@ -1931,6 +2035,10 @@ async function buildHookTeaMonitorRows(env) {
         "已付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PAID").length,
         "點數餘額": Number(pointData?.balance || 0),
         "風險": riskLevel,
+        "AI摘要": overlay.aiSummary || "",
+        "AI建議": overlay.aiNextAction || "",
+        "AI情緒": overlay.aiSentiment || "",
+        "AI更新": overlay.aiUpdatedAt || "",
       },
     });
   }
@@ -2016,7 +2124,31 @@ async function handleHookTeaMonitorApi(request, env) {
   }
   if (url.pathname === "/api/line-oa/backfill-signals" && ["GET", "POST"].includes(request.method)) {
     const rows = await buildHookTeaMonitorRows(env);
-    return json({ success: true, data: { scanned: rows.length, updated: rows.length } });
+    const body = request.method === "POST" ? await request.json().catch(() => ({})) : {};
+    const limit = Math.max(1, Math.min(20, Number(body.limit || url.searchParams.get("limit") || 10)));
+    const openAiEnabled = !!getOpenAiApiKey(env);
+    let updated = 0;
+    const errors = [];
+    if (openAiEnabled) {
+      for (const row of rows.slice(0, limit)) {
+        try {
+          const thread = await getHookTeaMonitorThread(env, row.id);
+          const signals = await generateHookTeaAiSignals(env, row, thread);
+          if (!signals) continue;
+          const overlay = await safeGetKV(env, `MONITOR_THREAD_${row.id}`, {});
+          await safePutKV(env, `MONITOR_THREAD_${row.id}`, {
+            ...overlay,
+            ...signals,
+            aiUpdatedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+          updated++;
+        } catch (err) {
+          errors.push({ id: row.id, message: err.message || String(err) });
+        }
+      }
+    }
+    return json({ success: true, data: { scanned: rows.length, updated, openAiEnabled, errors } });
   }
   if (url.pathname === "/api/line-oa/backfill-postbacks" && ["GET", "POST"].includes(request.method)) {
     return json({ success: true, data: { scanned: 0, updated: 0 } });
@@ -3529,7 +3661,8 @@ export default {
           break;
 
         case "DEPLOY_RICH_MENU":
-          if (!env.LINE_CHANNEL_ACCESS_TOKEN) throw new Error("Cloudflare 尚未綁定 LINE_CHANNEL_ACCESS_TOKEN 金鑰！");
+          const lineToken = getLineChannelAccessToken(env);
+          if (!lineToken) throw new Error("Cloudflare 尚未綁定 LINE_CHANNEL_ACCESS_TOKEN 金鑰！");
           const richMenuConfig = payload.richMenuConfig || payload.menuObject || {
             size: payload.size,
             selected: true,
@@ -3543,7 +3676,7 @@ export default {
           
           const createRes = await fetch("https://api.line.me/v2/bot/richmenu", {
               method: "POST",
-              headers: { "Authorization": `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+              headers: { "Authorization": `Bearer ${lineToken}`, "Content-Type": "application/json" },
               body: JSON.stringify(richMenuConfig)
           });
           if (!createRes.ok) throw new Error("建立 LINE 選單失敗: " + await createRes.text());
@@ -3561,7 +3694,7 @@ export default {
               
               const imgRes = await fetch(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, {
                   method: "POST",
-                  headers: { "Authorization": `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`, "Content-Type": lineImageContentType },
+                  headers: { "Authorization": `Bearer ${lineToken}`, "Content-Type": lineImageContentType },
                   body: bytesImg
               });
               if (!imgRes.ok) throw new Error("上傳圖片至 LINE 失敗: " + await imgRes.text());
@@ -3569,7 +3702,7 @@ export default {
 
           const defaultRes = await fetch(`https://api.line.me/v2/bot/user/all/richmenu/${richMenuId}`, {
               method: "POST",
-              headers: { "Authorization": `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` }
+              headers: { "Authorization": `Bearer ${lineToken}` }
           });
           if (!defaultRes.ok) throw new Error("設定 LINE 預設選單失敗: " + await defaultRes.text());
 
