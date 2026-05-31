@@ -1850,7 +1850,8 @@ function envValue(env, names) {
 
 async function requireHookTeaMonitorAdmin(request, env) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const expected = String(env.ADMIN_PASSWORD || settings.admin_password || "@1234").trim();
+  const expected = envValue(env, ["ADMIN_PASSWORD", "Admin Password", "admin_password", "HOOKTEA_ADMIN_PASSWORD"])
+    || String(settings.admin_password || "@1234").trim();
   const url = new URL(request.url);
   const provided = String(
     request.headers.get("x-hooktea-admin-password") ||
