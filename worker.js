@@ -1,5 +1,5 @@
-/**
- * Project: 人生進化 ACTION - Backend Engine (Full Integration)
+﻿/**
+ * Project: HookTea - Backend Engine (Full Integration)
  * Version: 2026.04.26.V17_Bulletproof_KV_Rescue
  * Developer: 勝利團隊 - 小李 (Backend)
  * 功能：修復游標報錯、全面替換防彈 JSON 解析、加入 GAS 自動降落傘救援機制
@@ -454,7 +454,7 @@ async function exportLowRiskWasabiSnapshot(env) {
   const manifest = {
     type: "low-risk-snapshot",
     exportedAt,
-    source: "action-worker",
+    source: "hooktea-worker",
     datasets: results,
   };
   const manifestWrite = await safePutWasabiJson(env, "data/low-risk-snapshot-manifest.json", manifest);
@@ -592,7 +592,7 @@ async function exportHighRiskWasabiSnapshot(env) {
   const manifest = {
     type: "high-risk-snapshot",
     exportedAt,
-    source: "action-worker",
+    source: "hooktea-worker",
     datasets: results,
     note: "只讀快照，不切換會員、點數、訂單讀寫來源。",
   };
@@ -1109,7 +1109,7 @@ async function importWpProduct(siteUrl, postId, authHeader) {
   const image = embeddedImage?.source_url || post.yoast_head_json?.og_image?.[0]?.url || "";
   const code = meta.product_code || meta.linecard_code || meta.sku || acf.product_code || acf.linecard_code || "";
   const status = meta.product_status || acf.product_status || "販賣中";
-  const storeName = meta.store_name || meta.shop_name || acf.store_name || acf.shop_name || "人生進化ACTION";
+  const storeName = meta.store_name || meta.shop_name || acf.store_name || acf.shop_name || "HookTea";
   const price = Number(meta.points_price || meta.point_price || meta.price || acf.points_price || acf.point_price || acf.price || 0) || 0;
 
   return normalizeProduct({
@@ -1138,7 +1138,7 @@ async function importWpProductsFromActionEndpoint(siteUrl, postIds, authHeader) 
     postId: item.postId || item.post_id || item.id,
     name: item.name || item.title,
     code: item.code || item.product_code,
-    storeName: item.storeName || item.store_name || "人生進化ACTION",
+    storeName: item.storeName || item.store_name || "HookTea",
     status: item.status || item.product_status || "販賣中",
     price: item.price || item.pointsPrice || item.points_price || 0,
     pointsPrice: item.pointsPrice || item.points_price || item.price || 0,
@@ -1512,14 +1512,14 @@ async function insertWetwPoint(settings, uid, amount, reason) {
       api_key: cfg.apiKey,
       LINE_user_id: uid,
       shop_id: cfg.shopId,
-      event_name: amount >= 0 ? "ACTION 贈點" : "ACTION 扣點",
-      event_content: reason || "ACTION 系統點數異動",
+      event_name: amount >= 0 ? "HookTea 贈點" : "HookTea 扣點",
+      event_content: reason || "HookTea 系統點數異動",
       point_type: cfg.pointType,
       get_point: amount,
       shop_user_lineid: "",
       child_shop_name: "",
       child_shop_renew: 0,
-      shop_remark: "ACTION Cloudflare Worker",
+      shop_remark: "HookTea Cloudflare Worker",
     }),
   });
   const text = await res.text();
@@ -2409,7 +2409,7 @@ export default {
             }
           }
           if (!importedProducts.length) {
-            throw new Error(`沒有成功匯入任何商品。linecard_21 目前沒有開 WordPress REST API；請先安裝 ACTION linecard 匯出外掛，或請網站工程師把 linecard_21 設定 show_in_rest=true。詳細：${importErrors.map(e => `${e.postId}: ${e.message}`).join(" / ")}`);
+            throw new Error(`沒有成功匯入任何商品。linecard_21 目前沒有開 WordPress REST API；請先安裝 HookTea linecard 匯出外掛，或請網站工程師把 linecard_21 設定 show_in_rest=true。詳細：${importErrors.map(e => `${e.postId}: ${e.message}`).join(" / ")}`);
           }
           const currentWpProducts = await safeGetProducts(env);
           const nextWpProducts = mergeProducts(currentWpProducts, importedProducts, payload.mode || "append");

@@ -1,4 +1,4 @@
-from docx import Document
+﻿from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -7,7 +7,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-OUTPUT = r"D:\OneDrive\文件\New project 6\docs\宏學管理站-資料層每日驗收SOP.docx"
+OUTPUT = r"D:\OneDrive\文件\New project 6\docs\HookTea 管理站-資料層每日驗收SOP.docx"
 
 
 def set_cell_shading(cell, fill):
@@ -282,7 +282,7 @@ def add_footer(doc):
     footer = section.footer
     p = footer.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    r = p.add_run("宏學管理站 資料層驗收 SOP")
+    r = p.add_run("HookTea 管理站 資料層驗收 SOP")
     r.font.name = "Microsoft JhengHei"
     r._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft JhengHei")
     r.font.size = Pt(8)
@@ -295,7 +295,7 @@ def build():
     add_footer(doc)
 
     title = doc.add_paragraph(style="Title")
-    title.add_run("宏學管理站 資料層每日驗收 SOP")
+    title.add_run("HookTea 管理站 資料層每日驗收 SOP")
     subtitle = doc.add_paragraph(style="Subtitle")
     subtitle.add_run("適用範圍：Wasabi 遷移檢查、R2 live fallback、低風險與高風險資料一致性驗收")
 

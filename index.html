@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>人生進化ACTION</title>
+    <title>HookTea</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚀</text></svg>">
     <!-- Version: 2026.05.08.V287_Dual_Purpose_Register -->
     <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
@@ -47,7 +47,7 @@
         
         <transition name="fade">
             <div v-if="isGlobalLoading" class="fixed inset-y-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#06C755] z-[100] flex flex-col items-center justify-center text-center">
-                <div class="mb-6 flex flex-col items-center"><h1 class="text-white text-4xl font-black tracking-widest mb-1">人生進化ACTION</h1><div class="text-[#f0fdf4] text-xs font-bold tracking-widest opacity-80 uppercase">Life Action System</div></div>
+                <div class="mb-6 flex flex-col items-center"><h1 class="text-white text-4xl font-black tracking-widest mb-1">HookTea</h1><div class="text-[#f0fdf4] text-xs font-bold tracking-widest opacity-80 uppercase">HookTea System</div></div>
                 <div class="w-8 h-8 border-4 border-white/30 border-t-white rounded-full animate-spin" v-if="!hasInitError"></div>
                 <div class="text-white/90 font-bold text-sm mt-6 tracking-widest px-6" :class="hasInitError ? 'text-red-100 font-black leading-relaxed whitespace-pre-wrap' : ''">{{ loadingText }}</div>
                 <button v-if="hasInitError" @click="retryInit" class="mt-8 px-6 py-3 bg-white/20 border border-white/40 rounded-full text-white text-sm font-bold active:scale-95 transition shadow-sm">重新嘗試連線</button>
@@ -105,14 +105,14 @@
                 
                 <div v-if="view === 'home'" class="animate-fade-in relative">
                     <div class="sticky top-0 bg-[#ffffff] z-30 border-b border-[#EEEEEE] p-4 flex items-center justify-between">
-                        <div class="font-black text-[#111111] text-[19px] tracking-tight">人生進化ACTION</div>
+                        <div class="font-black text-[#111111] text-[19px] tracking-tight">HookTea</div>
                         <div class="flex items-center gap-3">
                             <a v-if="userStatus.isAdmin" href="./mobile_admin.html" class="w-9 h-9 rounded-full bg-slate-800 text-[#06C755] flex items-center justify-center shadow-md active:scale-90 transition border border-slate-700"><i class="fas fa-shield-alt"></i></a>
                             <div @click="navigateTo('profile')" class="w-9 h-9 rounded-full overflow-hidden bg-[#F4F5F7] border border-slate-100 cursor-pointer transition active:opacity-70"><img v-if="userStatus.info?.avatar || liffProfile.pictureUrl" :src="userStatus.info?.avatar || liffProfile.pictureUrl" class="w-full h-full object-cover"><i v-else class="fas fa-user-circle text-[#DDE0E5] text-[36px]"></i></div>
                         </div>
                     </div>
 
-                    <div class="bg-white"><div class="w-full aspect-[21/9] bg-[#06C755] relative"><img v-if="sysSettings.banner_image" :src="sysSettings.banner_image" class="w-full h-full object-cover"><div v-else class="absolute inset-0 flex flex-col items-center justify-center text-white"><span class="text-3xl font-black tracking-[0.2em]">人生進化ACTION</span></div></div></div>
+                    <div class="bg-white"><div class="w-full aspect-[21/9] bg-[#06C755] relative"><img v-if="sysSettings.banner_image" :src="sysSettings.banner_image" class="w-full h-full object-cover"><div v-else class="absolute inset-0 flex flex-col items-center justify-center text-white"><span class="text-3xl font-black tracking-[0.2em]">HookTea</span></div></div></div>
                     
                     <div class="bg-white sticky top-[61px] z-20 border-b border-[#F0F0F0] py-3 shadow-sm">
                         <div class="flex overflow-x-auto hide-scrollbar px-4 gap-1.5"><button v-for="cat in categories" :key="cat" @click="activeCategory = cat" class="shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold transition-all" :class="activeCategory === cat ? 'bg-[#FF5809] text-white shadow-md' : 'bg-[#F4F5F7] text-[#666666] hover:bg-[#EAECEF]'">{{ cat }}</button></div>
@@ -157,7 +157,7 @@
                 <div v-if="view === 'videos'" class="animate-fade-in bg-[#F4F5F7] min-h-screen pb-28">
                     <div class="sticky top-0 bg-[#ffffff] z-30 border-b border-[#EEEEEE] p-4">
                         <div class="flex items-center justify-between mb-3">
-                            <h2 class="text-[17px] font-black text-[#111111]">宏學影音館</h2>
+                            <h2 class="text-[17px] font-black text-[#111111]">HookTea 影音館</h2>
                             <div class="text-[12px] font-bold text-slate-500">{{ filteredVideos.length }} 支影片</div>
                         </div>
                         <div class="flex overflow-x-auto hide-scrollbar gap-2">
@@ -242,15 +242,15 @@
                         <div class="grid grid-cols-3 gap-3 mb-6 animate-fade-in">
                             <div @click="navigateTo('points')" class="bg-white rounded-2xl p-4 text-center border border-slate-100 shadow-sm active:scale-95 transition cursor-pointer">
                                 <i class="fas fa-envelope-open-text text-3xl text-red-500 mb-2 block"></i>
-                                <div class="text-[12px] font-bold text-slate-700">紅包ACTION</div>
+                                <div class="text-[12px] font-bold text-slate-700">HookTea 紅包</div>
                             </div>
                             <div @click="navigateTo('share')" class="bg-white rounded-2xl p-4 text-center border border-slate-100 shadow-sm active:scale-95 transition cursor-pointer">
                                 <i class="fas fa-qrcode text-3xl text-[#06C755] mb-2 block"></i>
-                                <div class="text-[12px] font-bold text-slate-700">分享ACTION</div>
+                                <div class="text-[12px] font-bold text-slate-700">HookTea 分享</div>
                             </div>
                             <div @click="navigateTo('referrals')" class="bg-white rounded-2xl p-4 text-center border border-slate-100 shadow-sm active:scale-95 transition cursor-pointer">
                                 <i class="fas fa-user-friends text-3xl text-blue-500 mb-2 block"></i>
-                                <div class="text-[12px] font-bold text-slate-700">邀約ACTION</div>
+                                <div class="text-[12px] font-bold text-slate-700">HookTea 邀約</div>
                             </div>
                         </div>
 
@@ -295,7 +295,7 @@
             <div v-if="view === 'share'" class="fixed inset-y-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#F4F5F7] z-[70] flex flex-col overflow-hidden">
                 <div class="sticky top-0 bg-[#ffffff] z-30 border-b border-[#EEEEEE] p-4 flex items-center justify-between">
                     <button @click="navigateTo('profile')" class="text-[#111111] p-2 -ml-2"><i class="fas fa-arrow-left text-xl"></i></button>
-                    <h2 class="text-[19px] font-black text-slate-800">分享 ACTION</h2>
+                    <h2 class="text-[19px] font-black text-slate-800">HookTea 分享</h2>
                     <div class="w-8"></div>
                 </div>
                 <div class="flex-1 overflow-y-auto p-5 flex flex-col pb-40">
@@ -305,7 +305,7 @@
                             <img v-if="liffProfile.pictureUrl" :src="liffProfile.pictureUrl" class="w-full h-full object-cover">
                         </div>
                         <h3 class="text-lg font-black text-slate-800 relative z-10">{{ liffProfile.displayName }} 邀請您</h3>
-                        <p class="text-[13px] text-slate-500 font-bold mt-1.5 relative z-10">成為「人生進化ACTION」專屬會員</p>
+                        <p class="text-[13px] text-slate-500 font-bold mt-1.5 relative z-10">成為「HookTea」專屬會員</p>
                     </div>
                     
                     <div class="w-full space-y-3 mb-6">
@@ -341,7 +341,7 @@
             <div v-if="view === 'referrals'" class="fixed inset-y-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#F4F5F7] z-[70] flex flex-col overflow-hidden">
                 <div class="sticky top-0 bg-[#ffffff] z-30 border-b border-[#EEEEEE] p-4 flex items-center justify-between">
                     <button @click="navigateTo('profile')" class="text-[#111111] p-2 -ml-2"><i class="fas fa-arrow-left text-xl"></i></button>
-                    <h2 class="text-[19px] font-black text-slate-800">邀約 ACTION</h2>
+                    <h2 class="text-[19px] font-black text-slate-800">HookTea 邀約</h2>
                     <div class="w-8"></div>
                 </div>
                 <div class="flex-1 overflow-y-auto p-5 flex flex-col pb-40">
@@ -367,7 +367,7 @@
             <div v-if="view === 'points'" class="fixed inset-y-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#F4F5F7] z-[70] flex flex-col overflow-hidden">
                 <div class="sticky top-0 bg-[#ffffff] z-30 border-b border-[#EEEEEE] p-4 flex items-center justify-between">
                     <button @click="navigateTo('profile')" class="text-[#111111] p-2 -ml-2"><i class="fas fa-arrow-left text-xl"></i></button>
-                    <h2 class="text-[19px] font-black text-slate-800">紅包 ACTION</h2>
+                    <h2 class="text-[19px] font-black text-slate-800">HookTea 紅包</h2>
                     <div class="w-8"></div>
                 </div>
                 <div class="flex-1 overflow-y-auto p-5 flex flex-col pb-40">
@@ -1700,10 +1700,10 @@
                         if (liff.isApiAvailable('shareTargetPicker')) {
                             try {
                                 const res = await liff.shareTargetPicker([{
-                                    "type": "flex", "altText": `${liffProfile.value.displayName} 邀請您加入人生進化ACTION！`,
+                                    "type": "flex", "altText": `${liffProfile.value.displayName} 邀請您加入HookTea！`,
                                     "contents": {
                                       "type": "bubble", "hero": { "type": "image", "url": sysSettings.value.banner_image || "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?auto=format&fit=crop&w=800&q=80", "size": "full", "aspectRatio": "20:13", "aspectMode": "cover" },
-                                      "body": { "type": "box", "layout": "vertical", "contents": [ { "type": "text", "text": "人生進化 ACTION 分享專區", "weight": "bold", "size": "xl" }, { "type": "text", "text": `${liffProfile.value.displayName} 邀請您加入會員，領取專屬迎新紅包！立刻點擊下方按鈕加入我們。`, "wrap": true, "size": "sm", "color": "#666666", "margin": "md" } ] },
+                                      "body": { "type": "box", "layout": "vertical", "contents": [ { "type": "text", "text": "HookTea 分享專區", "weight": "bold", "size": "xl" }, { "type": "text", "text": `${liffProfile.value.displayName} 邀請您加入會員，領取專屬迎新紅包！立刻點擊下方按鈕加入我們。`, "wrap": true, "size": "sm", "color": "#666666", "margin": "md" } ] },
                                       "footer": { "type": "box", "layout": "vertical", "contents": [{ "type": "button", "style": "primary", "color": "#06C755", "action": { "type": "uri", "label": "點此加入領取紅包", "uri": shareUrl.value } }] }
                                     }
                                 }]);

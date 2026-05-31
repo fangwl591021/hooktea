@@ -1,4 +1,4 @@
-﻿// ACTION shop importer for logged-in WordPress admin pages.
+﻿// HookTea shop importer for logged-in WordPress admin pages.
 //
 // Usage:
 // 1. Log in to aiwe.cc WordPress.
@@ -7,7 +7,7 @@
 // 3. Paste this whole file into DevTools Console and press Enter.
 //
 // It uses your current WordPress login cookie to read wp-admin edit pages,
-// then imports the selected products into ACTION Cloudflare Worker.
+// then imports the selected products into HookTea Cloudflare Worker.
 (async () => {
   const workerUrl = "https://hooktea.fangwl591021.workers.dev";
   const targetNames = [
@@ -18,7 +18,7 @@
     "淨化香",
   ];
 
-  const adminPwd = prompt("請輸入 ACTION 後台管理密碼，用於匯入商城商品");
+  const adminPwd = prompt("請輸入 HookTea 後台管理密碼，用於匯入商城商品");
   if (!adminPwd) return;
 
   const mode = confirm("按確定：覆蓋 ACTION 目前商城商品；按取消：更新同代碼商品並保留其他商品")
@@ -150,7 +150,7 @@
       id: `PROD_wp_${postId || code || title}`.replace(/[^\w-]+/g, "_"),
       name: normalizeText(title),
       code: normalizeText(code),
-      storeName: normalizeText(storeName || "人生進化ACTION"),
+      storeName: normalizeText(storeName || "HookTea"),
       status: normalizeText(status || "販賣中"),
       price: fieldPrice,
       pointsPrice: fieldPrice,
@@ -219,7 +219,7 @@
 
   const missingImages = products.filter(p => !p.image).map(p => p.name);
   const warning = missingImages.length ? `\n\n注意：以下商品沒有抓到圖片：\n${missingImages.join("\n")}` : "";
-  if (!confirm(`已抓到 ${products.length} 筆商品，是否匯入 ACTION 商城？${warning}`)) return;
+  if (!confirm(`已抓到 ${products.length} 筆商品，是否匯入 HookTea 商城？${warning}`)) return;
 
   const res = await fetch(workerUrl, {
     method: "POST",
@@ -233,5 +233,5 @@
   const json = await res.json();
   console.log("ACTION import result:", json);
   if (json.status !== "success") throw new Error(json.message || JSON.stringify(json));
-  alert(`匯入完成：${json.data.count} 筆。請回 ACTION 商城重新整理確認圖片與資料。`);
+  alert(`匯入完成：${json.data.count} 筆。請回 HookTea 商城重新整理確認圖片與資料。`);
 })();

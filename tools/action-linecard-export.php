@@ -1,7 +1,7 @@
-<?php
+﻿<?php
 /**
  * Plugin Name: ACTION Linecard Export API
- * Description: Provides a private REST endpoint for exporting linecard_21 products to ACTION shop.
+ * Description: Provides a private REST endpoint for exporting linecard_21 products to HookTea shop.
  * Version: 1.0.0
  */
 
@@ -58,7 +58,7 @@ function action_linecard_export_products(WP_REST_Request $request) {
             'shop_name',
             'vendor',
             '店家名稱',
-        ), '人生進化ACTION');
+        ), 'HookTea');
         $status = action_linecard_meta_first($post_id, array(
             'product_status',
             'sell_status',

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>宏學管理站</title>
+    <title>HookTea 管理站</title>
     <!-- Version: 2026.05.08.V297_Color_And_Auto_Sync_UI -->
     <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <script src="https://unpkg.com/vue@3.3.4/dist/vue.global.prod.js"></script>
@@ -57,7 +57,7 @@
                 <div class="absolute top-0 left-0 w-full h-1.5 bg-[#06C755]"></div>
                 <div class="mb-8">
                     <div class="w-14 h-14 bg-[#f0fdf4] text-[#06C755] rounded-xl flex items-center justify-center text-2xl mx-auto mb-4 border border-[#dcfce7]"><i class="fas fa-shield-alt"></i></div>
-                    <h2 class="text-xl font-bold text-slate-800">宏學管理站</h2>
+                    <h2 class="text-xl font-bold text-slate-800">HookTea 管理站</h2>
                     <p class="text-slate-500 text-sm mt-1.5 font-medium">系統安全驗證</p>
                 </div>
                 <div class="space-y-4">
@@ -77,7 +77,7 @@
 
         <div v-else class="flex min-h-screen">
             <aside class="sidebar">
-                <div class="sidebar-brand">宏學管理站</div>
+                <div class="sidebar-brand">HookTea 管理站</div>
                 <nav class="flex-grow mt-2 overflow-y-auto hide-scrollbar">
                     <div class="nav-group mb-2">
                         <div @click="toggleGroup('groupA')" class="nav-group-header"><span>📦 營運中心</span><i class="fas" :class="groups.groupA ? 'fa-chevron-down' : 'fa-chevron-right'"></i></div>
@@ -1067,7 +1067,7 @@
 
                     <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                         <label class="block text-[14px] font-bold text-slate-700 mb-2">觸發關鍵字 / Postback Data <span class="text-red-500">*</span></label>
-                        <input type="text" v-model="editingFlexRule.keyword" class="input-field bg-slate-50 font-bold mb-2" placeholder="例如：ACTION會員專區">
+                        <input type="text" v-model="editingFlexRule.keyword" class="input-field bg-slate-50 font-bold mb-2" placeholder="例如：HookTea會員專區">
                         <p class="text-[12px] text-slate-500 font-bold"><i class="fas fa-info-circle text-[#06C755] mr-1"></i> 請將圖文選單編輯器中的「回傳 Data」設為此關鍵字，即可無縫觸發！</p>
                     </div>
 
@@ -1941,7 +1941,7 @@
                     };
 
                     const courseLocationOptions = computed(() => {
-                        const defaults = ['宏學教室', '線上', '另行通知'];
+                        const defaults = ['HookTea 教室', '線上', '另行通知'];
                         const saved = normalizeLocationList(sysSettings.value.course_locations);
                         const used = courses.value.map(c => String(c?.location || '').trim()).filter(Boolean);
                         return Array.from(new Set([...defaults, ...saved, ...used]));
@@ -2621,7 +2621,7 @@
                         const rows = filteredMembers.value;
                         if (!rows.length) return alert('目前沒有符合條件的會員資料可以匯出。');
                         const suffix = showDeletedMembers.value ? '隱藏名單' : '一般名單';
-                        downloadExcel(`宏學_會員CRM_${suffix}_${reportDate()}.xls`, buildMemberReportRows(rows), {
+                        downloadExcel(`HookTea_會員CRM_${suffix}_${reportDate()}.xls`, buildMemberReportRows(rows), {
                             widths: [150, 150, 140, 160, 90, 130, 260, 360, 180],
                             textColumns: [0, 1, 2, 3, 4, 5, 6, 7, 8]
                         });
@@ -2657,7 +2657,7 @@
                             alert("目前沒有符合條件的課程訂單可以匯出。");
                             return;
                         }
-                        downloadExcel(`宏學_課程報表_${reportDate()}.xls`, buildOrderReportRows(courseOrders), {
+                        downloadExcel(`HookTea_課程報表_${reportDate()}.xls`, buildOrderReportRows(courseOrders), {
                             widths: [150, 170, 140, 150, 280, 110, 110, 110, 110, 220, 160],
                             textColumns: [0, 1, 2, 3, 4, 8, 9, 10],
                             numericColumns: [5, 6, 7]
@@ -2672,7 +2672,7 @@
                             alert('目前沒有符合條件的預約資料可以匯出。');
                             return;
                         }
-                        downloadExcel(`宏學_預約報表_${reportDate()}.xls`, buildBookingReportRows(rows), {
+                        downloadExcel(`HookTea_預約報表_${reportDate()}.xls`, buildBookingReportRows(rows), {
                             widths: [150, 170, 120, 120, 130, 260, 130, 260, 150, 240, 110, 110, 110, 110, 110, 110, 110, 220],
                             textColumns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17],
                             numericColumns: [10, 11, 12, 13, 14, 15]
@@ -2917,7 +2917,7 @@
                     };
 
                     const openNewProductModal = () => {
-                        editingProduct.value = { id: 'PROD_NEW_' + Date.now(), name: '', code: '', storeName: '人生進化ACTION', status: '販賣中', price: 0, pointsPrice: 0, stock: null, image: '', description: '', isPublished: true };
+                        editingProduct.value = { id: 'PROD_NEW_' + Date.now(), name: '', code: '', storeName: 'HookTea', status: '販賣中', price: 0, pointsPrice: 0, stock: null, image: '', description: '', isPublished: true };
                     };
 
                     const openEditProductModal = (p) => { editingProduct.value = JSON.parse(JSON.stringify(p)); };
@@ -3545,7 +3545,7 @@
                           }
                         };
                         
-                        editingFlexRule.value.keyword = "ACTION會員專區";
+                        editingFlexRule.value.keyword = "HookTea會員專區";
                         editingFlexRule.value.replyType = "FLEX";
                         editingFlexRule.value.payload = JSON.stringify(template, null, 2);
                         
