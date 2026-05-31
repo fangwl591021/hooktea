@@ -1713,6 +1713,18 @@ async function serveStaticHtml(request, env, corsHeaders) {
   let fileName = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
   if (!fileName) fileName = "index.html";
   if (!STATIC_HTML_FILES.has(fileName)) return null;
+  const rawUrl = `https://raw.githubusercontent.com/fangwl591021/hooktea/main/${fileName}`;
+  try {
+    const rawRes = await fetch(rawUrl, { headers: { "User-Agent": "hooktea-worker" } });
+    if (rawRes.ok) {
+      const headers = new Headers(corsHeaders);
+      headers.set("Content-Type", "text/html; charset=utf-8");
+      headers.set("Cache-Control", "no-cache");
+      return new Response(request.method === "HEAD" ? null : await rawRes.text(), { headers });
+    }
+  } catch (e) {
+    console.error(`[StaticHTML] GitHub raw fallback to R2: ${fileName}`, e);
+  }
   const object = await env["act-image"]?.get(`static/${fileName}`);
   if (!object) return null;
   const headers = new Headers(corsHeaders);
@@ -1720,6 +1732,80 @@ async function serveStaticHtml(request, env, corsHeaders) {
   headers.set("Content-Type", "text/html; charset=utf-8");
   headers.set("Cache-Control", "no-cache");
   return new Response(request.method === "HEAD" ? null : object.body, { headers });
+}
+
+function getLinePayConfig(env, settings = {}) {
+  const mode = String(env.LINEPAY_ENV || settings.linepay_env || "sandbox").toLowerCase();
+  const channelId = String(env.LINEPAY_CHANNEL_ID || settings.linepay_channel_id || "").trim();
+  const channelSecret = String(env.LINEPAY_CHANNEL_SECRET || settings.linepay_channel_secret || "").trim();
+  const currency = String(env.LINEPAY_CURRENCY || settings.linepay_currency || "TWD").trim() || "TWD";
+  const baseUrl = mode === "production" ? "https://api-pay.line.me" : "https://sandbox-api-pay.line.me";
+  return {
+    mode,
+    baseUrl,
+    channelId,
+    channelSecret,
+    currency,
+    deviceProfileId: String(env.LINEPAY_DEVICE_PROFILE_ID || settings.linepay_device_profile_id || "").trim(),
+    deviceType: String(env.LINEPAY_DEVICE_TYPE || settings.linepay_device_type || "").trim(),
+    configured: !!(channelId && channelSecret),
+  };
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i += 1) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function linePaySignature(secret, apiPath, bodyText, nonce) {
+  const message = `${secret}${apiPath}${bodyText || ""}${nonce}`;
+  const signature = await hmacSha256(secret, message);
+  return arrayBufferToBase64(signature);
+}
+
+function parseLinePayJson(text) {
+  return JSON.parse(String(text || "{}").replace(/:\s*(\d{16,})\b/g, ': "$1"'));
+}
+
+async function callLinePayApi(env, settings, method, apiPath, body = null) {
+  const cfg = getLinePayConfig(env, settings);
+  if (!cfg.configured) throw new Error("LINE Pay 尚未設定 LINEPAY_CHANNEL_ID / LINEPAY_CHANNEL_SECRET");
+  const nonce = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
+  const bodyText = body ? JSON.stringify(body) : "";
+  const headers = {
+    "Content-Type": "application/json",
+    "X-LINE-ChannelId": cfg.channelId,
+    "X-LINE-Authorization-Nonce": nonce,
+    "X-LINE-Authorization": await linePaySignature(cfg.channelSecret, apiPath, bodyText, nonce),
+  };
+  if (cfg.deviceProfileId) headers["X-LINE-MerchantDeviceProfileId"] = cfg.deviceProfileId;
+  if (cfg.deviceType) headers["X-LINE-MerchantDeviceType"] = cfg.deviceType;
+  const res = await fetch(`${cfg.baseUrl}${apiPath}`, {
+    method,
+    headers,
+    body: bodyText || undefined,
+  });
+  const data = parseLinePayJson(await res.text());
+  if (!res.ok || data.returnCode !== "0000") {
+    throw new Error(`LINE Pay ${apiPath} failed: ${data.returnCode || res.status} ${data.returnMessage || res.statusText}`);
+  }
+  return data;
+}
+
+async function updateLinePayOrder(env, ctx, orderId, transactionId, patch) {
+  const orders = await safeGetKV(env, "ORDERS", []);
+  const idx = (Array.isArray(orders) ? orders : []).findIndex(o => o && String(o.orderId) === String(orderId));
+  if (idx < 0) throw new Error("找不到 LINE Pay 訂單");
+  orders[idx] = {
+    ...orders[idx],
+    ...patch,
+    linePayTransactionId: transactionId || orders[idx].linePayTransactionId || "",
+    updatedAt: new Date().toISOString(),
+  };
+  await putOrdersKV(env, ctx, orders);
+  return orders[idx];
 }
 
 export default {
@@ -1759,6 +1845,12 @@ export default {
     }
     if (url.searchParams.get("action") === "NEWEBPAY_NOTIFY") {
       return this.handleNewebpayNotify(request, env, ctx);
+    }
+    if (url.searchParams.get("action") === "LINEPAY_CONFIRM") {
+      return this.handleLinePayConfirm(request, env, ctx);
+    }
+    if (url.searchParams.get("action") === "LINEPAY_CANCEL") {
+      return this.handleLinePayCancel(request, env, ctx);
     }
 
     if (request.method === "POST") {
@@ -3236,7 +3328,8 @@ export default {
             ...payload,
             orderId: paymentOrder.orderId,
             amount: paymentAmount,
-            courseName: paymentOrder.type === "PRODUCT" ? (paymentOrder.productName || "商城商品") : (payload.courseName || paymentOrder.courseId || "人生進化課程"),
+            paymentMethod: payload?.paymentMethod || paymentOrder.paymentMethod || "NEWEBPAY",
+            courseName: paymentOrder.type === "PRODUCT" ? (paymentOrder.productName || "商城商品") : (payload.courseName || paymentOrder.courseId || "HookTea課程"),
           }, env);
           break;
 
@@ -3285,7 +3378,58 @@ export default {
     }
   },
 
+  async prepareLinePayPayment(payload, env) {
+    const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+    const cfg = getLinePayConfig(env, settings);
+    const amount = Math.max(0, Math.floor(Number(payload.amount || 0)));
+    if (amount <= 0) throw new Error("LINE Pay 付款金額必須大於 0");
+    const orderId = String(payload.orderId || `HT${Date.now()}`).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 100);
+    const workerUrl = String(payload.workerUrl || "").replace(/\/+$/, "");
+    if (!workerUrl) throw new Error("缺少 LINE Pay 回呼網址");
+    const originalReturnUrl = String(payload.returnUrl || "");
+    const confirmUrl = `${workerUrl}?action=LINEPAY_CONFIRM&orderId=${encodeURIComponent(orderId)}${originalReturnUrl ? `&redirect=${encodeURIComponent(originalReturnUrl)}` : ""}`;
+    const cancelUrl = `${workerUrl}?action=LINEPAY_CANCEL&orderId=${encodeURIComponent(orderId)}${originalReturnUrl ? `&redirect=${encodeURIComponent(originalReturnUrl)}` : ""}`;
+    const productName = String(payload.courseName || "HookTea 訂單").slice(0, 400);
+    const body = {
+      amount,
+      currency: cfg.currency,
+      orderId,
+      packages: [{
+        id: "hooktea",
+        amount,
+        products: [{
+          id: orderId,
+          name: productName,
+          quantity: 1,
+          price: amount,
+        }],
+      }],
+      redirectUrls: {
+        confirmUrl,
+        cancelUrl,
+      },
+    };
+    const data = await callLinePayApi(env, settings, "POST", "/v4/payments/request", body);
+    const transactionId = String(data?.info?.transactionId || "");
+    await updateLinePayOrder(env, null, orderId, transactionId, {
+      paymentMethod: "LINEPAY",
+      paymentStatus: "LINEPAY_REQUESTED",
+      linePayRequestedAt: new Date().toISOString(),
+    });
+    return {
+      provider: "LINEPAY",
+      orderId,
+      transactionId,
+      paymentUrl: data?.info?.paymentUrl || {},
+      redirectUrl: data?.info?.paymentUrl?.web || data?.info?.paymentUrl?.app || "",
+      mode: cfg.mode,
+    };
+  },
+
   async preparePayment(payload, env) {
+    if (String(payload.paymentMethod || "").toUpperCase() === "LINEPAY") {
+      return this.prepareLinePayPayment(payload, env);
+    }
     const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
     const mId = sets.newebpay_merchant_id;
     const hKey = sets.newebpay_hash_key;
@@ -3415,6 +3559,87 @@ export default {
     })());
 
     return new Response("OK", { status: 200 });
+  },
+
+  async handleLinePayConfirm(request, env, ctx) {
+    const url = new URL(request.url);
+    const orderId = String(url.searchParams.get("orderId") || "").trim();
+    const redirectUrl = url.searchParams.get("redirect") || "";
+    const queryTransactionId = String(url.searchParams.get("transactionId") || "").trim();
+    try {
+      if (!orderId) throw new Error("缺少 LINE Pay 訂單編號");
+      const orders = await safeGetKV(env, "ORDERS", []);
+      const order = (Array.isArray(orders) ? orders : []).find(o => o && String(o.orderId) === orderId);
+      if (!order) throw new Error("找不到 LINE Pay 訂單");
+      const transactionId = queryTransactionId || String(order.linePayTransactionId || "").trim();
+      if (!transactionId) throw new Error("缺少 LINE Pay transactionId");
+      const amount = Math.max(0, Math.floor(Number(order.amount || 0)));
+      const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+      const cfg = getLinePayConfig(env, settings);
+      const data = await callLinePayApi(env, settings, "POST", `/v4/payments/${encodeURIComponent(transactionId)}/confirm`, {
+        amount,
+        currency: cfg.currency,
+      });
+      await updateLinePayOrder(env, ctx, orderId, transactionId, {
+        status: "PAID",
+        paymentStatus: "SUCCESS",
+        linePayStatus: "SUCCESS",
+        paidAt: new Date().toLocaleString(),
+        paymentAmount: amount,
+        linePayConfirmedAt: new Date().toISOString(),
+        linePayPayInfo: data?.info?.payInfo || [],
+      });
+      await appendPaymentLog(env, {
+        timestamp: new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }),
+        orderNo: orderId,
+        amount,
+        status: "SUCCESS",
+        message: "LINE Pay 付款成功，訂單已更新為已付款",
+        tradeNo: transactionId,
+        source: "LINEPAY_CONFIRM",
+      });
+      if (redirectUrl) return Response.redirect(redirectUrl, 302);
+      return new Response("LINE Pay OK", { status: 200 });
+    } catch (e) {
+      await appendPaymentLog(env, {
+        timestamp: new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }),
+        orderNo: orderId,
+        amount: 0,
+        status: "LINEPAY_CONFIRM_ERROR",
+        message: e?.message || String(e),
+        tradeNo: queryTransactionId,
+        source: "LINEPAY_CONFIRM",
+      });
+      if (redirectUrl) return Response.redirect(`${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}linepay=error`, 302);
+      return new Response(`LINE Pay confirm failed: ${e.message}`, { status: 500 });
+    }
+  },
+
+  async handleLinePayCancel(request, env, ctx) {
+    const url = new URL(request.url);
+    const orderId = String(url.searchParams.get("orderId") || "").trim();
+    const redirectUrl = url.searchParams.get("redirect") || "";
+    if (orderId) {
+      try {
+        await updateLinePayOrder(env, ctx, orderId, "", {
+          paymentStatus: "CANCELLED",
+          linePayStatus: "CANCELLED",
+        });
+        await appendPaymentLog(env, {
+          timestamp: new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }),
+          orderNo: orderId,
+          amount: 0,
+          status: "CANCELLED",
+          message: "使用者取消 LINE Pay 付款",
+          tradeNo: "",
+          source: "LINEPAY_CANCEL",
+        });
+      } catch (e) {
+        console.error("LINE Pay cancel update failed", e);
+      }
+    }
+    if (redirectUrl) return Response.redirect(`${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}linepay=cancel`, 302);
+    return new Response("LINE Pay cancelled", { status: 200 });
   },
 
   async handleNewebpayNotify(request, env, ctx) {

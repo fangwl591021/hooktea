@@ -2430,6 +2430,7 @@
                         if (!order) return '-';
                         if (order.type === 'BOOKING' || order.paymentMethod === 'TEACHER_DIRECT') return '講師自行收款';
                         if (order.remittance) return `匯款回報：末五碼 ${order.remittance}`;
+                        if (order.linePayTransactionId || order.paymentMethod === 'LINEPAY') return 'LINE Pay';
                         if (order.newebpayTradeNo || order.paymentMethod === 'NEWEBPAY') return '線上刷卡';
                         if (order.paymentMethod === 'REMITTANCE') return '銀行匯款：尚未回報';
                         if (order.paymentMethod === 'POINTS' || (Number(order.amount || 0) <= 0 && Number(order.pointsUsed || 0) > 0)) return '點數折抵';
@@ -2542,6 +2543,7 @@
                         const paymentSourceText = (order) => {
                             if (order?.type === 'BOOKING' || order?.paymentMethod === 'TEACHER_DIRECT') return '講師自收';
                             if (order?.remittance) return `銀行匯款${order.remittance ? ' 末五碼 ' + order.remittance : ''}`;
+                            if (order?.linePayTransactionId || order?.paymentMethod === 'LINEPAY') return 'LINE Pay';
                             if (order?.newebpayTradeNo || order?.paymentMethod === 'NEWEBPAY') return '線上刷卡';
                             if (order?.paymentMethod === 'REMITTANCE') return '銀行匯款';
                             if (order?.paymentMethod === 'POINTS' || (Number(order?.amount || 0) <= 0 && Number(order?.pointsUsed || 0) > 0)) return '點數全額折抵';

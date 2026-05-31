@@ -421,6 +421,7 @@
                             <h3 class="text-[17px] font-black text-[#111111] mb-4 flex items-center gap-2"><i class="fas fa-wallet text-[#06C755] text-lg"></i>選擇付款方式</h3>
                             <div class="flex gap-3">
                                 <button v-if="!selectedCourse.paymentMethod || selectedCourse.paymentMethod === 'ALL' || selectedCourse.paymentMethod === 'NEWEBPAY'" @click="paymentMethod = 'NEWEBPAY'" class="flex-1 py-4 rounded-xl border-2 font-bold text-[14px] transition-all flex flex-col items-center justify-center gap-2" :class="paymentMethod === 'NEWEBPAY' ? 'border-[#06C755] bg-green-50 text-[#06C755]' : 'border-slate-200 bg-white text-slate-400 hover:border-slate-300'"><i class="fas fa-credit-card text-2xl block"></i>線上刷卡</button>
+                                <button v-if="!selectedCourse.paymentMethod || selectedCourse.paymentMethod === 'ALL' || selectedCourse.paymentMethod === 'LINEPAY'" @click="paymentMethod = 'LINEPAY'" class="flex-1 py-4 rounded-xl border-2 font-bold text-[14px] transition-all flex flex-col items-center justify-center gap-2" :class="paymentMethod === 'LINEPAY' ? 'border-[#06C755] bg-green-50 text-[#06C755]' : 'border-slate-200 bg-white text-slate-400 hover:border-slate-300'"><i class="fab fa-line text-2xl block"></i>LINE Pay</button>
                                 <button v-if="!selectedCourse.paymentMethod || selectedCourse.paymentMethod === 'ALL' || selectedCourse.paymentMethod === 'REMITTANCE'" @click="paymentMethod = 'REMITTANCE'" class="flex-1 py-4 rounded-xl border-2 font-bold text-[14px] transition-all flex flex-col items-center justify-center gap-2" :class="paymentMethod === 'REMITTANCE' ? 'border-[#06C755] bg-green-50 text-[#06C755]' : 'border-slate-200 bg-white text-slate-400 hover:border-slate-300'"><i class="fas fa-university text-2xl block"></i>銀行匯款</button>
                             </div>
                         </div>
@@ -483,6 +484,7 @@
                             <div class="text-[13px] font-black text-slate-500 mb-3">付款方式</div>
                             <div class="flex gap-3">
                                 <button @click="paymentMethod = 'NEWEBPAY'" class="flex-1 py-3 rounded-xl border-2 font-bold text-[13px] transition-all" :class="paymentMethod === 'NEWEBPAY' ? 'border-[#06C755] bg-green-50 text-[#06C755]' : 'border-slate-200 bg-white text-slate-400'"><i class="fas fa-credit-card mr-1"></i>刷卡</button>
+                                <button @click="paymentMethod = 'LINEPAY'" class="flex-1 py-3 rounded-xl border-2 font-bold text-[13px] transition-all" :class="paymentMethod === 'LINEPAY' ? 'border-[#06C755] bg-green-50 text-[#06C755]' : 'border-slate-200 bg-white text-slate-400'"><i class="fab fa-line mr-1"></i>LINE Pay</button>
                                 <button @click="paymentMethod = 'REMITTANCE'" class="flex-1 py-3 rounded-xl border-2 font-bold text-[13px] transition-all" :class="paymentMethod === 'REMITTANCE' ? 'border-[#06C755] bg-green-50 text-[#06C755]' : 'border-slate-200 bg-white text-slate-400'"><i class="fas fa-university mr-1"></i>匯款</button>
                             </div>
                         </div>
@@ -1718,8 +1720,12 @@
                         alert("✅ 已複製邀請連結！您可以直接貼給好友了！");
                     };
 
-                    const initiatePayment = async (orderId, amount, courseName) => {
-                        const payRes = await callApi('GET_PAYMENT_PAYLOAD', { orderId: orderId, amount: amount, courseName: courseName, email: userStatus.value.info?.email || 'user@example.com', workerUrl: WORKER_URL, returnUrl: window.location.href.split('#')[0] }, false);
+                    const initiatePayment = async (orderId, amount, courseName, method = paymentMethod.value) => {
+                        const payRes = await callApi('GET_PAYMENT_PAYLOAD', { orderId: orderId, amount: amount, courseName: courseName, paymentMethod: method, email: userStatus.value.info?.email || 'user@example.com', workerUrl: WORKER_URL, returnUrl: window.location.href.split('#')[0] }, false);
+                        if (payRes && payRes.provider === 'LINEPAY' && payRes.redirectUrl) {
+                            window.location.href = payRes.redirectUrl;
+                            return;
+                        }
                         if (payRes && payRes.GatewayUrl) {
                             const form = document.createElement('form'); form.method = 'POST'; form.action = payRes.GatewayUrl; form.style.display = 'none';
                             form.target = "_top";
@@ -1765,12 +1771,13 @@
                         if (selectedCourse.value.capacity > 0 && selectedCourse.value.enrolled >= selectedCourse.value.capacity) return '名額已滿';
                         if (finalPrice.value === 0) return '確認報名 (免費/全額折抵)';
                         if (paymentMethod.value === 'NEWEBPAY') return `前往線上刷卡 ($${formatPrice(finalPrice.value)})`;
+                        if (paymentMethod.value === 'LINEPAY') return `前往 LINE Pay ($${formatPrice(finalPrice.value)})`;
                         return '確認報名並取得匯款帳號';
                     });
 
                     const executeBooking = async () => {
                         if (!userStatus.value.registered) { view.value = 'register'; return; }
-                        const paymentName = paymentMethod.value === 'NEWEBPAY' ? '線上刷卡' : '銀行匯款';
+                        const paymentName = paymentMethod.value === 'NEWEBPAY' ? '線上刷卡' : (paymentMethod.value === 'LINEPAY' ? 'LINE Pay' : '銀行匯款');
                         const cName = (selectedCourse.value.name || '').split('\n')[0];
                         let confirmMsg = finalPrice.value === 0 ? `確定使用 ${pointsToUse.value} 點紅包點數，全額抵扣報名「${cName}」嗎？` : (pointsToUse.value > 0 ? `確定使用 ${pointsToUse.value} 點紅包點數，並以「${paymentName}」結帳 $${finalPrice.value} 嗎？` : `確定以「${paymentName}」結帳 $${finalPrice.value} 嗎？`);
                         if (!confirm(confirmMsg)) return;
@@ -1780,14 +1787,14 @@
                             const res = await callApi('REGISTER', { courseId: selectedCourse.value.id, amount: finalPrice.value, note: noteText, pointsUsed: pointsToUse.value, paymentMethod: finalPrice.value <= 0 ? 'POINTS' : paymentMethod.value }, false);
                             if (res && res.orderId) {
                                 if (finalPrice.value > 0) {
-                                    if (paymentMethod.value === 'NEWEBPAY') { await initiatePayment(res.orderId, finalPrice.value, cName); return; } 
+                                    if (paymentMethod.value === 'NEWEBPAY' || paymentMethod.value === 'LINEPAY') { await initiatePayment(res.orderId, finalPrice.value, cName, paymentMethod.value); return; } 
                                     else { showRemittanceInfoModal.value = true; }
                                 } else { alert('✅ 免費/全額折抵報名成功！請至「報名紀錄」查看。'); }
                                 view.value = 'orders';
                                 const oData = await callApi('GET_USER_ORDERS', {}, true);
                                 if (oData) myOrders.value = oData;
                             } else { alert('報名失敗，無法取得訂單編號。'); }
-                        } catch (e) { console.error(e); } finally { if (paymentMethod.value !== 'NEWEBPAY' || finalPrice.value === 0) { isLoading.value = false; } }
+                        } catch (e) { console.error(e); } finally { if (!['NEWEBPAY', 'LINEPAY'].includes(paymentMethod.value) || finalPrice.value === 0) { isLoading.value = false; } }
                     };
 
                     const closeRemittanceInfoModal = async () => { showRemittanceInfoModal.value = false; view.value = 'orders'; const oData = await callApi('GET_USER_ORDERS', {}, true); if (oData) myOrders.value = oData; };
@@ -1820,7 +1827,7 @@
                         const price = selectedProduct.value?.id === product.id ? productSubtotal.value : Math.max(0, Number(product.price || 0));
                         const pointsUsed = selectedProduct.value?.id === product.id ? Math.min(productMaxDeduct.value, Math.max(0, Number(productPointsToUse.value || 0))) : 0;
                         const payable = Math.max(0, price - pointsUsed);
-                        const paymentName = payable === 0 ? '點數全額折抵' : (paymentMethod.value === 'NEWEBPAY' ? '刷卡' : '匯款');
+                        const paymentName = payable === 0 ? '點數全額折抵' : (paymentMethod.value === 'NEWEBPAY' ? '刷卡' : (paymentMethod.value === 'LINEPAY' ? 'LINE Pay' : '匯款'));
                         const confirmMsg = `確認購買「${product.name}」？\n購買數量：${formatPrice(quantity)} 件\n商品小計：$${formatPrice(price)}\n點數折抵：${formatPrice(pointsUsed)} 點\n應付金額：$${formatPrice(payable)}\n付款方式：${paymentName}`;
                         if (!confirm(confirmMsg)) return;
                         isLoading.value = true;
@@ -1836,14 +1843,14 @@
                                 if (oData) myOrders.value = oData;
                                 if (productData) products.value = productData;
                                 if (payable > 0) {
-                                    if (paymentMethod.value === 'NEWEBPAY') { await initiatePayment(res.orderId, payable, product.name); return; }
+                                    if (paymentMethod.value === 'NEWEBPAY' || paymentMethod.value === 'LINEPAY') { await initiatePayment(res.orderId, payable, product.name, paymentMethod.value); return; }
                                     showRemittanceInfoModal.value = true;
                                 } else {
                                     alert('購買成功，已完成點數折抵');
                                 }
                                 view.value = 'orders';
                             }
-                        } catch (e) { console.error(e); } finally { if (paymentMethod.value !== "NEWEBPAY" || payable === 0) isLoading.value = false; }
+                        } catch (e) { console.error(e); } finally { if (!['NEWEBPAY', 'LINEPAY'].includes(paymentMethod.value) || payable === 0) isLoading.value = false; }
                     };
 
                     const submitRemittance = async () => {
@@ -1867,7 +1874,7 @@
                         teacherCourses, editingMyCourse, isCourseImgUploading, openMyCourses, openEditMyCourse, handleCourseImgUpload, saveMyCourse, deleteMyCourse,
                         teacherReport, teacherBookings, showTeacherDeductModal, teacherDeductForm, openTeacherReport, openTeacherBookings, teacherBookingStatusText, teacherBookingStatusClass, canCompleteTeacherBooking, completeTeacherBooking, downloadTeacherReportCsv, openTeacherDeduct, submitTeacherDeduct,
                         openCourseDetail: (c) => { 
-                            selectedCourse.value = c; const pm = c.paymentMethod || 'ALL'; paymentMethod.value = (pm === 'REMITTANCE') ? 'REMITTANCE' : 'NEWEBPAY';
+                            selectedCourse.value = c; const pm = c.paymentMethod || 'ALL'; paymentMethod.value = (pm === 'REMITTANCE' || pm === 'LINEPAY') ? pm : 'NEWEBPAY';
                             view.value = 'courseDetail'; window.scrollTo(0,0); 
                         },
                         pointsToUse, pointDeductionLabel, finalPrice, checkoutButtonText, executeBooking,
