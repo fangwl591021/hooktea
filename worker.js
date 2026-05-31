@@ -1695,6 +1695,33 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   return { settings, userData, userId, lineProfile: verifiedLineProfile || null, isAdmin, canCrmLogin, canHeadquarter: isHeadquarterByUser, canSystemTools, isTeacher, hasVerifiedLineUser, tokenVerificationError, crmLineLoginEnabled, adminPasswordOk: false };
 }
 
+const STATIC_HTML_FILES = new Set([
+  "index.html",
+  "admin.html",
+  "booking.html",
+  "checkin.html",
+  "consultation.html",
+  "consult_admin.html",
+  "menu.html",
+  "mobile_admin.html",
+  "videos.html",
+]);
+
+async function serveStaticHtml(request, env, corsHeaders) {
+  if (request.method !== "GET" && request.method !== "HEAD") return null;
+  const url = new URL(request.url);
+  let fileName = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+  if (!fileName) fileName = "index.html";
+  if (!STATIC_HTML_FILES.has(fileName)) return null;
+  const object = await env["act-image"]?.get(`static/${fileName}`);
+  if (!object) return null;
+  const headers = new Headers(corsHeaders);
+  object.writeHttpMetadata(headers);
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  headers.set("Cache-Control", "no-cache");
+  return new Response(request.method === "HEAD" ? null : object.body, { headers });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const corsHeaders = {
@@ -1719,6 +1746,9 @@ export default {
       headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-line-signature');
       return new Response(object.body, { headers });
     }
+
+    const staticResponse = await serveStaticHtml(request, env, corsHeaders);
+    if (staticResponse) return staticResponse;
 
     if (url.pathname === "/hub-status") {
         return new Response(JSON.stringify({ gas: 'success', forward: 'success', line: 'success', allGood: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
