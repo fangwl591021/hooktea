@@ -4134,39 +4134,44 @@ export default {
   async handleLineWebhook(request, env, ctx) {
     const rawText = await request.text();
     const signature = request.headers.get("x-line-signature") || "";
+    try {
+      let parsedPayload = {};
+      if (rawText) parsedPayload = JSON.parse(rawText);
+      const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
+      const unhandledEvents = [];
+      await safePutKV(env, "LINE_WEBHOOK_LAST", {
+        receivedAt: new Date().toISOString(),
+        eventCount: events.length,
+        tokenConfigured: !!getLineChannelAccessToken(env),
+        texts: events.map(event => ({
+          type: event?.type || "",
+          userId: event?.source?.userId || "",
+          messageType: event?.message?.type || "",
+          text: event?.message?.type === "text" ? String(event.message.text || "").slice(0, 80) : "",
+        })).slice(0, 10),
+      }, { expirationTtl: 86400 });
 
-    ctx.waitUntil((async () => {
-      try {
-        let parsedPayload = {};
-        if (rawText) parsedPayload = JSON.parse(rawText);
-
-        const promises = [];
-        const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
-        promises.push(safePutKV(env, "LINE_WEBHOOK_LAST", {
-          receivedAt: new Date().toISOString(),
-          eventCount: events.length,
-          tokenConfigured: !!getLineChannelAccessToken(env),
-          texts: events.map(event => ({
-            type: event?.type || "",
-            userId: event?.source?.userId || "",
-            messageType: event?.message?.type || "",
-            text: event?.message?.type === "text" ? String(event.message.text || "").slice(0, 80) : "",
-          })).slice(0, 10),
-        }, { expirationTtl: 86400 }));
-        for (const event of events) {
-          if (event?.type === "message" && event?.message?.type === "text") {
-            promises.push(
-              handleLineMemberBindText(env, ctx, event).catch(e => console.error("LINE Bind Error:", e))
-            );
-          }
+      for (const event of events) {
+        let handled = false;
+        if (event?.type === "message" && event?.message?.type === "text") {
+          handled = await handleLineMemberBindText(env, ctx, event).catch(e => {
+            console.error("LINE Bind Error:", e);
+            return false;
+          });
         }
+        if (!handled) unhandledEvents.push(event);
+      }
+
+      const forwardPayload = { ...parsedPayload, events: unhandledEvents };
+      ctx.waitUntil((async () => {
+        const promises = [];
 
         if (env.GAS_URL) {
           promises.push(
             fetch(env.GAS_URL, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "LINE_WEBHOOK", payload: parsedPayload }),
+              body: JSON.stringify({ action: "LINE_WEBHOOK", payload: forwardPayload }),
               redirect: "follow"
             }).catch(e => console.error("GAS Webhook Error:", e))
           );
@@ -4175,7 +4180,7 @@ export default {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/7364/";
         
-        if (forwardWebhook) {
+        if (forwardWebhook && unhandledEvents.length) {
           promises.push(
             fetch(forwardWebhook, {
               method: "POST",
@@ -4183,17 +4188,17 @@ export default {
                 "Content-Type": "application/json",
                 "x-line-signature": signature
               },
-              body: rawText, 
+              body: JSON.stringify(forwardPayload), 
               redirect: "follow"
             }).catch(e => console.error("Forward Webhook Error:", e))
           );
         }
 
         await Promise.all(promises);
-      } catch (err) {
-        console.error("Webhook processing error:", err);
-      }
-    })());
+      })());
+    } catch (err) {
+      console.error("Webhook processing error:", err);
+    }
 
     return new Response("OK", { status: 200 });
   },
