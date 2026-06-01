@@ -1843,7 +1843,7 @@
                         isLoading.value = true;
                         try {
                             sessionStorage.setItem('act_admin_pwd', pwd);
-                            liffProfile.value = { userId: 'ADMIN_PASSWORD', displayName: 'HookTea Admin', pictureUrl: '' };
+                            liffProfile.value = { userId: 'tonyfang', displayName: 'Tonyfang', pictureUrl: '' };
                             const checkRes = await callApi('CHECK_USER', {}, false);
                             currentAccess.value = {
                                 isAdmin: true,
@@ -1851,8 +1851,8 @@
                                 canHeadquarter: true,
                                 isTeacher: false,
                                 canSystemTools: true,
-                                userId: checkRes?.userId || 'ADMIN_PASSWORD',
-                                name: checkRes?.name || 'HookTea Admin',
+                                userId: checkRes?.userId || 'tonyfang',
+                                name: checkRes?.name || 'Tonyfang',
                                 pictureUrl: checkRes?.pictureUrl || ''
                             };
                             const cachedAccess = JSON.parse(localStorage.getItem('act_crm_access') || '{}');

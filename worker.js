@@ -27,6 +27,13 @@ const utils = {
     return res;
   }
 };
+
+const PASSWORD_ADMIN_USER = {
+  userId: "tonyfang",
+  name: "Tonyfang",
+  displayName: "Tonyfang",
+  role: "admin",
+};
 async function aesEncrypt(text, key, iv) {
   const cryptoKey = await crypto.subtle.importKey('raw', utils.prepareKey(key, 32), { name: 'AES-CBC' }, false, ['encrypt']);
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: utils.prepareIV(iv) }, cryptoKey, utils.stringToBytes(text));
@@ -1887,8 +1894,8 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   if (payloadAdminPassword && acceptedAdminPasswords.has(payloadAdminPassword)) {
     return {
       settings,
-      userData: { name: "HookTea Admin", displayName: "HookTea Admin", role: "admin" },
-      userId: "ADMIN_PASSWORD",
+      userData: { ...PASSWORD_ADMIN_USER },
+      userId: PASSWORD_ADMIN_USER.userId,
       lineProfile: null,
       isAdmin: true,
       canCrmLogin: true,
