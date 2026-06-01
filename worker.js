@@ -732,6 +732,7 @@ async function putOrdersKV(env, ctx, orders) {
 
 async function putUserKV(env, ctx, uid, user) {
   await safePutKV(env, `USER_${uid}`, user || {});
+  await updateUsersIndexRecord(env, user && user.userId ? user : { ...(user || {}), userId: uid });
   if (ctx) observeHighRiskDualWrite(env, ctx, "users");
   else await observeHighRiskDualWrite(env, null, "users");
 }
@@ -1256,6 +1257,9 @@ async function importWpProductsFromActionEndpoint(siteUrl, postIds, authHeader) 
 }
 
 async function listUserRecords(env) {
+  const indexedUsers = await safeGetKV(env, "USERS_INDEX", []);
+  if (Array.isArray(indexedUsers) && indexedUsers.length) return indexedUsers.filter(user => user && user.userId);
+
   const users = [];
   try {
     let listComplete = false;
@@ -1850,7 +1854,11 @@ async function fillMissingLineProfile(env, user) {
   const hasName = String(user.name || user.displayName || "").trim();
   const hasPicture = String(user.pictureUrl || user.avatar || "").trim();
   if (hasName && hasPicture) return user;
-  const profile = await fetchLineBotProfile(env, user.userId);
+  const profileUid = [user.lineUserId, user.linkedLineUid, user.userId]
+    .map(value => String(value || "").trim())
+    .find(value => /^U[a-f0-9]{32}$/i.test(value));
+  if (!profileUid) return user;
+  const profile = await fetchLineBotProfile(env, profileUid);
   if (!profile?.displayName && !profile?.pictureUrl) return user;
   return {
     ...user,
@@ -2240,6 +2248,19 @@ async function listHookTeaUsers(env) {
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
   return users;
+}
+
+async function updateUsersIndexRecord(env, user) {
+  if (!user || !user.userId) return;
+  try {
+    const indexedUsers = await safeGetKV(env, "USERS_INDEX", []);
+    if (!Array.isArray(indexedUsers) || !indexedUsers.length) return;
+    const nextUsers = indexedUsers.filter(item => item && item.userId !== user.userId);
+    nextUsers.push(user);
+    await safePutKV(env, "USERS_INDEX", uniqueUsersById(nextUsers));
+  } catch (e) {
+    console.error("[UsersIndex] Failed to update USERS_INDEX", e);
+  }
 }
 
 async function buildHookTeaMonitorRows(env) {
@@ -3174,34 +3195,7 @@ export default {
         // 🚀 終極修復：無敵防爆、智能分頁、加上 GAS 降落傘救援
         // ==============================================
         case "ADMIN_GET_DATA":
-          let localUsers = [];
-          try {
-              let listComplete = false;
-              let cursor = null;
-              
-              // 1. 嚴謹分頁讀取 (修正之前 undefined 造成的當機)
-              while (!listComplete) {
-                  const options = { prefix: "USER_" };
-                  if (cursor) options.cursor = cursor;
-                  
-                  const list = await env.ACTION_DATA.list(options);
-                  
-                  const chunkSize = 20; 
-                  for (let i = 0; i < list.keys.length; i += chunkSize) {
-                      const chunk = list.keys.slice(i, i + chunkSize);
-                      // 2. 嚴謹防彈解析：即便有壞掉的資料，也不會中止讀取
-                      const chunkUsers = await Promise.all(chunk.map(async k => {
-                          return await safeGetKV(env, k.name, null);
-                      }));
-                      localUsers.push(...chunkUsers.filter(u => u !== null));
-                  }
-                  
-                  listComplete = list.list_complete;
-                  cursor = list.cursor;
-              }
-          } catch(e) { console.error("[KV Sync Error] 使用者讀取異常:", e); }
-          
-          localUsers = uniqueUsersById(await listUserRecords(env));
+          let localUsers = uniqueUsersById(await listUserRecords(env));
           let repairedLineNames = false;
           localUsers = await Promise.all(localUsers.map(async user => {
               const filledUser = await fillMissingLineProfile(env, user);
