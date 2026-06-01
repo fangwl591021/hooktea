@@ -1464,6 +1464,74 @@ async function sendLineMulticast(env, recipients, messages) {
   return { sent, failed: ids.length - sent, total: ids.length, errors };
 }
 
+async function replyLineMessage(env, replyToken, messages) {
+  const token = getLineChannelAccessToken(env);
+  const lineReplyToken = String(replyToken || "").trim();
+  if (!token || !lineReplyToken) return { ok: false, skipped: true };
+  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      replyToken: lineReplyToken,
+      messages: Array.isArray(messages) ? messages : [messages],
+    }),
+  });
+  if (!res.ok) return { ok: false, status: res.status, text: await res.text() };
+  return { ok: true };
+}
+
+function textLineMessage(text) {
+  return { type: "text", text: String(text || "").slice(0, 5000) };
+}
+
+function extractTaiwanPhone(text) {
+  const digits = normalizeMemberPhone(text);
+  return /^09\d{8}$/.test(digits) ? digits : "";
+}
+
+async function handleLineMemberBindText(env, ctx, event) {
+  const uid = String(event?.source?.userId || "").trim();
+  const replyToken = event?.replyToken || "";
+  const text = String(event?.message?.text || "").trim();
+  if (!uid || !replyToken || !text) return false;
+  const pendingKey = `LINE_BIND_PENDING_${uid}`;
+  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
+  if (binding?.legacyUserId && /^(綁定會員|會員綁定|綁定點數|我的點數)$/.test(text)) {
+    const member = await safeGetKV(env, `USER_${binding.legacyUserId}`, {});
+    const points = await safeGetKV(env, `POINTS_${binding.legacyUserId}`, { balance: 0, logs: [] });
+    await replyLineMessage(env, replyToken, textLineMessage(`已綁定會員：${member.name || member.displayName || binding.legacyUserId}\n目前點數：${Number(points.balance || 0)} 點`));
+    return true;
+  }
+
+  const directMatch = text.match(/^(綁定會員|會員綁定|綁定點數)\s*[:：]?\s*(.+)$/);
+  const pending = await safeGetKV(env, pendingKey, null, { preferWasabi: false });
+  const directPhone = directMatch ? extractTaiwanPhone(directMatch[2]) : "";
+  const pendingPhone = pending ? extractTaiwanPhone(text) : "";
+  if (/^(綁定會員|會員綁定|綁定點數)$/.test(text)) {
+    await safePutKV(env, pendingKey, { startedAt: new Date().toISOString() }, { expirationTtl: 600 });
+    await replyLineMessage(env, replyToken, textLineMessage("請回覆您的手機號碼，例如：0912345678\n我會用這支手機幫您綁定舊會員資料與點數。"));
+    return true;
+  }
+  const phone = directPhone || pendingPhone;
+  if (!phone) return false;
+
+  const profile = await fetchLineBotProfile(env, uid);
+  const result = await bindLegacyMemberToLine(env, ctx, uid, { phone, name: profile?.displayName || "" }, { name: profile?.displayName || "", picture: profile?.pictureUrl || "" });
+  if (!result.bound) {
+    const reasonText = result.reason === "not_found"
+      ? "找不到這支手機的舊會員資料。"
+      : result.reason === "duplicate_phone"
+        ? "這支手機對到多筆舊會員，請洽店家協助人工確認。"
+        : "目前無法完成綁定。";
+    await replyLineMessage(env, replyToken, textLineMessage(`${reasonText}\n請確認手機號碼是否與舊系統會員資料相同。`));
+    return true;
+  }
+  await env.ACTION_DATA.delete(pendingKey).catch(() => {});
+  const points = await safeGetKV(env, `POINTS_${result.userId}`, { balance: 0, logs: [] });
+  await replyLineMessage(env, replyToken, textLineMessage(`綁定成功！\n會員：${result.member.name || result.member.displayName || result.userId}\n目前點數：${Number(points.balance || 0)} 點`));
+  return true;
+}
+
 async function buildPointLedgerFromCurrentLogs(env, users = []) {
   const userMap = new Map((Array.isArray(users) ? users : []).map(user => [user.userId, user]));
   const entries = [];
@@ -4062,6 +4130,13 @@ export default {
         if (rawText) parsedPayload = JSON.parse(rawText);
 
         const promises = [];
+        for (const event of parsedPayload?.events || []) {
+          if (event?.type === "message" && event?.message?.type === "text") {
+            promises.push(
+              handleLineMemberBindText(env, ctx, event).catch(e => console.error("LINE Bind Error:", e))
+            );
+          }
+        }
 
         if (env.GAS_URL) {
           promises.push(
