@@ -850,8 +850,88 @@ async function bindLegacyMemberToLine(env, ctx, lineUid, payload = {}, lineProfi
     name: member.name || member.displayName || "",
     linkedAt: new Date().toISOString(),
   });
+  await mergeLineMonitorThread(env, verifiedLineUid, found.userId);
   await mergePointDataForLineBind(env, ctx, found.userId, verifiedLineUid);
   return { bound: true, userId: found.userId, member, source: found.source };
+}
+
+function lineEventMessageText(event) {
+  const message = event?.message || {};
+  if (message.type === "text") return String(message.text || "").trim();
+  if (message.type === "image") return "[圖片]";
+  if (message.type === "video") return "[影片]";
+  if (message.type === "audio") return "[語音]";
+  if (message.type === "file") return `[檔案] ${message.fileName || ""}`.trim();
+  if (message.type === "sticker") return `[貼圖] ${message.packageId || ""}/${message.stickerId || ""}`;
+  if (event?.type === "follow") return "[加入好友]";
+  if (event?.type === "unfollow") return "[封鎖或取消好友]";
+  if (event?.type === "postback") return `[Postback] ${event.postback?.data || ""}`.trim();
+  return event?.type ? `[${event.type}]` : "";
+}
+
+async function resolveMonitorThreadIdForLine(env, lineUid) {
+  const uid = String(lineUid || "").trim();
+  if (!uid) return "";
+  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
+  if (binding?.legacyUserId) return String(binding.legacyUserId).trim();
+  return uid;
+}
+
+async function appendLineMonitorEvent(env, ctx, event) {
+  const lineUid = String(event?.source?.userId || "").trim();
+  if (!lineUid) return;
+  const text = lineEventMessageText(event);
+  if (!text) return;
+  const threadId = await resolveMonitorThreadIdForLine(env, lineUid);
+  if (!threadId) return;
+  const key = `MONITOR_THREAD_${threadId}`;
+  const overlay = await safeGetKV(env, key, {});
+  const lineMessages = Array.isArray(overlay.lineMessages) ? overlay.lineMessages : [];
+  const createdAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+  const createdTs = Date.now();
+  const nextMessage = {
+    id: event?.message?.id || `${createdTs}_${Math.random().toString(36).slice(2)}`,
+    type: "line",
+    title: "LINE 訊息",
+    text,
+    lineUserId: lineUid,
+    messageType: event?.message?.type || event?.type || "",
+    createdAt,
+    createdTs,
+  };
+  const next = {
+    ...overlay,
+    lineUserId: overlay.lineUserId || lineUid,
+    lineMessages: [nextMessage, ...lineMessages.filter(item => item?.id !== nextMessage.id)].slice(0, 80),
+    updatedAt: new Date().toISOString(),
+    lastLineMessageAt: new Date().toISOString(),
+  };
+  await safePutKV(env, key, next);
+}
+
+async function mergeLineMonitorThread(env, fromId, toId) {
+  const sourceId = String(fromId || "").trim();
+  const targetId = String(toId || "").trim();
+  if (!sourceId || !targetId || sourceId === targetId) return;
+  const fromKey = `MONITOR_THREAD_${sourceId}`;
+  const toKey = `MONITOR_THREAD_${targetId}`;
+  const source = await safeGetKV(env, fromKey, null);
+  if (!source || !Array.isArray(source.lineMessages) || !source.lineMessages.length) return;
+  const target = await safeGetKV(env, toKey, {});
+  const byId = new Map();
+  for (const msg of [...source.lineMessages, ...(Array.isArray(target.lineMessages) ? target.lineMessages : [])]) {
+    if (msg?.id) byId.set(msg.id, msg);
+  }
+  const lineMessages = Array.from(byId.values())
+    .sort((a, b) => Number(b.createdTs || 0) - Number(a.createdTs || 0))
+    .slice(0, 80);
+  await safePutKV(env, toKey, {
+    ...target,
+    lineMessages,
+    lineUserId: target.lineUserId || source.lineUserId || sourceId,
+    updatedAt: new Date().toISOString(),
+    lastLineMessageAt: target.lastLineMessageAt || source.lastLineMessageAt || new Date().toISOString(),
+  });
 }
 
 async function wasabiHeadObject(env, key) {
@@ -2232,6 +2312,8 @@ function inferHookTeaRisk(user = {}, orders = [], pointData = null, overlay = {}
 
 function buildHookTeaSummary(user = {}, orders = [], pointData = null, overlay = {}) {
   if (overlay.aiSummary) return String(overlay.aiSummary).slice(0, 180);
+  const latestLine = Array.isArray(overlay.lineMessages) ? overlay.lineMessages[0] : null;
+  if (latestLine?.text) return `LINE：${String(latestLine.text).slice(0, 120)}`;
   const paid = orders.filter(o => String(o.status || "").toUpperCase() === "PAID").length;
   const pending = orders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length;
   const cancelled = orders.filter(o => String(o.status || "").toUpperCase() === "CANCELLED").length;
@@ -2312,7 +2394,7 @@ async function buildHookTeaMonitorRows(env, options = {}) {
   const orders = detailed ? await safeGetKV(env, "ORDERS", []) : [];
   const pointRows = detailed ? await listPointRecords(env) : [];
   const pointsByUid = new Map(pointRows.map(row => [String(row.userId || "").trim(), row]));
-  const overlays = detailed ? await listMonitorThreadOverlays(env) : [];
+  const overlays = await listMonitorThreadOverlays(env);
   const overlayByUid = new Map(overlays.map(row => [String(row.id || "").trim(), row]));
   const rows = [];
   for (const user of users) {
@@ -2399,6 +2481,14 @@ async function getHookTeaMonitorThread(env, id) {
     },
   };
   const messages = [];
+  for (const msg of (Array.isArray(overlay.lineMessages) ? overlay.lineMessages : []).slice(0, 80)) {
+    messages.push({
+      type: "line",
+      title: msg.title || "LINE 訊息",
+      text: msg.text || "",
+      createdAt: msg.createdAt || msg.createdTs || "",
+    });
+  }
   for (const order of userOrders.slice(0, 20)) {
     messages.push({
       type: "order",
@@ -4273,6 +4363,9 @@ export default {
 
       for (const event of events) {
         let handled = false;
+        await appendLineMonitorEvent(env, ctx, event).catch(e => {
+          console.error("LINE Monitor Append Error:", e);
+        });
         if (event?.type === "message" && event?.message?.type === "text") {
           handled = await handleLineMemberBindText(env, ctx, event).catch(e => {
             console.error("LINE Bind Error:", e);
