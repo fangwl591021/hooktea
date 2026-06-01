@@ -1443,7 +1443,9 @@ function selectBroadcastAudience(users, audience = {}) {
 async function sendLineMulticast(env, recipients, messages) {
   const token = getLineChannelAccessToken(env);
   if (!token) throw new Error("Cloudflare 尚未綁定 LINE_CHANNEL_ACCESS_TOKEN 金鑰！");
-  const ids = [...new Set((recipients || []).map(user => String(user.userId || "").trim()).filter(Boolean))];
+  const ids = [...new Set((recipients || [])
+    .map(user => String(user.lineUserId || user.linkedLineUid || user.lineUid || user.userId || "").trim())
+    .filter(id => /^U[a-fA-F0-9]{32,}$/.test(id)))];
   const chunks = [];
   for (let i = 0; i < ids.length; i += 500) chunks.push(ids.slice(i, i + 500));
   let sent = 0;
@@ -3346,7 +3348,9 @@ export default {
           const allUsers = uniqueUsersById(await listUserRecords(env));
           const recipients = selectBroadcastAudience(allUsers, payload?.audience || {});
           if (!recipients.length) throw new Error("目前受眾為 0，沒有可推播會員");
-          const sendResult = await sendLineMulticast(env, recipients, [{ type: "text", text }]);
+          const reachableRecipients = recipients.filter(user => String(user.lineUserId || user.linkedLineUid || user.lineUid || user.userId || "").trim().startsWith("U"));
+          if (!reachableRecipients.length) throw new Error("目前受眾尚未綁定 LINE UID，無法推播");
+          const sendResult = await sendLineMulticast(env, reachableRecipients, [{ type: "text", text }]);
           const campaigns = await safeGetKV(env, "PAID_BROADCASTS", []);
           const campaign = {
             id: crypto.randomUUID ? crypto.randomUUID() : `BCAST_${Date.now()}`,
@@ -3354,6 +3358,7 @@ export default {
             message: text,
             audience: payload?.audience || {},
             targetCount: recipients.length,
+            reachableCount: reachableRecipients.length,
             sent: sendResult.sent,
             failed: sendResult.failed,
             errors: sendResult.errors,
