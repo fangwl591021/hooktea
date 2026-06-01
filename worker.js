@@ -884,6 +884,7 @@ async function appendLineMonitorEvent(env, ctx, event) {
   if (!text) return;
   const threadId = await resolveMonitorThreadIdForLine(env, lineUid);
   if (!threadId) return;
+  await appendLineMonitorD1Event(env, event, threadId, text);
   const key = `MONITOR_THREAD_${threadId}`;
   const overlay = await safeGetKV(env, key, {});
   const lineMessages = Array.isArray(overlay.lineMessages) ? overlay.lineMessages : [];
@@ -907,6 +908,75 @@ async function appendLineMonitorEvent(env, ctx, event) {
     lastLineMessageAt: new Date().toISOString(),
   };
   await safePutKV(env, key, next);
+}
+
+async function appendLineMonitorD1Event(env, event, threadId, text) {
+  if (!env.DB) return;
+  const lineUid = String(event?.source?.userId || "").trim();
+  if (!lineUid || !threadId || !text) return;
+  const messageType = String(event?.message?.type || event?.type || "text");
+  const createdAt = event?.timestamp ? new Date(Number(event.timestamp)).toISOString() : new Date().toISOString();
+  const profile = lineUid.startsWith("U") ? await fetchLineBotProfile(env, lineUid).catch(() => null) : null;
+  const member = threadId !== lineUid ? await safeGetKV(env, `USER_${threadId}`, null).catch(() => null) : null;
+  const displayName = profile?.displayName || member?.name || member?.displayName || lineUid;
+  const pictureUrl = profile?.pictureUrl || member?.pictureUrl || "";
+  const risk = /退款|取消|客訴|投訴|生氣|爛|差|退費|沒收到|不要/.test(text) ? "high" : "low";
+  const tags = risk === "high" ? "LINE,高風險" : "LINE";
+  await env.DB.prepare(`
+    INSERT INTO line_threads (
+      id, source_type, source_user_id, source_group_id, display_name, picture_url,
+      status, risk_level, summary, unread_count, tags, legacy_user_id,
+      last_message_at, created_at, updated_at
+    ) VALUES (?, 'line_oa', ?, ?, ?, ?, 'open', ?, ?, 1, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      source_user_id = excluded.source_user_id,
+      source_group_id = excluded.source_group_id,
+      display_name = CASE WHEN excluded.display_name <> '' THEN excluded.display_name ELSE line_threads.display_name END,
+      picture_url = CASE WHEN excluded.picture_url <> '' THEN excluded.picture_url ELSE line_threads.picture_url END,
+      status = CASE WHEN line_threads.status = 'closed' THEN line_threads.status ELSE 'open' END,
+      risk_level = CASE WHEN line_threads.risk_level = 'high' OR excluded.risk_level = 'high' THEN 'high' ELSE line_threads.risk_level END,
+      summary = excluded.summary,
+      unread_count = line_threads.unread_count + 1,
+      tags = CASE
+        WHEN line_threads.tags = '' THEN excluded.tags
+        WHEN excluded.tags = '' THEN line_threads.tags
+        ELSE line_threads.tags || ',' || excluded.tags
+      END,
+      legacy_user_id = CASE WHEN excluded.legacy_user_id <> '' THEN excluded.legacy_user_id ELSE line_threads.legacy_user_id END,
+      last_message_at = excluded.last_message_at,
+      updated_at = excluded.updated_at
+  `).bind(
+    threadId,
+    lineUid,
+    String(event?.source?.groupId || event?.source?.roomId || ""),
+    displayName,
+    pictureUrl,
+    risk,
+    text.slice(0, 240),
+    tags,
+    threadId !== lineUid ? threadId : "",
+    createdAt,
+    createdAt,
+    createdAt
+  ).run();
+
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO line_messages (
+      id, thread_id, line_event_id, reply_token, message_type, sender_role,
+      sender_id, sender_name, message_text, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, 'user', ?, ?, ?, ?, ?)
+  `).bind(
+    crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+    threadId,
+    String(event?.webhookEventId || event?.message?.id || ""),
+    String(event?.replyToken || ""),
+    messageType,
+    lineUid,
+    displayName,
+    text,
+    JSON.stringify(event),
+    createdAt
+  ).run();
 }
 
 async function mergeLineMonitorThread(env, fromId, toId) {
@@ -2361,6 +2431,23 @@ async function listMonitorThreadOverlays(env) {
   return overlays;
 }
 
+async function listD1LineThreads(env) {
+  if (!env.DB) return [];
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT id, source_user_id, display_name, picture_url, status, risk_level,
+             summary, unread_count, tags, note, legacy_user_id, last_message_at
+      FROM line_threads
+      ORDER BY COALESCE(last_message_at, created_at) DESC
+      LIMIT 500
+    `).all();
+    return results || [];
+  } catch (e) {
+    console.error("[LineMonitorD1] list threads failed", e);
+    return [];
+  }
+}
+
 async function updateUsersIndexRecord(env, user) {
   if (!user || !user.userId) return;
   try {
@@ -2396,30 +2483,37 @@ async function buildHookTeaMonitorRows(env, options = {}) {
   const pointsByUid = new Map(pointRows.map(row => [String(row.userId || "").trim(), row]));
   const overlays = await listMonitorThreadOverlays(env);
   const overlayByUid = new Map(overlays.map(row => [String(row.id || "").trim(), row]));
+  const d1Threads = await listD1LineThreads(env);
+  const d1ByUid = new Map(d1Threads.map(row => [String(row.id || row.legacy_user_id || row.source_user_id || "").trim(), row]));
   const rows = [];
+  const seenThreadIds = new Set();
   for (const user of users) {
     const uid = String(user.userId || user.uid || "").trim();
     if (!uid) continue;
+    seenThreadIds.add(uid);
     const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === uid);
     const pointData = pointsByUid.get(uid) || null;
     const overlay = overlayByUid.get(uid) || {};
+    const d1Thread = d1ByUid.get(uid) || {};
     const tags = Array.from(new Set([
       ...splitTags(user.tags || user.memberTags || user.memberTier || ""),
       ...splitTags(overlay.tags),
       ...splitTags(overlay.aiTags),
+      ...splitTags(d1Thread.tags),
     ]));
-    const riskLevel = inferHookTeaRisk(user, userOrders, pointData, overlay);
+    const riskLevel = d1Thread.risk_level || inferHookTeaRisk(user, userOrders, pointData, overlay);
     rows.push({
       id: uid,
       userId: uid,
-      name: user.name || user.displayName || user.lineName || uid,
-      pictureUrl: user.pictureUrl || user.avatar || "",
-      status: overlay.status || "open",
+      name: d1Thread.display_name || user.name || user.displayName || user.lineName || uid,
+      pictureUrl: d1Thread.picture_url || user.pictureUrl || user.avatar || "",
+      status: d1Thread.status || overlay.status || "open",
       tags,
-      note: overlay.note || "",
+      note: d1Thread.note || overlay.note || "",
       riskLevel,
-      summary: buildHookTeaSummary(user, userOrders, pointData, overlay),
-      lastMessageAt: user.updatedAt || user.createdAt || "",
+      summary: d1Thread.summary || buildHookTeaSummary(user, userOrders, pointData, overlay),
+      unread: Number(d1Thread.unread_count || 0),
+      lastMessageAt: d1Thread.last_message_at || user.updatedAt || user.createdAt || "",
       signals: {
         "會員等級": user.memberTier || user.role || "一般會員",
         "待付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length,
@@ -2433,6 +2527,34 @@ async function buildHookTeaMonitorRows(env, options = {}) {
       },
     });
   }
+  for (const d1Thread of d1Threads) {
+    const id = String(d1Thread.id || d1Thread.legacy_user_id || d1Thread.source_user_id || "").trim();
+    if (!id || seenThreadIds.has(id)) continue;
+    rows.push({
+      id,
+      userId: d1Thread.source_user_id || id,
+      name: d1Thread.display_name || d1Thread.source_user_id || id,
+      pictureUrl: d1Thread.picture_url || "",
+      status: d1Thread.status || "open",
+      tags: splitTags(d1Thread.tags),
+      note: d1Thread.note || "",
+      riskLevel: d1Thread.risk_level || "low",
+      summary: d1Thread.summary || "LINE 對話紀錄",
+      unread: Number(d1Thread.unread_count || 0),
+      lastMessageAt: d1Thread.last_message_at || "",
+      signals: {
+        "會員等級": "未綁定",
+        "待付款": "-",
+        "已付款": "-",
+        "點數餘額": "-",
+        "風險": d1Thread.risk_level || "low",
+        "AI摘要": "",
+        "AI建議": "",
+        "AI情緒": "",
+        "AI更新": "",
+      },
+    });
+  }
   rows.sort((a, b) => {
     const rank = { high: 3, medium: 2, low: 1 };
     return (rank[b.riskLevel] || 0) - (rank[a.riskLevel] || 0) || String(b.lastMessageAt).localeCompare(String(a.lastMessageAt));
@@ -2443,33 +2565,36 @@ async function buildHookTeaMonitorRows(env, options = {}) {
 async function getHookTeaMonitorThread(env, id) {
   const uid = String(id || "").trim();
   if (!uid) return null;
+  const d1Thread = env.DB ? await env.DB.prepare(`SELECT * FROM line_threads WHERE id = ?`).bind(uid).first().catch(() => null) : null;
   const users = await listHookTeaUsers(env);
   const user = users.find(item => String(item.userId || item.uid || "").trim() === uid);
-  if (!user) return null;
+  if (!user && !d1Thread) return null;
   const orders = await safeGetKV(env, "ORDERS", []);
   const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === uid);
   const pointData = await safeGetKV(env, `POINTS_${uid}`, { logs: [] });
   const overlay = await safeGetKV(env, `MONITOR_THREAD_${uid}`, {});
   const paymentLogs = await safeGetKV(env, "PAYMENT_LOGS", []);
   const tags = Array.from(new Set([
-    ...splitTags(user.tags || user.memberTags || user.memberTier || ""),
+    ...splitTags(user?.tags || user?.memberTags || user?.memberTier || ""),
     ...splitTags(overlay.tags),
     ...splitTags(overlay.aiTags),
+    ...splitTags(d1Thread?.tags),
   ]));
-  const riskLevel = inferHookTeaRisk(user, userOrders, pointData, overlay);
+  const riskLevel = d1Thread?.risk_level || inferHookTeaRisk(user, userOrders, pointData, overlay);
   const row = {
     id: uid,
     userId: uid,
-    name: user.name || user.displayName || user.lineName || uid,
-    pictureUrl: user.pictureUrl || user.avatar || "",
-    status: overlay.status || "open",
+    name: d1Thread?.display_name || user?.name || user?.displayName || user?.lineName || uid,
+    pictureUrl: d1Thread?.picture_url || user?.pictureUrl || user?.avatar || "",
+    status: d1Thread?.status || overlay.status || "open",
     tags,
-    note: overlay.note || "",
+    note: d1Thread?.note || overlay.note || "",
     riskLevel,
-    summary: buildHookTeaSummary(user, userOrders, pointData, overlay),
-    lastMessageAt: user.updatedAt || user.createdAt || "",
+    summary: d1Thread?.summary || buildHookTeaSummary(user, userOrders, pointData, overlay),
+    unread: Number(d1Thread?.unread_count || 0),
+    lastMessageAt: d1Thread?.last_message_at || user.updatedAt || user.createdAt || "",
     signals: {
-      "會員等級": user.memberTier || user.role || "一般會員",
+      "會員等級": user?.memberTier || user?.role || (d1Thread ? "未綁定" : "一般會員"),
       "待付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length,
       "已付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PAID").length,
       "點數餘額": Number(pointData?.balance || 0),
@@ -2481,13 +2606,35 @@ async function getHookTeaMonitorThread(env, id) {
     },
   };
   const messages = [];
-  for (const msg of (Array.isArray(overlay.lineMessages) ? overlay.lineMessages : []).slice(0, 80)) {
-    messages.push({
-      type: "line",
-      title: msg.title || "LINE 訊息",
-      text: msg.text || "",
-      createdAt: msg.createdAt || msg.createdTs || "",
-    });
+  if (env.DB) {
+    const { results } = await env.DB.prepare(`
+      SELECT id, message_type, sender_role, sender_id, sender_name, message_text, created_at
+      FROM line_messages
+      WHERE thread_id = ?
+      ORDER BY created_at ASC, inserted_at ASC
+      LIMIT 500
+    `).bind(uid).all().catch(() => ({ results: [] }));
+    for (const msg of results || []) {
+      messages.push({
+        id: msg.id,
+        type: "line",
+        title: msg.sender_role === "staff" ? "客服回覆" : "LINE 訊息",
+        text: msg.message_text || "",
+        senderRole: msg.sender_role || "user",
+        senderName: msg.sender_name || "",
+        createdAt: msg.created_at || "",
+      });
+    }
+  }
+  if (!messages.length && !d1Thread) {
+    for (const msg of (Array.isArray(overlay.lineMessages) ? overlay.lineMessages : []).slice(0, 80)) {
+      messages.push({
+        type: "line",
+        title: msg.title || "LINE 訊息",
+        text: msg.text || "",
+        createdAt: msg.createdAt || msg.createdTs || "",
+      });
+    }
   }
   for (const order of userOrders.slice(0, 20)) {
     messages.push({
@@ -2546,6 +2693,18 @@ async function handleHookTeaMonitorApi(request, env) {
     const body = await request.json().catch(() => ({}));
     const id = String(body.id || "").trim();
     if (!id) return json({ success: false, error: "MISSING_ID" }, 400);
+    if (env.DB) {
+      await env.DB.prepare(`
+        UPDATE line_threads
+        SET note = ?, tags = ?, status = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(
+        String(body.note || ""),
+        Array.isArray(body.tags) ? body.tags.join(",") : String(body.tags || ""),
+        ["open", "pending", "closed"].includes(body.status) ? body.status : "open",
+        id
+      ).run().catch(e => console.error("[LineMonitorD1] update thread failed", e));
+    }
     await safePutKV(env, `MONITOR_THREAD_${id}`, {
       note: String(body.note || ""),
       tags: Array.isArray(body.tags) ? body.tags.join(",") : String(body.tags || ""),

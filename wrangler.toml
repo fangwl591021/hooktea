@@ -10,3 +10,8 @@ id = "6838e4176140433281b3a120a9fe964a"
 [[r2_buckets]]
 binding = "act-image"
 bucket_name = "hooktea-image"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hooktea"
+database_id = "1a144f54-3b58-4587-8c1a-db42c848ef0e"

@@ -94,7 +94,7 @@
   </div>
 
   <script>
-    const WORKER_URL = location.origin;
+    const WORKER_URL = location.protocol === 'file:' ? 'https://hooktea.fangwl591021.workers.dev' : location.origin;
     const params = new URLSearchParams(location.search);
     const urlPassword = params.get('adminPassword') || '';
     if (urlPassword) sessionStorage.setItem('act_admin_pwd', urlPassword);
