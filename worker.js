@@ -1495,11 +1495,13 @@ async function handleLineMemberBindText(env, ctx, event) {
   const text = String(event?.message?.text || "").trim();
   if (!uid || !replyToken || !text) return false;
   const pendingKey = `LINE_BIND_PENDING_${uid}`;
+  const debugKey = `LINE_BIND_DEBUG_${uid}`;
   const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
   if (binding?.legacyUserId && /^(綁定會員|會員綁定|綁定點數|我的點數)$/.test(text)) {
     const member = await safeGetKV(env, `USER_${binding.legacyUserId}`, {});
     const points = await safeGetKV(env, `POINTS_${binding.legacyUserId}`, { balance: 0, logs: [] });
-    await replyLineMessage(env, replyToken, textLineMessage(`已綁定會員：${member.name || member.displayName || binding.legacyUserId}\n目前點數：${Number(points.balance || 0)} 點`));
+    const reply = await replyLineMessage(env, replyToken, textLineMessage(`已綁定會員：${member.name || member.displayName || binding.legacyUserId}\n目前點數：${Number(points.balance || 0)} 點`));
+    await safePutKV(env, debugKey, { step: "already_bound", text, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
 
@@ -1509,7 +1511,8 @@ async function handleLineMemberBindText(env, ctx, event) {
   const pendingPhone = pending ? extractTaiwanPhone(text) : "";
   if (/^(綁定會員|會員綁定|綁定點數)$/.test(text)) {
     await safePutKV(env, pendingKey, { startedAt: new Date().toISOString() }, { expirationTtl: 600 });
-    await replyLineMessage(env, replyToken, textLineMessage("請回覆您的手機號碼，例如：0912345678\n我會用這支手機幫您綁定舊會員資料與點數。"));
+    const reply = await replyLineMessage(env, replyToken, textLineMessage("請回覆您的手機號碼，例如：0912345678\n我會用這支手機幫您綁定舊會員資料與點數。"));
+    await safePutKV(env, debugKey, { step: "prompt_phone", text, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
   const phone = directPhone || pendingPhone;
@@ -1523,12 +1526,14 @@ async function handleLineMemberBindText(env, ctx, event) {
       : result.reason === "duplicate_phone"
         ? "這支手機對到多筆舊會員，請洽店家協助人工確認。"
         : "目前無法完成綁定。";
-    await replyLineMessage(env, replyToken, textLineMessage(`${reasonText}\n請確認手機號碼是否與舊系統會員資料相同。`));
+    const reply = await replyLineMessage(env, replyToken, textLineMessage(`${reasonText}\n請確認手機號碼是否與舊系統會員資料相同。`));
+    await safePutKV(env, debugKey, { step: "bind_failed", text, phone, reason: result.reason, matches: result.matches || 0, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
   await env.ACTION_DATA.delete(pendingKey).catch(() => {});
   const points = await safeGetKV(env, `POINTS_${result.userId}`, { balance: 0, logs: [] });
-  await replyLineMessage(env, replyToken, textLineMessage(`綁定成功！\n會員：${result.member.name || result.member.displayName || result.userId}\n目前點數：${Number(points.balance || 0)} 點`));
+  const reply = await replyLineMessage(env, replyToken, textLineMessage(`綁定成功！\n會員：${result.member.name || result.member.displayName || result.userId}\n目前點數：${Number(points.balance || 0)} 點`));
+  await safePutKV(env, debugKey, { step: "bind_success", text, phone, legacyUserId: result.userId, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
   return true;
 }
 
@@ -2055,7 +2060,11 @@ function getLineChannelAccessToken(env) {
   return envValue(env, [
     "LINE_CHANNEL_ACCESS_TOKEN",
     "Line Message API Channel Access Token",
+    "Line Message API Channel access token",
+    "LINE_MESSAGING_API_CHANNEL_ACCESS_TOKEN",
     "LINE_MESSAGE_API_CHANNEL_ACCESS_TOKEN",
+    "LINE_CHANNEL_TOKEN",
+    "CHANNEL_ACCESS_TOKEN",
     "LINE_ACCESS_TOKEN",
   ]);
 }
@@ -4130,7 +4139,19 @@ export default {
         if (rawText) parsedPayload = JSON.parse(rawText);
 
         const promises = [];
-        for (const event of parsedPayload?.events || []) {
+        const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
+        promises.push(safePutKV(env, "LINE_WEBHOOK_LAST", {
+          receivedAt: new Date().toISOString(),
+          eventCount: events.length,
+          tokenConfigured: !!getLineChannelAccessToken(env),
+          texts: events.map(event => ({
+            type: event?.type || "",
+            userId: event?.source?.userId || "",
+            messageType: event?.message?.type || "",
+            text: event?.message?.type === "text" ? String(event.message.text || "").slice(0, 80) : "",
+          })).slice(0, 10),
+        }, { expirationTtl: 86400 }));
+        for (const event of events) {
           if (event?.type === "message" && event?.message?.type === "text") {
             promises.push(
               handleLineMemberBindText(env, ctx, event).catch(e => console.error("LINE Bind Error:", e))
