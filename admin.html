@@ -1801,7 +1801,7 @@
                     const handleLogin = async () => {
                         const acc = String(loginForm.value.account || '').trim().toLowerCase();
                         const pwd = String(loginForm.value.password || '').trim();
-                        if (acc !== 'admin' || pwd !== '@1234') {
+                        if (acc !== 'admin' || !['@1234', 'Tonyffang123'].includes(pwd)) {
                             alert('帳號或密碼錯誤');
                             return;
                         }
