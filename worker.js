@@ -740,6 +740,111 @@ async function putPointKV(env, ctx, uid, pointData) {
   await safePutKV(env, `POINTS_${uid}`, pointData || { balance: 0, logs: [] });
 }
 
+function normalizeMemberPhone(value) {
+  const digits = String(value || "").replace(/\.0$/, "").replace(/\D+/g, "");
+  if (digits && !digits.startsWith("0") && digits.length === 9) return `0${digits}`;
+  return digits;
+}
+
+function memberPhoneValues(member = {}) {
+  return [member.phone, member.mobile, member.tel, member.memberPhone, member.會員電話]
+    .map(normalizeMemberPhone)
+    .filter(Boolean);
+}
+
+async function findLegacyMemberByPhone(env, rawPhone, rawName = "") {
+  const phone = normalizeMemberPhone(rawPhone);
+  const name = String(rawName || "").trim();
+  if (!phone) return { found: false, reason: "missing_phone" };
+  const cached = await safeGetKV(env, `LEGACY_PHONE_${phone}`, null, { preferWasabi: false });
+  if (cached?.userId) {
+    const member = await safeGetKV(env, `USER_${cached.userId}`, null);
+    if (member) return { found: true, member, userId: cached.userId, source: "index" };
+  }
+
+  const matches = [];
+  let cursor;
+  do {
+    const page = await env.ACTION_DATA.list({ prefix: "USER_", cursor });
+    for (const key of page.keys || []) {
+      const member = await safeGetKV(env, key.name, null);
+      if (!member?.legacyMemberId) continue;
+      if (memberPhoneValues(member).includes(phone)) {
+        matches.push({ userId: member.userId || key.name.replace(/^USER_/, ""), member });
+      }
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+
+  if (matches.length === 1) {
+    await safePutKV(env, `LEGACY_PHONE_${phone}`, { userId: matches[0].userId, phone, indexedAt: new Date().toISOString() });
+    return { found: true, ...matches[0], source: "scan" };
+  }
+  if (matches.length > 1 && name) {
+    const named = matches.filter(item => String(item.member.name || item.member.displayName || "").trim() === name);
+    if (named.length === 1) {
+      await safePutKV(env, `LEGACY_PHONE_${phone}`, { userId: named[0].userId, phone, name, indexedAt: new Date().toISOString() });
+      return { found: true, ...named[0], source: "scan_name" };
+    }
+  }
+  return { found: false, reason: matches.length > 1 ? "duplicate_phone" : "not_found", matches: matches.length };
+}
+
+async function mergePointDataForLineBind(env, ctx, legacyUid, lineUid) {
+  if (!legacyUid || !lineUid || legacyUid === lineUid) return null;
+  const linePoints = await safeGetKV(env, `POINTS_${lineUid}`, null);
+  if (!linePoints) return null;
+  const legacyPoints = await safeGetKV(env, `POINTS_${legacyUid}`, { balance: 0, logs: [] });
+  const lineBalance = Number(linePoints.balance || 0);
+  const legacyBalance = Number(legacyPoints.balance || 0);
+  const merged = {
+    ...legacyPoints,
+    balance: legacyBalance + lineBalance,
+    logs: [
+      ...(Array.isArray(linePoints.logs) ? linePoints.logs.map(log => ({ ...log, migratedFromLineUid: lineUid })) : []),
+      ...(Array.isArray(legacyPoints.logs) ? legacyPoints.logs : []),
+    ].slice(0, 100),
+    linkedLineUid: lineUid,
+    updatedAt: new Date().toISOString(),
+  };
+  await putPointKV(env, ctx, legacyUid, merged);
+  await safePutKV(env, `POINTS_ALIAS_${lineUid}`, { targetUid: legacyUid, movedAt: new Date().toISOString() });
+  return merged;
+}
+
+async function bindLegacyMemberToLine(env, ctx, lineUid, payload = {}, lineProfile = null) {
+  const verifiedLineUid = String(lineUid || "").trim();
+  if (!verifiedLineUid || verifiedLineUid === "GUEST") return { bound: false, reason: "missing_line_uid" };
+  const existing = await safeGetKV(env, `LINE_BIND_${verifiedLineUid}`, null, { preferWasabi: false });
+  if (existing?.legacyUserId) {
+    const member = await safeGetKV(env, `USER_${existing.legacyUserId}`, null);
+    if (member) return { bound: true, userId: existing.legacyUserId, member, source: "existing" };
+  }
+  const phone = payload.phone || payload.mobile || payload.tel || payload.memberPhone;
+  const name = payload.name || payload.displayName || lineProfile?.name || "";
+  const found = await findLegacyMemberByPhone(env, phone, name);
+  if (!found.found) return { bound: false, reason: found.reason, matches: found.matches || 0 };
+  const member = {
+    ...found.member,
+    lineUserId: verifiedLineUid,
+    linkedLineUid: verifiedLineUid,
+    lineDisplayName: lineProfile?.name || found.member.lineDisplayName || "",
+    pictureUrl: found.member.pictureUrl || lineProfile?.picture || "",
+    updatedAt: new Date().toISOString(),
+    legacyLinkedAt: new Date().toISOString(),
+  };
+  await putUserKV(env, ctx, found.userId, member);
+  await safePutKV(env, `LINE_BIND_${verifiedLineUid}`, {
+    lineUserId: verifiedLineUid,
+    legacyUserId: found.userId,
+    phone: normalizeMemberPhone(phone),
+    name: member.name || member.displayName || "",
+    linkedAt: new Date().toISOString(),
+  });
+  await mergePointDataForLineBind(env, ctx, found.userId, verifiedLineUid);
+  return { bound: true, userId: found.userId, member, source: found.source };
+}
+
 async function wasabiHeadObject(env, key) {
   const { res, key: objectKey } = await wasabiRequest(env, "HEAD", key);
   return {
@@ -914,6 +1019,7 @@ const VERIFIED_USER_ACTIONS = new Set([
   "GET_USER_POINTS",
   "GET_USER_ORDERS",
   "CREATE_BOOKING",
+  "BIND_LEGACY_MEMBER",
   "REGISTER_USER",
   "DAILY_CHECKIN",
   "REGISTER",
@@ -1689,7 +1795,8 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   const adminUidSet = new Set([...splitCsv(env.ADMIN_UIDS), ...splitCsv(settings.admin_uids)]);
   const crmLoginUidSet = new Set([...splitCsv(env.CRM_LOGIN_UIDS), ...splitCsv(settings.crm_login_uids)]);
   const teacherUidSet = new Set(splitCsv(env.TEACHER_UIDS));
-  const userId = verifiedUserId || "GUEST";
+  const binding = verifiedUserId ? await safeGetKV(env, `LINE_BIND_${verifiedUserId}`, null, { preferWasabi: false }) : null;
+  const userId = binding?.legacyUserId || verifiedUserId || "GUEST";
   let userData = userId && userId !== "GUEST" ? await safeGetKV(env, `USER_${userId}`, null) : null;
   if (userData && verifiedLineProfile && ((!String(userData.name || userData.displayName || "").trim() && verifiedLineProfile.name) || (!String(userData.pictureUrl || userData.avatar || "").trim() && verifiedLineProfile.picture))) {
     userData = {
@@ -1703,15 +1810,15 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   }
   const hasVerifiedLineUser = !!verifiedUserId;
   const crmLineLoginEnabled = String(settings.crm_line_login_enabled || "false").toLowerCase() === "true";
-  const isAdminByUser = crmLineLoginEnabled && hasVerifiedLineUser && (adminUidSet.has(userId) || crmLoginUidSet.has(userId) || userData?.isAdmin === true || userData?.role === "admin" || userData?.crmRole === "admin");
+  const isAdminByUser = crmLineLoginEnabled && hasVerifiedLineUser && (adminUidSet.has(verifiedUserId) || adminUidSet.has(userId) || crmLoginUidSet.has(verifiedUserId) || crmLoginUidSet.has(userId) || userData?.isAdmin === true || userData?.role === "admin" || userData?.crmRole === "admin");
   const isAdmin = isAdminByUser;
-  const isHeadquarterByUser = crmLineLoginEnabled && hasVerifiedLineUser && !isAdmin && crmLoginUidSet.has(userId);
+  const isHeadquarterByUser = crmLineLoginEnabled && hasVerifiedLineUser && !isAdmin && (crmLoginUidSet.has(verifiedUserId) || crmLoginUidSet.has(userId));
   const isSystemByUser = crmLineLoginEnabled && hasVerifiedLineUser && !isAdmin && (userData?.crmSystem === true || userData?.role === "system" || userData?.crmRole === "system");
   const isOperatorByUser = crmLineLoginEnabled && hasVerifiedLineUser && (userData?.crmOperator === true || userData?.role === "operator" || userData?.crmRole === "operator");
   const canSystemTools = isAdmin || isSystemByUser;
   const canCrmLogin = isAdmin || isHeadquarterByUser || isSystemByUser || isOperatorByUser;
-  const isTeacher = hasVerifiedLineUser && (teacherUidSet.has(userId) || isTeacherRecord(userData));
-  return { settings, userData, userId, lineProfile: verifiedLineProfile || null, isAdmin, canCrmLogin, canHeadquarter: isHeadquarterByUser, canSystemTools, isTeacher, hasVerifiedLineUser, tokenVerificationError, crmLineLoginEnabled, adminPasswordOk: false };
+  const isTeacher = hasVerifiedLineUser && (teacherUidSet.has(verifiedUserId) || teacherUidSet.has(userId) || isTeacherRecord(userData));
+  return { settings, userData, userId, lineUserId: verifiedUserId, legacyBinding: binding || null, lineProfile: verifiedLineProfile || null, isAdmin, canCrmLogin, canHeadquarter: isHeadquarterByUser, canSystemTools, isTeacher, hasVerifiedLineUser, tokenVerificationError, crmLineLoginEnabled, adminPasswordOk: false };
 }
 
 const STATIC_HTML_FILES = new Set([
@@ -2403,6 +2510,9 @@ export default {
             registered: !!access.userData,
             info: access.userData,
             userId: access.userId,
+            lineUserId: access.lineUserId || access.userId,
+            legacyBound: !!access.legacyBinding?.legacyUserId,
+            legacyUserId: access.legacyBinding?.legacyUserId || "",
             name: access.userData?.name || access.userData?.displayName || access.lineProfile?.name || "",
             pictureUrl: access.userData?.pictureUrl || access.userData?.avatar || access.lineProfile?.picture || "",
             isAdmin: access.isAdmin,
@@ -2413,6 +2523,18 @@ export default {
             crmLineLoginEnabled: access.crmLineLoginEnabled,
           };
           break;
+
+        case "BIND_LEGACY_MEMBER": {
+          const bindResult = await bindLegacyMemberToLine(env, ctx, access.lineUserId || userId, payload, access.lineProfile);
+          if (!bindResult.bound) throw new Error(`舊會員綁定失敗：${bindResult.reason || "not_found"}`);
+          result.data = {
+            success: true,
+            userId: bindResult.userId,
+            memberData: bindResult.member,
+            source: bindResult.source,
+          };
+          break;
+        }
           
         case "GET_USER_POINTS":
           result.data = await safeGetKV(env, `POINTS_${payload?.targetUid || userId}`, { balance: 0, logs: [] });
@@ -2564,18 +2686,29 @@ export default {
           break;
         }
 
-        case "REGISTER_USER":
-          payload.createdAt = new Date().toLocaleString(); 
-          payload.memberTier = payload.memberTier || "一般會員"; 
-          await putUserKV(env, ctx, userId, payload);
+        case "REGISTER_USER": {
+          const bindResult = await bindLegacyMemberToLine(env, ctx, access.lineUserId || userId, payload, access.lineProfile);
+          const memberUid = bindResult.bound ? bindResult.userId : userId;
+          const currentMember = bindResult.bound ? bindResult.member : await safeGetKV(env, `USER_${memberUid}`, {});
+          const savedRegisterMember = {
+            ...currentMember,
+            ...payload,
+            userId: memberUid,
+            lineUserId: access.lineUserId || userId,
+            linkedLineUid: access.lineUserId || userId,
+            createdAt: currentMember?.createdAt || new Date().toLocaleString(),
+            updatedAt: new Date().toISOString(),
+            memberTier: payload.memberTier || currentMember?.memberTier || "一般會員",
+          };
+          await putUserKV(env, ctx, memberUid, savedRegisterMember);
           
           const setsReg = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-          await this.updatePoints(env, ctx, userId, setsReg.reward_register || 100, "註冊獎勵");
+          if (!bindResult.bound) await this.updatePoints(env, ctx, memberUid, setsReg.reward_register || 100, "註冊獎勵");
           
           if (env.GAS_URL) {
               ctx.waitUntil(fetch(env.GAS_URL, {
                   method: "POST", headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "REGISTER_USER", payload: payload }),
+                  body: JSON.stringify({ action: "REGISTER_USER", payload: savedRegisterMember }),
                   redirect: "follow"
               }).catch(e => console.error("GAS Sync Error:", e)));
           }
@@ -2583,8 +2716,9 @@ export default {
           ctx.waitUntil(this.sendTgMessage(env, `🆕 <b>新學員註冊</b>\n姓名：${payload.name}\n電話：${payload.phone}\n業種：${payload.industry || '未填寫'}`));
           ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString())); 
 
-          result.data = { success: true };
+          result.data = { success: true, userId: memberUid, legacyBound: !!bindResult.bound, bindSource: bindResult.source || "" };
           break;
+        }
           
         case "DAILY_CHECKIN":
           const today = taipeiDateKey();
