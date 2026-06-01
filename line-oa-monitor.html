@@ -16,17 +16,17 @@
 </head>
 <body class="bg-slate-100 text-slate-950">
   <div class="h-screen overflow-hidden flex">
-    <aside class="w-[450px] shrink-0 bg-white border-r border-slate-200 flex flex-col">
-      <div class="p-6 border-b border-slate-100">
+    <aside class="w-[360px] shrink-0 bg-white border-r border-slate-200 flex flex-col">
+      <div class="p-4 border-b border-slate-100">
         <div class="flex items-start justify-between gap-4">
           <div>
-            <h1 class="text-3xl font-black tracking-normal">LINE 聊天室監控</h1>
-            <p class="mt-2 text-base text-slate-500">只監看、標記與分析，不自動代回覆。</p>
+            <h1 class="text-2xl font-black tracking-normal">LINE 聊天室監控</h1>
+            <p class="mt-1 text-sm text-slate-500">只監看、標記與分析，不自動代回覆。</p>
           </div>
-          <a href="/admin.html" class="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white">後台</a>
+          <a href="/admin.html" class="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">後台</a>
         </div>
 
-        <div class="grid grid-cols-2 gap-3 mt-8">
+        <div class="grid grid-cols-2 gap-2 mt-5">
           <a class="feature bg-slate-950 text-white" href="/admin.html">後台首頁</a>
           <a class="feature bg-emerald-500 text-white" href="/admin.html">學員 CRM</a>
           <button id="analyze-top" class="feature bg-sky-600 text-white">AI 分析</button>
@@ -35,32 +35,32 @@
           <a class="feature bg-blue-600 text-white" href="/admin.html">圖文選單</a>
         </div>
 
-        <button id="import-members" class="mt-8 w-full rounded-2xl bg-sky-600 px-5 py-4 text-lg font-black text-white">
+        <button id="import-members" class="mt-5 w-full rounded-xl bg-sky-600 px-4 py-3 text-base font-black text-white">
           匯入母站會員名單
         </button>
 
-        <div class="flex gap-3 mt-4">
-          <input id="search" class="min-w-0 flex-1 rounded-2xl border border-slate-200 px-5 py-4 text-lg outline-none focus:border-emerald-500" placeholder="搜尋姓名、ID、訊息或標籤">
-          <button id="refresh" class="rounded-2xl bg-emerald-500 px-6 py-4 text-lg font-black text-white">同步</button>
+        <div class="flex gap-2 mt-3">
+          <input id="search" class="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-3 text-base outline-none focus:border-emerald-500" placeholder="搜尋姓名、ID、訊息或標籤">
+          <button id="refresh" class="rounded-xl bg-emerald-500 px-4 py-3 text-base font-black text-white">同步</button>
         </div>
 
-        <div class="flex flex-wrap gap-2 mt-4">
+        <div class="flex flex-wrap gap-2 mt-3">
           <button class="filter active" data-filter="all">全部</button>
           <button class="filter" data-filter="open">待回覆</button>
           <button class="filter" data-filter="high">高風險</button>
         </div>
       </div>
 
-      <div id="thread-list" class="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-3"></div>
+      <div id="thread-list" class="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2"></div>
     </aside>
 
     <main class="flex-1 min-w-0 flex flex-col bg-white">
-      <header class="h-[152px] shrink-0 border-b border-slate-200 px-8 py-5 flex items-center justify-between gap-5">
-        <div id="active-header" class="min-w-0 flex items-center gap-5">
-          <div class="h-16 w-16 rounded-full bg-slate-100 grid place-items-center text-2xl font-black text-slate-400">?</div>
+      <header class="h-[116px] shrink-0 border-b border-slate-200 px-6 py-4 flex items-center justify-between gap-4">
+        <div id="active-header" class="min-w-0 flex items-center gap-4">
+          <div class="h-12 w-12 rounded-full bg-slate-100 grid place-items-center text-xl font-black text-slate-400">?</div>
           <div class="min-w-0">
-            <h2 class="text-3xl font-black">請選擇會員</h2>
-            <p class="mt-1 text-slate-500">左側名單會依風險與最近訊息排序。</p>
+            <h2 class="text-2xl font-black">請選擇會員</h2>
+            <p class="mt-1 text-sm text-slate-500">左側名單會依風險與最近訊息排序。</p>
           </div>
         </div>
         <div class="flex shrink-0 gap-3">
@@ -70,76 +70,76 @@
         </div>
       </header>
 
-      <div class="bg-slate-700 px-8 py-4 text-lg font-black text-white">
+      <div class="bg-slate-700 px-6 py-3 text-base font-black text-white">
         此頁只提供管理員監看與草稿，不消耗 LINE reply token。
       </div>
 
-      <section class="flex-1 min-h-0 grid grid-cols-[1fr_405px]">
+      <section class="flex-1 min-h-0 grid grid-cols-[1fr_360px]">
         <div class="min-w-0 flex flex-col">
-          <div id="messages" class="flex-1 overflow-y-auto scrollbar-thin bg-slate-100 p-8 space-y-5"></div>
+          <div id="messages" class="flex-1 overflow-y-auto scrollbar-thin bg-slate-100 p-5 space-y-4"></div>
 
-          <div class="shrink-0 border-t border-slate-200 bg-white p-5">
-            <div class="flex flex-wrap items-center gap-2 mb-4">
-              <span class="rounded-full bg-emerald-50 px-4 py-2 text-sm font-black text-emerald-700">帶入建議</span>
+          <div class="shrink-0 border-t border-slate-200 bg-white p-4">
+            <div class="flex flex-wrap items-center gap-2 mb-3">
+              <span class="rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-black text-emerald-700">帶入建議</span>
               <div id="active-tags" class="flex flex-wrap gap-2"></div>
             </div>
-            <textarea id="note" rows="4" class="w-full rounded-2xl border border-slate-200 px-5 py-4 text-base outline-none focus:border-emerald-500" placeholder="內部備註"></textarea>
-            <div class="mt-4 flex gap-3">
-              <input id="new-tag" class="min-w-0 flex-1 rounded-2xl border border-slate-200 px-5 py-3 text-base outline-none focus:border-emerald-500" placeholder="新增標籤">
-              <button id="add-tag" class="rounded-2xl bg-emerald-500 px-7 py-3 text-lg font-black text-white">新增</button>
-              <button id="save-thread" class="rounded-2xl bg-slate-950 px-7 py-3 text-lg font-black text-white">儲存</button>
+            <textarea id="note" rows="3" class="w-full rounded-xl border border-slate-200 px-4 py-3 text-base outline-none focus:border-emerald-500" placeholder="內部備註"></textarea>
+            <div class="mt-3 flex gap-2">
+              <input id="new-tag" class="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-3 text-base outline-none focus:border-emerald-500" placeholder="新增標籤">
+              <button id="add-tag" class="rounded-xl bg-emerald-500 px-5 py-3 text-base font-black text-white">新增</button>
+              <button id="save-thread" class="rounded-xl bg-slate-950 px-5 py-3 text-base font-black text-white">儲存</button>
             </div>
           </div>
         </div>
 
-        <aside class="border-l border-slate-200 bg-white overflow-y-auto scrollbar-thin p-6">
-          <section class="rounded-3xl border border-slate-200 p-5">
+        <aside class="border-l border-slate-200 bg-white overflow-y-auto scrollbar-thin p-4">
+          <section class="rounded-2xl border border-slate-200 p-4">
             <div class="flex items-center justify-between gap-3">
-              <h3 class="text-2xl font-black">受眾分析</h3>
+              <h3 class="text-xl font-black">受眾分析</h3>
               <span id="generated-at" class="text-sm text-slate-400">-</span>
             </div>
-            <div class="grid grid-cols-2 gap-3 mt-5">
+            <div class="grid grid-cols-2 gap-2 mt-4">
               <div class="metric bg-slate-50"><span>30 天活躍</span><strong id="m-active30">0</strong></div>
               <div class="metric bg-rose-50"><span>高風險</span><strong id="m-high">0</strong></div>
               <div class="metric bg-sky-50"><span>7 天訊息</span><strong id="m-msg7">0</strong></div>
               <div class="metric bg-emerald-50"><span>未讀</span><strong id="m-unread">0</strong></div>
             </div>
 
-            <h4 class="mt-6 text-base font-black text-slate-500">需求熱度</h4>
-            <div id="interest-bars" class="mt-3 space-y-3"></div>
+            <h4 class="mt-5 text-sm font-black text-slate-500">需求熱度</h4>
+            <div id="interest-bars" class="mt-3 space-y-2"></div>
 
-            <h4 class="mt-6 text-base font-black text-slate-500">常見標籤</h4>
+            <h4 class="mt-5 text-sm font-black text-slate-500">常見標籤</h4>
             <div id="tag-stats" class="mt-3 flex flex-wrap gap-2"></div>
 
-            <div class="mt-7 flex items-center justify-between">
-              <h4 class="text-base font-black text-slate-500">風險名單</h4>
+            <div class="mt-5 flex items-center justify-between">
+              <h4 class="text-sm font-black text-slate-500">風險名單</h4>
               <button id="show-risk" class="rounded-full bg-rose-50 px-4 py-2 text-sm font-black text-rose-600">看全部</button>
             </div>
             <div id="risk-list" class="mt-3 space-y-3"></div>
           </section>
 
-          <section class="mt-5 rounded-3xl border border-slate-200 p-5">
-            <h3 class="text-2xl font-black">推播草稿</h3>
-            <input id="broadcast-title" class="mt-4 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="草稿標題">
-            <textarea id="broadcast-text" rows="4" class="mt-3 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="推播內容"></textarea>
-            <div class="mt-3 grid grid-cols-2 gap-3">
-              <select id="broadcast-mode" class="rounded-2xl border border-slate-200 px-4 py-3 font-bold outline-none focus:border-emerald-500">
+          <section class="mt-4 rounded-2xl border border-slate-200 p-4">
+            <h3 class="text-xl font-black">推播草稿</h3>
+            <input id="broadcast-title" class="mt-3 w-full rounded-xl border border-slate-200 px-4 py-2.5 outline-none focus:border-emerald-500" placeholder="草稿標題">
+            <textarea id="broadcast-text" rows="3" class="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2.5 outline-none focus:border-emerald-500" placeholder="推播內容"></textarea>
+            <div class="mt-2 grid grid-cols-2 gap-2">
+              <select id="broadcast-mode" class="rounded-xl border border-slate-200 px-3 py-2.5 font-bold outline-none focus:border-emerald-500">
                 <option value="all">全部會員</option>
                 <option value="high">高風險</option>
                 <option value="tag">指定標籤</option>
               </select>
-              <input id="broadcast-tag" class="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="標籤">
+              <input id="broadcast-tag" class="rounded-xl border border-slate-200 px-3 py-2.5 outline-none focus:border-emerald-500" placeholder="標籤">
             </div>
-            <div class="mt-3 grid grid-cols-2 gap-3">
-              <button id="preview-broadcast" class="rounded-2xl border border-slate-200 px-4 py-3 font-black">預估人數</button>
-              <button id="create-broadcast" class="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">建立草稿</button>
+            <div class="mt-2 grid grid-cols-2 gap-2">
+              <button id="preview-broadcast" class="rounded-xl border border-slate-200 px-4 py-2.5 font-black">預估人數</button>
+              <button id="create-broadcast" class="rounded-xl bg-emerald-500 px-4 py-2.5 font-black text-white">建立草稿</button>
             </div>
             <p id="broadcast-result" class="mt-3 text-sm font-bold text-slate-500">尚未建立草稿</p>
           </section>
 
-          <section class="mt-5 rounded-3xl border border-slate-200 p-5">
-            <h3 class="text-2xl font-black">AI 訊號</h3>
-            <div id="signals" class="mt-4 space-y-3"></div>
+          <section class="mt-4 rounded-2xl border border-slate-200 p-4">
+            <h3 class="text-xl font-black">AI 訊號</h3>
+            <div id="signals" class="mt-3 space-y-2"></div>
           </section>
         </aside>
       </section>
@@ -242,21 +242,21 @@
     function renderThreads() {
       const rows = currentRows();
       $("thread-list").innerHTML = rows.map(thread => `
-        <button data-id="${esc(thread.id)}" class="thread-card w-full rounded-3xl border p-5 text-left transition ${state.active?.id === thread.id ? "border-emerald-400 bg-emerald-50" : "border-slate-200 bg-white hover:border-emerald-300"}">
-          <div class="flex gap-4">
-            <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-14 w-14 shrink-0 rounded-full object-cover bg-slate-100" alt="">
+        <button data-id="${esc(thread.id)}" class="thread-card w-full rounded-2xl border p-4 text-left transition ${state.active?.id === thread.id ? "border-emerald-400 bg-emerald-50" : "border-slate-200 bg-white hover:border-emerald-300"}">
+          <div class="flex gap-3">
+            <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-11 w-11 shrink-0 rounded-full object-cover bg-slate-100" alt="">
             <div class="min-w-0 flex-1">
-              <div class="flex items-start justify-between gap-3">
-                <h3 class="truncate text-xl font-black">${esc(thread.name)}</h3>
-                <span class="text-sm text-slate-400">${esc(dateText(thread.lastMessageAt))}</span>
+              <div class="flex items-start justify-between gap-2">
+                <h3 class="truncate text-lg font-black">${esc(thread.name)}</h3>
+                <span class="text-xs text-slate-400">${esc(dateText(thread.lastMessageAt))}</span>
               </div>
               <p class="mt-1 truncate text-sm text-slate-400">${esc(thread.id)}</p>
-              <p class="mt-2 line-clamp-2 text-base text-slate-700">${esc(thread.summary || thread.lastMessageText || "尚無明顯互動紀錄")}</p>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <span class="rounded-full px-3 py-1 text-sm font-black ${statusClass(thread.status)}">${esc(statusLabel(thread.status))}</span>
-                <span class="rounded-full px-3 py-1 text-sm font-black ${riskClass(thread.riskLevel)}">${esc(riskLabel(thread.riskLevel))}風險</span>
-                ${thread.tags.slice(0, 3).map(tag => `<span class="rounded-full bg-sky-50 px-3 py-1 text-sm font-black text-sky-700">${esc(tag)}</span>`).join("")}
-                ${thread.unread ? `<span class="rounded-full bg-slate-950 px-3 py-1 text-sm font-black text-white">${thread.unread} 則</span>` : ""}
+              <p class="mt-1.5 line-clamp-2 text-sm text-slate-700">${esc(thread.summary || thread.lastMessageText || "尚無明顯互動紀錄")}</p>
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                <span class="rounded-full px-2.5 py-1 text-xs font-black ${statusClass(thread.status)}">${esc(statusLabel(thread.status))}</span>
+                <span class="rounded-full px-2.5 py-1 text-xs font-black ${riskClass(thread.riskLevel)}">${esc(riskLabel(thread.riskLevel))}風險</span>
+                ${thread.tags.slice(0, 3).map(tag => `<span class="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-black text-sky-700">${esc(tag)}</span>`).join("")}
+                ${thread.unread ? `<span class="rounded-full bg-slate-950 px-2.5 py-1 text-xs font-black text-white">${thread.unread} 則</span>` : ""}
               </div>
             </div>
           </div>
@@ -296,13 +296,13 @@
 
       const riskRows = state.riskExpanded ? data.riskThreads : data.riskThreads.slice(0, 3);
       $("risk-list").innerHTML = riskRows.map(thread => `
-        <button data-id="${esc(thread.id)}" class="risk-card w-full rounded-2xl border border-rose-100 bg-rose-50 p-4 text-left">
-          <div class="flex items-start justify-between gap-3">
+        <button data-id="${esc(thread.id)}" class="risk-card w-full rounded-xl border border-rose-100 bg-rose-50 p-3 text-left">
+          <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
               <h5 class="truncate text-base font-black">${esc(thread.name)}</h5>
               <p class="mt-1 truncate text-xs text-slate-500">${esc(thread.id)}</p>
             </div>
-            <span class="rounded-full bg-white px-3 py-1 text-sm font-black text-rose-600">${esc(riskLabel(thread.riskLevel))}</span>
+            <span class="rounded-full bg-white px-2.5 py-1 text-xs font-black text-rose-600">${esc(riskLabel(thread.riskLevel))}</span>
           </div>
           <p class="mt-2 line-clamp-2 text-sm text-slate-700">${esc(thread.summary || "-")}</p>
           <div class="mt-2 flex justify-between text-xs text-slate-400"><span>${esc(dateText(thread.lastMessageAt))}</span><span>${thread.unread || 0} 未讀</span></div>
@@ -320,13 +320,13 @@
       }
 
       $("active-header").innerHTML = `
-        <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-20 w-20 rounded-full object-cover bg-slate-100" alt="">
+        <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-14 w-14 rounded-full object-cover bg-slate-100" alt="">
         <div class="min-w-0">
-          <h2 class="truncate text-4xl font-black">${esc(thread.name)}</h2>
-          <p class="mt-1 text-lg text-slate-500">${esc(thread.unread || 0)} 則訊息 · ${esc(thread.id)}</p>
-          <div class="mt-3 flex flex-wrap gap-2">
-            ${thread.tags.slice(0, 5).map(tag => `<span class="rounded-full bg-sky-50 px-4 py-2 text-sm font-black text-sky-700">${esc(tag)}</span>`).join("")}
-            <span class="rounded-full px-4 py-2 text-sm font-black ${riskClass(thread.riskLevel)}">${esc(riskLabel(thread.riskLevel))}風險</span>
+          <h2 class="truncate text-3xl font-black">${esc(thread.name)}</h2>
+          <p class="mt-1 text-base text-slate-500">${esc(thread.unread || 0)} 則訊息 · ${esc(thread.id)}</p>
+          <div class="mt-2 flex flex-wrap gap-2">
+            ${thread.tags.slice(0, 5).map(tag => `<span class="rounded-full bg-sky-50 px-3 py-1.5 text-sm font-black text-sky-700">${esc(tag)}</span>`).join("")}
+            <span class="rounded-full px-3 py-1.5 text-sm font-black ${riskClass(thread.riskLevel)}">${esc(riskLabel(thread.riskLevel))}風險</span>
           </div>
         </div>
       `;
@@ -339,7 +339,7 @@
 
       $("note").value = thread.note || "";
       $("active-tags").innerHTML = (thread.tags || []).map(tag => `
-        <button class="active-tag rounded-full bg-slate-100 px-4 py-2 text-sm font-black text-slate-700" data-tag="${esc(tag)}">${esc(tag)} ×</button>
+        <button class="active-tag rounded-full bg-slate-100 px-3 py-1.5 text-sm font-black text-slate-700" data-tag="${esc(tag)}">${esc(tag)} ×</button>
       `).join("");
       document.querySelectorAll(".active-tag").forEach(btn => btn.addEventListener("click", () => {
         state.active.tags = state.active.tags.filter(tag => tag !== btn.dataset.tag);
@@ -358,16 +358,16 @@
         const isStaff = message.senderRole === "staff" || message.type === "admin";
         return `
           <div class="flex ${isStaff ? "justify-end" : "justify-start"}">
-            <div class="max-w-[72%] rounded-3xl border p-5 shadow-sm ${isStaff ? "bg-slate-950 text-white border-slate-950" : "bg-white border-slate-200"}">
-              <div class="mb-2 flex items-center justify-between gap-5">
+            <div class="max-w-[70%] rounded-2xl border p-4 shadow-sm ${isStaff ? "bg-slate-950 text-white border-slate-950" : "bg-white border-slate-200"}">
+              <div class="mb-2 flex items-center justify-between gap-4">
                 <span class="font-black ${isStaff ? "text-white" : "text-slate-500"}">${esc(message.senderName || message.title || "LINE 訊息")}</span>
                 <span class="shrink-0 text-sm ${isStaff ? "text-slate-300" : "text-slate-400"}">${esc(dateText(message.createdAt))}</span>
               </div>
-              <div class="whitespace-pre-wrap text-lg leading-relaxed">${esc(message.text || "")}</div>
+              <div class="whitespace-pre-wrap text-base leading-relaxed">${esc(message.text || "")}</div>
             </div>
           </div>
         `;
-      }).join("") || `<div class="rounded-3xl border border-dashed border-slate-200 bg-white p-8 text-center font-bold text-slate-400">尚無聊天室訊息，請先在 LINE OA 測試留言後按同步。</div>`;
+      }).join("") || `<div class="rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center font-bold text-slate-400">尚無聊天室訊息，請先在 LINE OA 測試留言後按同步。</div>`;
       $("messages").scrollTop = $("messages").scrollHeight;
     }
 
@@ -481,16 +481,16 @@
 
     const style = document.createElement("style");
     style.textContent = `
-      .feature { min-height: 56px; border-radius: 16px; display: grid; place-items: center; font-size: 17px; font-weight: 900; }
-      .filter { border-radius: 999px; padding: 10px 19px; font-weight: 900; color: #334155; background: #f1f5f9; }
+      .feature { min-height: 46px; border-radius: 14px; display: grid; place-items: center; font-size: 15px; font-weight: 900; }
+      .filter { border-radius: 999px; padding: 8px 15px; font-size: 14px; font-weight: 900; color: #334155; background: #f1f5f9; }
       .filter.active { color: white; background: #020617; }
-      .status-btn { border: 1px solid #cbd5e1; border-radius: 16px; padding: 14px 24px; font-size: 18px; font-weight: 900; background: white; color: #020617; }
-      .metric { border-radius: 20px; padding: 17px; min-height: 92px; }
-      .metric span { display: block; color: #64748b; font-weight: 800; }
-      .metric strong { display: block; margin-top: 8px; font-size: 32px; line-height: 1; }
+      .status-btn { border: 1px solid #cbd5e1; border-radius: 14px; padding: 10px 18px; font-size: 16px; font-weight: 900; background: white; color: #020617; }
+      .metric { border-radius: 16px; padding: 13px; min-height: 74px; }
+      .metric span { display: block; color: #64748b; font-size: 14px; font-weight: 800; }
+      .metric strong { display: block; margin-top: 6px; font-size: 26px; line-height: 1; }
       @media (max-width: 1200px) {
-        aside.w-\\[450px\\] { width: 390px; }
-        section.grid-cols-\\[1fr_405px\\] { grid-template-columns: 1fr 340px; }
+        aside.w-\\[360px\\] { width: 340px; }
+        section.grid-cols-\\[1fr_360px\\] { grid-template-columns: 1fr 320px; }
       }
     `;
     document.head.appendChild(style);
