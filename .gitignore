@@ -1,3 +1,4 @@
 .wrangler/
 .action_source_tmp/
 hostel-*
+tools/hooktea-members-*.json
