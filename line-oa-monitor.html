@@ -1,9 +1,9 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HookTea AI 敺??</title>
+  <title>HookTea AI 後台監控</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-100 text-slate-900">
@@ -12,26 +12,26 @@
       <div class="p-5 border-b border-slate-100">
         <div class="flex items-center justify-between gap-3">
           <div>
-            <h1 class="text-2xl font-black">HookTea AI 敺??</h1>
-            <p class="text-sm text-slate-500 font-semibold mt-1">?閮??◢?芾??冽?阮</p>
+            <h1 class="text-2xl font-black">HookTea AI 後台監控</h1>
+            <p class="text-sm text-slate-500 font-semibold mt-1">會員訊號、風險與推播草稿</p>
           </div>
-          <a href="/admin.html" class="rounded-xl bg-slate-900 text-white px-3 py-2 text-xs font-black">敺</a>
+          <a href="/admin.html" class="rounded-xl bg-slate-900 text-white px-3 py-2 text-xs font-black">後台</a>
         </div>
         <div class="grid grid-cols-3 gap-2 mt-5">
           <div class="rounded-2xl bg-emerald-50 p-3">
-            <div class="text-xs font-bold text-emerald-700">?</div>
+            <div class="text-xs font-bold text-emerald-700">會員</div>
             <div id="stat-total" class="text-2xl font-black text-emerald-900">0</div>
           </div>
           <div class="rounded-2xl bg-amber-50 p-3">
-            <div class="text-xs font-bold text-amber-700">敺???/div>
+            <div class="text-xs font-bold text-amber-700">待處理</div>
             <div id="stat-open" class="text-2xl font-black text-amber-900">0</div>
           </div>
           <div class="rounded-2xl bg-rose-50 p-3">
-            <div class="text-xs font-bold text-rose-700">擃◢??/div>
+            <div class="text-xs font-bold text-rose-700">高風險</div>
             <div id="stat-risk" class="text-2xl font-black text-rose-900">0</div>
           </div>
         </div>
-        <input id="search" class="mt-4 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="??憪??D??閬?璅惜">
+        <input id="search" class="mt-4 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="搜尋姓名、ID、摘要或標籤">
       </div>
       <div id="thread-list" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
     </aside>
@@ -39,49 +39,51 @@
     <main class="flex-1 min-w-0 bg-white flex flex-col">
       <header class="p-5 border-b border-slate-200 flex items-center justify-between">
         <div>
-          <h2 id="active-name" class="text-xl font-black">隢????/h2>
+          <h2 id="active-name" class="text-xl font-black">請選擇會員</h2>
           <p id="active-summary" class="text-sm text-slate-500 mt-1"></p>
         </div>
         <div class="flex gap-2">
-          <button id="refresh" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black">??渡?</button>
-          <button id="backfill" class="rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-black">?? AI 閮?</button>
+          <button id="refresh" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black">重新整理</button>
+          <button id="backfill" class="rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-black">重新分析 AI 訊號</button>
         </div>
       </header>
 
       <section class="grid grid-cols-[1fr_360px] flex-1 min-h-0">
         <div class="flex flex-col min-w-0">
           <div id="messages" class="flex-1 overflow-y-auto p-6 space-y-3 bg-slate-50"></div>
-          <div class="bg-slate-700 text-white text-sm font-semibold px-6 py-3">甇日??? AI ?????典?閮餉??冽?阮嚗?瘨?LINE reply token??/div>
+          <div class="bg-slate-700 text-white text-sm font-semibold px-6 py-3">
+            這裡整理 AI 判斷、會員紀錄與推播草稿；實際回覆 LINE 仍需由客服或推播流程送出。
+          </div>
         </div>
         <aside class="border-l border-slate-200 p-5 overflow-y-auto">
           <div class="space-y-5">
             <div>
-              <h3 class="font-black mb-2">AI ?方?</h3>
+              <h3 class="font-black mb-2">AI 訊號</h3>
               <div id="signals" class="space-y-2"></div>
             </div>
             <div>
-              <h3 class="font-black mb-2">?折?酉</h3>
-              <textarea id="note" rows="4" class="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="頛詨?折?酉"></textarea>
+              <h3 class="font-black mb-2">備註與標籤</h3>
+              <textarea id="note" rows="4" class="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-emerald-500" placeholder="輸入內部備註"></textarea>
               <div class="flex gap-2 mt-2">
-                <input id="tag" class="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="?啣?璅惜">
-                <button id="add-tag" class="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm font-black">?</button>
+                <input id="tag" class="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="新增標籤">
+                <button id="add-tag" class="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm font-black">加入</button>
               </div>
               <div id="tags" class="flex flex-wrap gap-2 mt-3"></div>
-              <button id="save-thread" class="mt-3 w-full rounded-xl bg-emerald-600 text-white px-4 py-3 text-sm font-black">?脣??酉/璅惜</button>
+              <button id="save-thread" class="mt-3 w-full rounded-xl bg-emerald-600 text-white px-4 py-3 text-sm font-black">儲存備註與標籤</button>
             </div>
             <div class="border-t border-slate-100 pt-5">
-              <h3 class="font-black mb-2">?冽?阮</h3>
-              <input id="broadcast-title" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="?冽?迂">
-              <textarea id="broadcast-text" rows="4" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="?冽??"></textarea>
+              <h3 class="font-black mb-2">推播草稿</h3>
+              <input id="broadcast-title" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="推播標題">
+              <textarea id="broadcast-text" rows="4" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="推播內容"></textarea>
               <select id="broadcast-mode" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold outline-none focus:border-emerald-500 mb-2">
-                <option value="all">?券?</option>
-                <option value="high">擃◢?芣???/option>
-                <option value="tag">??璅惜</option>
+                <option value="all">全部會員</option>
+                <option value="high">高風險會員</option>
+                <option value="tag">指定標籤</option>
               </select>
-              <input id="broadcast-tag" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="??璅惜">
+              <input id="broadcast-tag" class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-500 mb-2" placeholder="指定標籤">
               <div class="grid grid-cols-2 gap-2">
-                <button id="preview-broadcast" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black">?汗鈭箸</button>
-                <button id="create-broadcast" class="rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-black">撱箇??阮</button>
+                <button id="preview-broadcast" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black">預覽人數</button>
+                <button id="create-broadcast" class="rounded-xl bg-emerald-600 text-white px-4 py-2 text-sm font-black">建立草稿</button>
               </div>
               <div id="broadcast-result" class="text-sm text-slate-500 font-semibold mt-3"></div>
             </div>
@@ -99,18 +101,17 @@
     const state = { password: urlPassword || sessionStorage.getItem('act_admin_pwd') || '', threads: [], active: null };
     const el = id => document.getElementById(id);
     const esc = text => String(text || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    const riskText = value => ({ high: '高', medium: '中', low: '低' }[String(value || '').toLowerCase()] || value || '低');
 
     function promptPassword() {
-      const password = prompt('HookTea admin password') || '';
+      const password = prompt('HookTea 後台密碼') || '';
       if (password) sessionStorage.setItem('act_admin_pwd', password);
       state.password = password;
       return password;
     }
 
     async function fetchJson(url, options = {}, retry = true) {
-      if (!state.password) {
-        promptPassword();
-      }
+      if (!state.password) promptPassword();
       const headers = { ...(options.headers || {}), 'x-hooktea-admin-password': state.password };
       if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
       const res = await fetch(url, { ...options, headers });
@@ -139,12 +140,12 @@
               <div class="font-black truncate">${esc(t.name || t.id)}</div>
               <div class="text-xs text-slate-400 mt-1">${esc(t.id)}</div>
             </div>
-            <span class="rounded-full px-2 py-1 text-xs font-black ${t.riskLevel === 'high' ? 'bg-rose-100 text-rose-700' : t.riskLevel === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}">${esc(t.riskLevel || 'low')}</span>
+            <span class="rounded-full px-2 py-1 text-xs font-black ${t.riskLevel === 'high' ? 'bg-rose-100 text-rose-700' : t.riskLevel === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}">${esc(riskText(t.riskLevel))}</span>
           </div>
           <p class="text-sm text-slate-600 mt-2 line-clamp-2">${esc(t.summary || '')}</p>
           <div class="flex flex-wrap gap-1 mt-3">${(t.tags || []).slice(0, 4).map(tag => `<span class="rounded-full bg-slate-100 text-slate-600 px-2 py-1 text-xs font-bold">${esc(tag)}</span>`).join('')}</div>
         </button>
-      `).join('');
+      `).join('') || '<div class="text-slate-400 font-bold text-center py-8">目前沒有符合條件的會員</div>';
       document.querySelectorAll('.thread').forEach(btn => btn.addEventListener('click', () => loadThread(btn.dataset.id)));
     }
 
@@ -159,8 +160,8 @@
           <div class="text-xs font-bold text-slate-400">${esc(k)}</div>
           <div class="font-black text-slate-800">${esc(v || '-')}</div>
         </div>
-      `).join('');
-      el('tags').innerHTML = (t.tags || []).map(tag => `<button data-tag="${esc(tag)}" class="tag rounded-full bg-emerald-50 text-emerald-700 px-3 py-1 text-xs font-black">${esc(tag)} ?</button>`).join('');
+      `).join('') || '<div class="text-slate-400 font-bold">尚無 AI 訊號</div>';
+      el('tags').innerHTML = (t.tags || []).map(tag => `<button data-tag="${esc(tag)}" class="tag rounded-full bg-emerald-50 text-emerald-700 px-3 py-1 text-xs font-black">${esc(tag)} x</button>`).join('');
       document.querySelectorAll('.tag').forEach(btn => btn.addEventListener('click', () => {
         state.active.tags = (state.active.tags || []).filter(x => x !== btn.dataset.tag);
         renderActive();
@@ -168,12 +169,12 @@
       el('messages').innerHTML = (t.messages || []).map(m => `
         <div class="rounded-2xl bg-white border border-slate-100 p-4 shadow-sm">
           <div class="flex items-center justify-between gap-3">
-            <div class="font-black">${esc(m.title || m.type || '鈭辣')}</div>
+            <div class="font-black">${esc(m.title || m.type || '紀錄')}</div>
             <div class="text-xs text-slate-400">${esc(m.createdAt || '')}</div>
           </div>
           <div class="text-sm text-slate-600 mt-2 whitespace-pre-wrap">${esc(m.text || '')}</div>
         </div>
-      `).join('') || '<div class="text-slate-400 font-bold">?桀?瘝?鈭辣蝝??/div>';
+      `).join('') || '<div class="text-slate-400 font-bold">尚無紀錄</div>';
     }
 
     async function loadThreads() {
@@ -211,7 +212,7 @@
         method: 'POST',
         body: JSON.stringify({ filters: { mode: el('broadcast-mode').value, tag: el('broadcast-tag').value } })
       });
-      el('broadcast-result').textContent = `?摯?嚗?{data.data?.count || 0} 鈭槁;
+      el('broadcast-result').textContent = `預估推播人數：${data.data?.count || 0} 位`;
     }
 
     async function createBroadcast() {
@@ -223,7 +224,7 @@
           filters: { mode: el('broadcast-mode').value, tag: el('broadcast-tag').value }
         })
       });
-      el('broadcast-result').textContent = `撌脣遣蝡?蝔選?${data.data?.id || ''}嚗???${data.data?.recipientCount || 0} 鈭槁;
+      el('broadcast-result').textContent = `已建立草稿：${data.data?.id || ''}，對象 ${data.data?.recipientCount || 0} 位`;
     }
 
     el('search').addEventListener('input', renderThreads);
@@ -244,4 +245,3 @@
   </script>
 </body>
 </html>
-
