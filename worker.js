@@ -1986,10 +1986,10 @@ async function serveStaticHtml(request, env, corsHeaders) {
 }
 
 function getLinePayConfig(env, settings = {}) {
-  const mode = String(env.LINEPAY_ENV || settings.linepay_env || "sandbox").toLowerCase();
-  const channelId = String(env.LINEPAY_CHANNEL_ID || settings.linepay_channel_id || "").trim();
-  const channelSecret = String(env.LINEPAY_CHANNEL_SECRET || settings.linepay_channel_secret || "").trim();
-  const currency = String(env.LINEPAY_CURRENCY || settings.linepay_currency || "TWD").trim() || "TWD";
+  const mode = String(envValue(env, ["LINEPAY_ENV", "LINE_PAY_ENV", "Line Pay Env", "LinePay Env"]) || settings.linepay_env || "sandbox").toLowerCase();
+  const channelId = String(envValue(env, ["LINEPAY_CHANNEL_ID", "LINE_PAY_CHANNEL_ID", "Line Pay Channel ID", "LinePay Channel ID"]) || settings.linepay_channel_id || "").trim();
+  const channelSecret = String(envValue(env, ["LINEPAY_CHANNEL_SECRET", "LINE_PAY_CHANNEL_SECRET", "Line Pay Channel Secret", "LinePay Channel Secret"]) || settings.linepay_channel_secret || "").trim();
+  const currency = String(envValue(env, ["LINEPAY_CURRENCY", "LINE_PAY_CURRENCY", "Line Pay Currency", "LinePay Currency"]) || settings.linepay_currency || "TWD").trim() || "TWD";
   const baseUrl = mode === "production" ? "https://api-pay.line.me" : "https://sandbox-api-pay.line.me";
   return {
     mode,
@@ -1997,8 +1997,8 @@ function getLinePayConfig(env, settings = {}) {
     channelId,
     channelSecret,
     currency,
-    deviceProfileId: String(env.LINEPAY_DEVICE_PROFILE_ID || settings.linepay_device_profile_id || "").trim(),
-    deviceType: String(env.LINEPAY_DEVICE_TYPE || settings.linepay_device_type || "").trim(),
+    deviceProfileId: String(envValue(env, ["LINEPAY_DEVICE_PROFILE_ID", "LINE_PAY_DEVICE_PROFILE_ID"]) || settings.linepay_device_profile_id || "").trim(),
+    deviceType: String(envValue(env, ["LINEPAY_DEVICE_TYPE", "LINE_PAY_DEVICE_TYPE"]) || settings.linepay_device_type || "").trim(),
     configured: !!(channelId && channelSecret),
   };
 }
@@ -2463,6 +2463,12 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/linepay/confirm") || url.searchParams.get("action") === "LINEPAY_CONFIRM") {
+      return this.handleLinePayConfirm(request, env, ctx);
+    }
+    if (url.pathname.startsWith("/linepay/cancel") || url.searchParams.get("action") === "LINEPAY_CANCEL") {
+      return this.handleLinePayCancel(request, env, ctx);
+    }
 
     if (request.method === "GET" && url.pathname.startsWith("/img/")) {
       const fileName = url.pathname.replace("/img/", "");
@@ -2487,9 +2493,6 @@ export default {
       if (apiResponse) return apiResponse;
     }
 
-    const staticResponse = await serveStaticHtml(request, env, corsHeaders);
-    if (staticResponse) return staticResponse;
-
     if (url.pathname === "/hub-status") {
         return new Response(JSON.stringify({ gas: 'success', forward: 'success', line: 'success', allGood: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -2500,12 +2503,8 @@ export default {
     if (url.searchParams.get("action") === "NEWEBPAY_NOTIFY") {
       return this.handleNewebpayNotify(request, env, ctx);
     }
-    if (url.searchParams.get("action") === "LINEPAY_CONFIRM") {
-      return this.handleLinePayConfirm(request, env, ctx);
-    }
-    if (url.searchParams.get("action") === "LINEPAY_CANCEL") {
-      return this.handleLinePayCancel(request, env, ctx);
-    }
+    const staticResponse = await serveStaticHtml(request, env, corsHeaders);
+    if (staticResponse) return staticResponse;
 
     if (request.method === "POST") {
       return this.handleApiActions(request, env, ctx, corsHeaders);
@@ -4045,8 +4044,8 @@ export default {
     const workerUrl = String(payload.workerUrl || "").replace(/\/+$/, "");
     if (!workerUrl) throw new Error("缺少 LINE Pay 回呼網址");
     const originalReturnUrl = String(payload.returnUrl || "");
-    const confirmUrl = `${workerUrl}?action=LINEPAY_CONFIRM&orderId=${encodeURIComponent(orderId)}${originalReturnUrl ? `&redirect=${encodeURIComponent(originalReturnUrl)}` : ""}`;
-    const cancelUrl = `${workerUrl}?action=LINEPAY_CANCEL&orderId=${encodeURIComponent(orderId)}${originalReturnUrl ? `&redirect=${encodeURIComponent(originalReturnUrl)}` : ""}`;
+    const confirmUrl = `${workerUrl}/linepay/confirm?orderId=${encodeURIComponent(orderId)}${originalReturnUrl ? `&redirect=${encodeURIComponent(originalReturnUrl)}` : ""}`;
+    const cancelUrl = `${workerUrl}/linepay/cancel?orderId=${encodeURIComponent(orderId)}${originalReturnUrl ? `&redirect=${encodeURIComponent(originalReturnUrl)}` : ""}`;
     const productName = String(payload.courseName || "HookTea 訂單").slice(0, 400);
     const body = {
       amount,
@@ -4067,7 +4066,7 @@ export default {
         cancelUrl,
       },
     };
-    const data = await callLinePayApi(env, settings, "POST", "/v4/payments/request", body);
+    const data = await callLinePayApi(env, settings, "POST", "/v3/payments/request", body);
     const transactionId = String(data?.info?.transactionId || "");
     await updateLinePayOrder(env, null, orderId, transactionId, {
       paymentMethod: "LINEPAY",
@@ -4258,7 +4257,7 @@ export default {
       const amount = Math.max(0, Math.floor(Number(order.amount || 0)));
       const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
       const cfg = getLinePayConfig(env, settings);
-      const data = await callLinePayApi(env, settings, "POST", `/v4/payments/${encodeURIComponent(transactionId)}/confirm`, {
+      const data = await callLinePayApi(env, settings, "POST", `/v3/payments/${encodeURIComponent(transactionId)}/confirm`, {
         amount,
         currency: cfg.currency,
       });

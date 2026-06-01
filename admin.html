@@ -984,6 +984,37 @@
                             <div><label class="input-label">WordPress 點數類型</label><input type="text" v-model="sysSettings.wp_point_type" class="input-field text-sm font-mono text-indigo-600" placeholder="system_point"></div>
                         </div>
 
+                        <div class="section-title !mb-4 text-blue-800 border-blue-500">LINE Pay 金流 API 設定</div>
+
+                        <div class="mb-8 bg-green-50 p-4 rounded-xl border border-green-100 shadow-sm">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="input-label">LINE Pay 環境</label>
+                                    <select v-model="sysSettings.linepay_env" class="input-field font-bold bg-white">
+                                        <option value="sandbox">Sandbox 測試</option>
+                                        <option value="production">Production 正式</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="input-label">LINE Pay Channel ID</label>
+                                    <input type="text" v-model="sysSettings.linepay_channel_id" class="input-field font-mono" placeholder="LINE Pay Channel ID">
+                                </div>
+                                <div>
+                                    <label class="input-label">幣別</label>
+                                    <input type="text" v-model="sysSettings.linepay_currency" class="input-field font-mono" placeholder="TWD">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 gap-4 mt-4">
+                                <div>
+                                    <label class="input-label">LINE Pay Channel Secret</label>
+                                    <input type="password" v-model="sysSettings.linepay_channel_secret" class="input-field font-mono text-sm" placeholder="建議放 Cloudflare Worker Secret">
+                                </div>
+                            </div>
+                            <div class="text-[12px] text-green-700 font-bold mt-3 leading-relaxed">
+                                Worker 變數可用：LINEPAY_ENV、LINEPAY_CHANNEL_ID、LINEPAY_CHANNEL_SECRET、LINEPAY_CURRENCY。正式收款請把環境切到 production。
+                            </div>
+                        </div>
+
                         <div class="section-title !mb-4 text-blue-800 border-blue-500">藍新金流 API 設定</div>
                         
                         <!-- 🚀 新增：電子發票 (ezPay) 整合開關 -->
@@ -1455,7 +1486,11 @@
                     const normalizeSystemSettings = (settings = {}) => ({
                         ...settings,
                         low_risk_wasabi_read_enabled: String(settings.low_risk_wasabi_read_enabled || 'false'),
-                        high_risk_wasabi_read_enabled: String(settings.high_risk_wasabi_read_enabled || 'false')
+                        high_risk_wasabi_read_enabled: String(settings.high_risk_wasabi_read_enabled || 'false'),
+                        linepay_env: String(settings.linepay_env || 'sandbox'),
+                        linepay_channel_id: String(settings.linepay_channel_id || ''),
+                        linepay_channel_secret: String(settings.linepay_channel_secret || ''),
+                        linepay_currency: String(settings.linepay_currency || 'TWD')
                     });
                     
                     const memberSearch = ref('');
