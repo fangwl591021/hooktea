@@ -2061,6 +2061,8 @@ function getLineChannelAccessToken(env) {
     "LINE_CHANNEL_ACCESS_TOKEN",
     "Line Message API Channel Access Token",
     "Line Message API Channel access token",
+    "Line Message API Channel Token",
+    "Line Message API Channel token",
     "LINE_MESSAGING_API_CHANNEL_ACCESS_TOKEN",
     "LINE_MESSAGE_API_CHANNEL_ACCESS_TOKEN",
     "LINE_CHANNEL_TOKEN",
