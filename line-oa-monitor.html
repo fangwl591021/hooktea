@@ -322,7 +322,7 @@
       $("active-header").innerHTML = `
         <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-14 w-14 rounded-full object-cover bg-slate-100" alt="">
         <div class="min-w-0">
-          <h2 class="truncate text-2xl font-black">${esc(thread.name)}</h2>
+          <h2 class="truncate text-xl font-black">${esc(thread.name)}</h2>
           <p class="mt-1 text-sm text-slate-500">${esc(thread.unread || 0)} 則訊息 · ${esc(thread.id)}</p>
           <div class="mt-2 flex flex-wrap gap-2">
             ${thread.tags.slice(0, 5).map(tag => `<span class="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-black text-sky-700">${esc(tag)}</span>`).join("")}
