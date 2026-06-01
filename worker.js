@@ -2669,7 +2669,27 @@ async function handleHookTeaMonitorApi(request, env) {
   const url = new URL(request.url);
   if (url.pathname === "/api/line-oa/audience" && request.method === "GET") {
     const rows = await buildHookTeaMonitorRows(env);
+    const tagCounts = new Map();
+    let unreadMessages = 0;
+    let messages7d = 0;
+    const now = Date.now();
+    const sevenDays = 7 * 24 * 60 * 60 * 1000;
+    for (const row of rows) {
+      const unread = Number(row.unread || 0);
+      unreadMessages += unread;
+      const lastTs = row.lastMessageAt ? Date.parse(row.lastMessageAt) : 0;
+      if (lastTs && now - lastTs <= sevenDays) messages7d += Math.max(1, unread);
+      for (const tag of row.tags || []) {
+        const key = String(tag || "").trim();
+        if (key) tagCounts.set(key, (tagCounts.get(key) || 0) + 1);
+      }
+    }
+    const tagStats = Array.from(tagCounts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+      .slice(0, 80);
     return json({ success: true, data: {
+      generatedAt: new Date().toISOString(),
       overview: {
         totalThreads: rows.length,
         openThreads: rows.filter(r => r.status !== "closed").length,
@@ -2677,9 +2697,15 @@ async function handleHookTeaMonitorApi(request, env) {
         mediumRiskThreads: rows.filter(r => r.riskLevel === "medium").length,
         activeThreads7d: rows.length,
         activeThreads30d: rows.length,
+        messages7d,
+        unreadMessages,
       },
-      riskThreads: rows.filter(r => r.riskLevel !== "low").slice(0, 20),
-      tags: Array.from(new Set(rows.flatMap(r => r.tags || []))).slice(0, 80),
+      riskThreads: rows
+        .filter(r => r.riskLevel !== "low")
+        .slice(0, 20)
+        .map(r => ({ ...r, risk: r.riskLevel })),
+      interests: tagStats.slice(0, 8),
+      tags: tagStats,
     }});
   }
   if (url.pathname === "/api/line-oa/threads" && request.method === "GET") {
