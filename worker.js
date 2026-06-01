@@ -1863,7 +1863,16 @@ async function fillMissingLineProfile(env, user) {
 
 async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const adminPassword = String(env.ADMIN_PASSWORD || settings.admin_password || "@1234").trim();
+  const adminPassword = envValue(env, [
+    "ADMIN_PASSWORD",
+    "ADMIN PASSWORD",
+    "ADMIN_PASS",
+    "Admin Password",
+    "Admin password",
+    "AdminPassword",
+    "adminPassword",
+    "HOOKTEA_ADMIN_PASSWORD",
+  ]) || String(settings.admin_password || "@1234").trim();
   const payloadAdminPassword = String(payload?.adminPassword || "").trim();
   if (adminPassword && payloadAdminPassword && payloadAdminPassword === adminPassword) {
     return {
@@ -2510,7 +2519,7 @@ export default {
         throw new Error("Admin authorization required");
       }
 
-      if (VERIFIED_USER_ACTIONS.has(action) && !access.hasVerifiedLineUser && !access.isAdmin) {
+      if (VERIFIED_USER_ACTIONS.has(action) && action !== "CHECK_USER" && !access.hasVerifiedLineUser && !access.isAdmin) {
         throw new Error("LINE authorization required");
       }
 
