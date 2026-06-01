@@ -1480,6 +1480,29 @@ async function replyLineMessage(env, replyToken, messages) {
   return { ok: true };
 }
 
+async function pushLineMessage(env, userId, messages) {
+  const token = getLineChannelAccessToken(env);
+  const to = String(userId || "").trim();
+  if (!token || !to) return { ok: false, skipped: true };
+  const res = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      to,
+      messages: Array.isArray(messages) ? messages : [messages],
+    }),
+  });
+  if (!res.ok) return { ok: false, status: res.status, text: await res.text() };
+  return { ok: true };
+}
+
+async function deliverLineMessage(env, userId, replyToken, messages) {
+  const reply = await replyLineMessage(env, replyToken, messages);
+  if (reply.ok) return { method: "reply", ...reply };
+  const push = await pushLineMessage(env, userId, messages);
+  return { method: "push", reply, push, ok: !!push.ok };
+}
+
 function textLineMessage(text) {
   return { type: "text", text: String(text || "").slice(0, 5000) };
 }
@@ -1500,7 +1523,7 @@ async function handleLineMemberBindText(env, ctx, event) {
   if (binding?.legacyUserId && /^(綁定會員|會員綁定|綁定點數|我的點數)$/.test(text)) {
     const member = await safeGetKV(env, `USER_${binding.legacyUserId}`, {});
     const points = await safeGetKV(env, `POINTS_${binding.legacyUserId}`, { balance: 0, logs: [] });
-    const reply = await replyLineMessage(env, replyToken, textLineMessage(`已綁定會員：${member.name || member.displayName || binding.legacyUserId}\n目前點數：${Number(points.balance || 0)} 點`));
+    const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`已綁定會員：${member.name || member.displayName || binding.legacyUserId}\n目前點數：${Number(points.balance || 0)} 點`));
     await safePutKV(env, debugKey, { step: "already_bound", text, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
@@ -1511,28 +1534,36 @@ async function handleLineMemberBindText(env, ctx, event) {
   const pendingPhone = pending ? extractTaiwanPhone(text) : "";
   if (/^(綁定會員|會員綁定|綁定點數)$/.test(text)) {
     await safePutKV(env, pendingKey, { startedAt: new Date().toISOString() }, { expirationTtl: 600 });
-    const reply = await replyLineMessage(env, replyToken, textLineMessage("請回覆您的手機號碼，例如：0912345678\n我會用這支手機幫您綁定舊會員資料與點數。"));
+    const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage("請回覆您的手機號碼，例如：0912345678\n我會用這支手機幫您綁定舊會員資料與點數。"));
     await safePutKV(env, debugKey, { step: "prompt_phone", text, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
   const phone = directPhone || pendingPhone;
   if (!phone) return false;
 
-  const profile = await fetchLineBotProfile(env, uid);
-  const result = await bindLegacyMemberToLine(env, ctx, uid, { phone, name: profile?.displayName || "" }, { name: profile?.displayName || "", picture: profile?.pictureUrl || "" });
+  let profile = null;
+  let result = null;
+  try {
+    profile = await fetchLineBotProfile(env, uid);
+    result = await bindLegacyMemberToLine(env, ctx, uid, { phone, name: profile?.displayName || "" }, { name: profile?.displayName || "", picture: profile?.pictureUrl || "" });
+  } catch (err) {
+    const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage("綁定時發生錯誤，請稍後再試或洽店家協助。"));
+    await safePutKV(env, debugKey, { step: "bind_exception", text, phone, error: err.message || String(err), reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
+    return true;
+  }
   if (!result.bound) {
     const reasonText = result.reason === "not_found"
       ? "找不到這支手機的舊會員資料。"
       : result.reason === "duplicate_phone"
         ? "這支手機對到多筆舊會員，請洽店家協助人工確認。"
         : "目前無法完成綁定。";
-    const reply = await replyLineMessage(env, replyToken, textLineMessage(`${reasonText}\n請確認手機號碼是否與舊系統會員資料相同。`));
+    const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${reasonText}\n請確認手機號碼是否與舊系統會員資料相同。`));
     await safePutKV(env, debugKey, { step: "bind_failed", text, phone, reason: result.reason, matches: result.matches || 0, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
   await env.ACTION_DATA.delete(pendingKey).catch(() => {});
   const points = await safeGetKV(env, `POINTS_${result.userId}`, { balance: 0, logs: [] });
-  const reply = await replyLineMessage(env, replyToken, textLineMessage(`綁定成功！\n會員：${result.member.name || result.member.displayName || result.userId}\n目前點數：${Number(points.balance || 0)} 點`));
+  const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`綁定成功！\n會員：${result.member.name || result.member.displayName || result.userId}\n目前點數：${Number(points.balance || 0)} 點`));
   await safePutKV(env, debugKey, { step: "bind_success", text, phone, legacyUserId: result.userId, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
   return true;
 }
