@@ -2663,6 +2663,103 @@ async function getHookTeaMonitorThread(env, id) {
   return { ...row, messages };
 }
 
+function normalizeHookTeaLearningCase(row = {}) {
+  return {
+    id: String(row.id || ""),
+    sourceThreadId: String(row.source_thread_id || row.sourceThreadId || ""),
+    sourceMessageId: String(row.source_message_id || row.sourceMessageId || ""),
+    customerText: String(row.customer_text || row.customerText || ""),
+    staffReply: String(row.staff_reply || row.staffReply || ""),
+    category: String(row.category || ""),
+    tags: splitTags(row.tags),
+    lesson: String(row.lesson || ""),
+    confidence: Number(row.confidence || 0),
+    status: String(row.status || "draft"),
+    createdBy: String(row.created_by || row.createdBy || ""),
+    createdAt: String(row.created_at || row.createdAt || ""),
+    updatedAt: String(row.updated_at || row.updatedAt || ""),
+  };
+}
+
+async function listHookTeaLearningCases(env, options = {}) {
+  const threadId = String(options.threadId || "").trim();
+  const status = String(options.status || "").trim();
+  const limit = Math.max(1, Math.min(200, Number(options.limit || 50)));
+  if (!env.DB) return [];
+  const where = [];
+  const binds = [];
+  if (threadId) {
+    where.push("source_thread_id = ?");
+    binds.push(threadId);
+  }
+  if (status) {
+    where.push("status = ?");
+    binds.push(status);
+  }
+  const sql = `
+    SELECT *
+    FROM ai_learning_cases
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT ?
+  `;
+  const { results } = await env.DB.prepare(sql).bind(...binds, limit).all().catch(() => ({ results: [] }));
+  return (results || []).map(normalizeHookTeaLearningCase);
+}
+
+async function upsertHookTeaLearningCase(env, body = {}) {
+  if (!env.DB) throw new Error("DB_NOT_CONFIGURED");
+  const now = new Date().toISOString();
+  const id = String(body.id || "").trim() || (crypto.randomUUID ? crypto.randomUUID() : `LEARN_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  const sourceThreadId = String(body.sourceThreadId || body.threadId || "").trim();
+  const sourceMessageId = String(body.sourceMessageId || "").trim();
+  const customerText = String(body.customerText || "").trim();
+  const staffReply = String(body.staffReply || "").trim();
+  const category = String(body.category || "一般客服").trim();
+  const tags = Array.isArray(body.tags) ? body.tags.map(x => String(x || "").trim()).filter(Boolean).join(",") : String(body.tags || "").trim();
+  const lesson = String(body.lesson || "").trim();
+  const confidence = Math.max(0, Math.min(100, Number(body.confidence || 60)));
+  const status = ["draft", "approved", "rejected"].includes(body.status) ? body.status : "draft";
+  const createdBy = String(body.createdBy || "tonyfang").trim();
+  if (!sourceThreadId) throw new Error("MISSING_THREAD_ID");
+  if (!customerText) throw new Error("MISSING_CUSTOMER_TEXT");
+  if (!staffReply) throw new Error("MISSING_STAFF_REPLY");
+  await env.DB.prepare(`
+    INSERT INTO ai_learning_cases (
+      id, source_thread_id, source_message_id, customer_text, staff_reply,
+      category, tags, lesson, confidence, status, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      source_thread_id = excluded.source_thread_id,
+      source_message_id = excluded.source_message_id,
+      customer_text = excluded.customer_text,
+      staff_reply = excluded.staff_reply,
+      category = excluded.category,
+      tags = excluded.tags,
+      lesson = excluded.lesson,
+      confidence = excluded.confidence,
+      status = excluded.status,
+      created_by = excluded.created_by,
+      updated_at = excluded.updated_at
+  `).bind(
+    id,
+    sourceThreadId,
+    sourceMessageId,
+    customerText,
+    staffReply,
+    category,
+    tags,
+    lesson,
+    confidence,
+    status,
+    createdBy,
+    now,
+    now
+  ).run();
+  const row = await env.DB.prepare(`SELECT * FROM ai_learning_cases WHERE id = ?`).bind(id).first();
+  return normalizeHookTeaLearningCase(row);
+}
+
 async function handleHookTeaMonitorApi(request, env) {
   const auth = await requireHookTeaMonitorAdmin(request, env);
   if (!auth.ok) return auth.response;
@@ -2770,6 +2867,23 @@ async function handleHookTeaMonitorApi(request, env) {
   if (url.pathname === "/api/line-oa/backfill-postbacks" && ["GET", "POST"].includes(request.method)) {
     return json({ success: true, data: { scanned: 0, updated: 0 } });
   }
+  if (url.pathname === "/api/ai-learning/cases" && request.method === "GET") {
+    const data = await listHookTeaLearningCases(env, {
+      threadId: url.searchParams.get("threadId") || "",
+      status: url.searchParams.get("status") || "",
+      limit: url.searchParams.get("limit") || 50,
+    });
+    return json({ success: true, data });
+  }
+  if (url.pathname === "/api/ai-learning/cases" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    try {
+      const data = await upsertHookTeaLearningCase(env, body);
+      return json({ success: true, data });
+    } catch (err) {
+      return json({ success: false, error: err.message || String(err) }, 400);
+    }
+  }
   if (url.pathname === "/api/broadcast/preview" && request.method === "POST") {
     const body = await request.json().catch(() => ({}));
     const rows = await filterHookTeaBroadcastRows(env, body.filters || {});
@@ -2844,7 +2958,7 @@ export default {
       return Response.redirect(url.toString(), 302);
     }
 
-    if (url.pathname.startsWith("/api/line-oa/") || url.pathname.startsWith("/api/broadcast/")) {
+    if (url.pathname.startsWith("/api/line-oa/") || url.pathname.startsWith("/api/broadcast/") || url.pathname.startsWith("/api/ai-learning/")) {
       const apiResponse = await handleHookTeaMonitorApi(request, env);
       if (apiResponse) return apiResponse;
     }

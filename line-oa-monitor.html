@@ -141,6 +141,30 @@
             <h3 class="text-lg font-black">AI 訊號</h3>
             <div id="signals" class="mt-3 space-y-2"></div>
           </section>
+
+          <section class="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4">
+            <div class="flex items-center justify-between gap-2">
+              <h3 class="text-lg font-black">學習機制</h3>
+              <button id="fill-learning" class="rounded-full bg-white px-3 py-1.5 text-xs font-black text-emerald-700">帶入最後訊息</button>
+            </div>
+            <p class="mt-1 text-xs font-bold text-slate-500">只收集人工經驗，不自動接管回覆。</p>
+            <textarea id="learn-customer" rows="2" class="mt-3 w-full rounded-xl border border-emerald-100 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="客人問法 / 情境"></textarea>
+            <textarea id="learn-reply" rows="3" class="mt-2 w-full rounded-xl border border-emerald-100 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="人工客服實際回覆 / 建議回覆"></textarea>
+            <input id="learn-category" class="mt-2 w-full rounded-xl border border-emerald-100 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="分類，例如：會員綁定、點數、付款、活動">
+            <input id="learn-tags" class="mt-2 w-full rounded-xl border border-emerald-100 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="標籤，用逗號分隔">
+            <textarea id="learn-lesson" rows="2" class="mt-2 w-full rounded-xl border border-emerald-100 px-3 py-2 text-sm outline-none focus:border-emerald-500" placeholder="判斷依據 / 注意事項"></textarea>
+            <div class="mt-2 grid grid-cols-[1fr_110px] gap-2">
+              <select id="learn-status" class="rounded-xl border border-emerald-100 px-3 py-2 text-sm font-bold outline-none focus:border-emerald-500">
+                <option value="draft">草稿</option>
+                <option value="approved">已審核</option>
+                <option value="rejected">不採用</option>
+              </select>
+              <input id="learn-confidence" type="number" min="0" max="100" value="60" class="rounded-xl border border-emerald-100 px-3 py-2 text-sm font-bold outline-none focus:border-emerald-500" title="信心分數">
+            </div>
+            <button id="save-learning" class="mt-2 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-black text-white">保存學習案例</button>
+            <div id="learning-result" class="mt-2 text-xs font-bold text-slate-500"></div>
+            <div id="learning-list" class="mt-3 space-y-2"></div>
+          </section>
         </aside>
       </section>
     </main>
@@ -157,6 +181,7 @@
       threads: [],
       audience: null,
       active: null,
+      learningCases: [],
       filter: "all",
       riskExpanded: false,
     };
@@ -375,6 +400,94 @@
       return `https://ui-avatars.com/api/?background=e0f2fe&color=0f172a&bold=true&name=${encodeURIComponent(name || "HT")}`;
     }
 
+    async function loadLearningCases(threadId) {
+      if (!threadId) {
+        state.learningCases = [];
+        renderLearningCases();
+        return;
+      }
+      const res = await fetchJson(`${WORKER_URL}/api/ai-learning/cases?threadId=${encodeURIComponent(threadId)}&limit=20`);
+      state.learningCases = Array.isArray(res.data) ? res.data : [];
+      renderLearningCases();
+    }
+
+    function lastCustomerMessage() {
+      const messages = Array.isArray(state.active?.messages) ? state.active.messages : [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.senderRole !== "staff" && msg.text) return msg;
+      }
+      return null;
+    }
+
+    function fillLearningFromThread() {
+      if (!state.active) return;
+      const msg = lastCustomerMessage();
+      $("learn-customer").value = msg?.text || state.active.summary || "";
+      $("learn-tags").value = (state.active.tags || []).join(",");
+      $("learn-category").value = $("learn-category").value || "一般客服";
+      $("learn-status").value = "draft";
+      $("learning-result").textContent = "已帶入最後一則客人訊息，請補上人工回覆。";
+    }
+
+    function renderLearningCases() {
+      const list = $("learning-list");
+      if (!list) return;
+      list.innerHTML = state.learningCases.map(item => `
+        <button class="learn-case w-full rounded-xl border border-emerald-100 bg-white p-3 text-left" data-id="${esc(item.id)}">
+          <div class="flex items-center justify-between gap-2">
+            <span class="truncate text-sm font-black">${esc(item.category || "一般客服")}</span>
+            <span class="rounded-full px-2 py-1 text-xs font-black ${item.status === "approved" ? "bg-emerald-100 text-emerald-700" : item.status === "rejected" ? "bg-rose-100 text-rose-700" : "bg-slate-100 text-slate-600"}">${esc(item.status === "approved" ? "已審核" : item.status === "rejected" ? "不採用" : "草稿")}</span>
+          </div>
+          <p class="mt-2 line-clamp-2 text-xs text-slate-600">${esc(item.customerText)}</p>
+          <p class="mt-1 line-clamp-2 text-xs font-bold text-slate-900">${esc(item.staffReply)}</p>
+        </button>
+      `).join("") || `<p class="text-xs font-bold text-slate-400">此聊天室尚無學習案例</p>`;
+      document.querySelectorAll(".learn-case").forEach(btn => btn.addEventListener("click", () => {
+        const item = state.learningCases.find(row => row.id === btn.dataset.id);
+        if (!item) return;
+        $("learn-customer").value = item.customerText || "";
+        $("learn-reply").value = item.staffReply || "";
+        $("learn-category").value = item.category || "";
+        $("learn-tags").value = (item.tags || []).join(",");
+        $("learn-lesson").value = item.lesson || "";
+        $("learn-confidence").value = item.confidence || 60;
+        $("learn-status").value = item.status || "draft";
+        $("save-learning").dataset.id = item.id;
+        $("learning-result").textContent = "已載入案例，可修改後再保存。";
+      }));
+    }
+
+    async function saveLearningCase() {
+      if (!state.active) return alert("請先選擇會員");
+      const customerText = $("learn-customer").value.trim();
+      const staffReply = $("learn-reply").value.trim();
+      if (!customerText) return alert("請填客人問法 / 情境");
+      if (!staffReply) return alert("請填人工客服回覆");
+      const msg = lastCustomerMessage();
+      const res = await fetchJson(`${WORKER_URL}/api/ai-learning/cases`, {
+        method: "POST",
+        body: JSON.stringify({
+          id: $("save-learning").dataset.id || "",
+          sourceThreadId: state.active.id,
+          sourceMessageId: msg?.id || "",
+          customerText,
+          staffReply,
+          category: $("learn-category").value.trim() || "一般客服",
+          tags: $("learn-tags").value.split(",").map(x => x.trim()).filter(Boolean),
+          lesson: $("learn-lesson").value.trim(),
+          confidence: Number($("learn-confidence").value || 60),
+          status: $("learn-status").value || "draft",
+          createdBy: "tonyfang",
+        }),
+      });
+      $("save-learning").dataset.id = "";
+      $("learning-result").textContent = `已保存學習案例：${res.data?.status || "draft"}`;
+      $("learn-reply").value = "";
+      $("learn-lesson").value = "";
+      await loadLearningCases(state.active.id);
+    }
+
     async function loadAll(keepActive = true) {
       const [audienceRes, threadsRes] = await Promise.all([
         fetchJson(`${WORKER_URL}/api/line-oa/audience`),
@@ -401,6 +514,7 @@
       state.active.signals = res.data?.signals || {};
       state.active.note = res.data?.note || "";
       renderActive();
+      await loadLearningCases(state.active.id);
       if (rerenderList) renderThreads();
     }
 
@@ -478,6 +592,8 @@
     $("save-thread").addEventListener("click", () => saveThread().catch(err => alert(err.message)));
     $("preview-broadcast").addEventListener("click", () => previewBroadcast().catch(err => alert(err.message)));
     $("create-broadcast").addEventListener("click", () => createBroadcast().catch(err => alert(err.message)));
+    $("fill-learning").addEventListener("click", fillLearningFromThread);
+    $("save-learning").addEventListener("click", () => saveLearningCase().catch(err => alert(err.message)));
 
     const style = document.createElement("style");
     style.textContent = `
