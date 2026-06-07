@@ -153,6 +153,59 @@ async function shouldReadLowRiskFromWasabi(env) {
   return String(settings.low_risk_wasabi_read_enabled || "false").toLowerCase() === "true";
 }
 
+function isHuaxuShopEnabled(env, settings = {}) {
+  const mode = String(env.SHOP_MODULE || settings.shop_module || "").trim().toLowerCase();
+  return mode === "huaxu" || !!String(env.HUAXU_PRODUCTS_URL || settings.huaxu_products_url || "").trim();
+}
+
+function normalizeHuaxuProduct(raw, fallbackIndex = 0) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const sourceStatus = source.status || source.product_status || source.productStatus || "";
+  const status = sourceStatus || (source.isPublished === false || source.enabled === false ? "下架" : "販賣中");
+  return normalizeProduct({
+    id: source.id || source.product_id || source.productId || source.sku || source.code || `huaxu-${fallbackIndex + 1}`,
+    code: source.code || source.sku || source.product_code || source.productNo || source.product_no,
+    name: source.name || source.title || source.product_name || source.productName,
+    storeName: source.storeName || source.store_name || source.vendor || source.brand || "華旭商城",
+    status,
+    price: source.price || source.sale_price || source.salePrice || source.amount || source.points_price,
+    pointsPrice: source.pointsPrice || source.points_price || source.point_price || source.max_points || source.price,
+    image: source.image || source.image_url || source.imageUrl || source.thumbnail || source.cover,
+    description: source.description || source.summary || source.content,
+    sourceUrl: source.sourceUrl || source.url || source.link,
+    stock: source.stock ?? source.inventory ?? source.qty,
+    isPublished: source.isPublished !== false && source.enabled !== false && source.status !== "下架",
+    source: "huaxu",
+    rawHuaxu: source,
+  }, fallbackIndex);
+}
+
+async function fetchHuaxuProducts(env, settings = {}) {
+  const url = String(env.HUAXU_PRODUCTS_URL || settings.huaxu_products_url || "").trim();
+  if (!url) return null;
+  const apiKey = String(env.HUAXU_API_KEY || settings.huaxu_api_key || "").trim();
+  const headers = { "Accept": "application/json" };
+  if (apiKey) {
+    headers.Authorization = apiKey.startsWith("Bearer ") ? apiKey : `Bearer ${apiKey}`;
+    headers["X-API-Key"] = apiKey.replace(/^Bearer\s+/i, "");
+  }
+  const res = await fetch(url, { headers });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) {}
+  if (!res.ok) throw new Error(`華旭商品 API ${res.status}: ${data?.message || text.slice(0, 120)}`);
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.products)
+      ? data.products
+      : Array.isArray(data?.items)
+        ? data.items
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+  return list.map(normalizeHuaxuProduct).filter(p => p.name);
+}
+
 async function safeGetWasabiJson(env, key, defaultVal) {
   if (!getWasabiConfig(env).configured) return defaultVal;
   try {
@@ -165,6 +218,15 @@ async function safeGetWasabiJson(env, key, defaultVal) {
 }
 
 async function safeGetProducts(env, options = {}) {
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  if (options.allowExternal !== false && isHuaxuShopEnabled(env, settings)) {
+    try {
+      const huaxuProducts = await fetchHuaxuProducts(env, settings);
+      if (Array.isArray(huaxuProducts)) return huaxuProducts;
+    } catch (e) {
+      console.error("[HuaxuShop] 商品 API 讀取失敗，改讀本地商品", e);
+    }
+  }
   if (options.preferWasabi !== false && await shouldReadLowRiskFromWasabi(env)) {
     const remote = await safeGetWasabiJson(env, "data/products.json", null);
     if (Array.isArray(remote)) return remote;
@@ -1299,6 +1361,7 @@ function normalizeProduct(raw, fallbackIndex = 0) {
     sourceUrl: String(source.sourceUrl || source.editUrl || source.url || "").trim(),
     stock: source.stock === undefined || source.stock === "" ? null : Number(source.stock),
     isPublished: source.isPublished === false ? false : true,
+    source: String(source.source || "").trim(),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -3543,6 +3606,7 @@ export default {
             productId: product.id,
             productName: product.name,
             productCode: product.code || "",
+            productSource: product.source || "hooktea",
             quantity,
             unitPrice,
             originalAmount: productPrice,
@@ -3553,7 +3617,7 @@ export default {
             createdAt: new Date().toLocaleString()
           };
           if (pointCost > 0) await this.updatePoints(env, ctx, userId, -pointCost, `商城商品折抵：${product.name}`);
-          if (product.stock !== null && product.stock !== undefined) {
+          if (product.stock !== null && product.stock !== undefined && product.source !== "huaxu") {
             product.stock = Math.max(0, Number(product.stock) - quantity);
             await safePutProducts(env, productList);
           }

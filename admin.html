@@ -962,6 +962,22 @@
                             <select v-model="sysSettings.allow_cancel_order" class="input-field !w-32 !py-2 !text-sm font-bold bg-white"><option value="true">🟢 啟用</option><option value="false">🔴 停用</option></select>
                         </div>
 
+                        <div class="section-title !mb-4 text-sky-700 border-sky-500 mt-8">華旭商城模組</div>
+                        <div class="mb-8 flex items-center justify-between bg-sky-50 p-4 rounded-xl border border-sky-100">
+                            <div>
+                                <div class="font-bold text-slate-700 text-sm">商城商品來源</div>
+                                <div class="text-xs text-slate-500 mt-1">切到華旭後，前台商城與後台商品清單會優先讀取華旭商品 API；API 未設定或失敗時會回退本地商品。</div>
+                            </div>
+                            <select v-model="sysSettings.shop_module" class="input-field !w-36 !py-2 !text-sm font-bold bg-white">
+                                <option value="hooktea">HookTea</option>
+                                <option value="huaxu">華旭商城</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-1 gap-4 mb-8" v-if="sysSettings.shop_module === 'huaxu'">
+                            <div><label class="input-label">華旭商品 API URL</label><input type="url" v-model="sysSettings.huaxu_products_url" class="input-field text-sm font-mono text-sky-700" placeholder="https://.../products.json 或華旭商品 API"></div>
+                            <div><label class="input-label">華旭 API Key</label><input type="password" v-model="sysSettings.huaxu_api_key" class="input-field text-sm font-mono text-sky-700" placeholder="可留空；正式建議放 Cloudflare Worker Secret"></div>
+                        </div>
+
                         <div class="section-title !mb-4 text-emerald-700 border-emerald-500 mt-8">WordPress 點數系統串接 (資料備份與遷徙)</div>
                         <div class="mb-8 flex items-center justify-between bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
                             <div>
@@ -1490,7 +1506,10 @@
                         linepay_env: String(settings.linepay_env || 'sandbox'),
                         linepay_channel_id: String(settings.linepay_channel_id || ''),
                         linepay_channel_secret: String(settings.linepay_channel_secret || ''),
-                        linepay_currency: String(settings.linepay_currency || 'TWD')
+                        linepay_currency: String(settings.linepay_currency || 'TWD'),
+                        shop_module: String(settings.shop_module || 'hooktea'),
+                        huaxu_products_url: String(settings.huaxu_products_url || ''),
+                        huaxu_api_key: String(settings.huaxu_api_key || '')
                     });
                     
                     const memberSearch = ref('');

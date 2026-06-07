@@ -129,7 +129,7 @@
 
                 <div v-if="view === 'shop'" class="animate-fade-in bg-[#F4F5F7] min-h-screen pb-28">
                     <div class="sticky top-0 bg-[#ffffff] z-30 border-b border-[#EEEEEE] p-4 flex items-center justify-between">
-                        <h2 class="text-[17px] font-black text-[#111111]">商城商品</h2>
+                        <h2 class="text-[17px] font-black text-[#111111]">{{ sysSettings.shop_module === 'huaxu' ? '華旭商城' : '商城商品' }}</h2>
                         <div class="text-[12px] font-bold text-slate-500">可用 {{ formatPrice(userPoints.balance || 0) }} 點</div>
                     </div>
                     <div class="p-4 grid grid-cols-2 gap-4">
