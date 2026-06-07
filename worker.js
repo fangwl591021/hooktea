@@ -1347,19 +1347,24 @@ function normalizeProduct(raw, fallbackIndex = 0) {
   const name = String(source.name || source.title || source.postTitle || source["內容標題"] || "").trim();
   const status = String(source.status || source.productStatus || source["商品狀態"] || "販賣中").trim();
   const numericPrice = Number(String(source.pointsPrice ?? source.pointPrice ?? source.price ?? source["點數"] ?? source["價格"] ?? 0).replace(/[^0-9.-]/g, "")) || 0;
+  const regularPrice = Number(String(source.originalPrice ?? source.original_price ?? source.regularPrice ?? source.regular_price ?? source["原價"] ?? source.price ?? numericPrice).replace(/[^0-9.-]/g, "")) || 0;
   const idBase = String(source.id || source.postId || code || name || `product-${fallbackIndex + 1}`).trim();
   return {
     id: idBase.startsWith("PROD_") ? idBase : `PROD_${idBase.replace(/[^\w-]+/g, "_")}`,
     name,
     code,
     storeName: String(source.storeName || source.vendor || source["店家名稱"] || "").trim(),
+    category: String(source.category || source.productCategory || source["商品分類"] || source["分類"] || "").trim(),
+    subtitle: String(source.subtitle || source.shortDescription || source.summary || source["短描述"] || "").trim(),
+    badge: String(source.badge || source.tag || source.label || source["標籤"] || "").trim(),
     status,
     price: Number(source.price ?? numericPrice) || numericPrice,
+    originalPrice: regularPrice,
     pointsPrice: Number(source.pointsPrice ?? source.pointPrice ?? numericPrice) || 0,
     image: String(source.image || source.thumbnail || source.featuredImage || "").trim(),
     description: String(source.description || source.content || source.excerpt || "").trim(),
     sourceUrl: String(source.sourceUrl || source.editUrl || source.url || "").trim(),
-    stock: source.stock === undefined || source.stock === "" ? null : Number(source.stock),
+    stock: source.stock === undefined || source.stock === null || source.stock === "" ? null : Number(source.stock),
     isPublished: source.isPublished === false ? false : true,
     source: String(source.source || "").trim(),
     updatedAt: new Date().toISOString(),
@@ -2993,10 +2998,10 @@ async function getHuaxuShopProducts(env) {
       id: String(p.id || p.code || `product-${index + 1}`),
       category: String(p.category || p.storeName || "熱門商品"),
       name: String(p.name || "未命名商品"),
-      subtitle: String(p.subtitle || p.description || p.storeName || "華旭商城精選"),
+      subtitle: String(p.subtitle || p.description || p.storeName || "HookTea 商城精選"),
       price: Math.max(0, Number(p.price || 0)),
       originalPrice: Math.max(0, Number(p.originalPrice || p.original_price || p.price || 0)),
-      badge: String(p.badge || p.code || p.storeName || "華旭"),
+      badge: String(p.badge || p.code || p.storeName || "HookTea"),
       image: String(p.image || "https://images.unsplash.com/photo-1583947215259-38e31be8751f?auto=format&fit=crop&w=900&q=80"),
       code: String(p.code || ""),
       stock: p.stock,
@@ -3092,7 +3097,7 @@ function renderHuaxuShopHtml() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>華旭購物商城</title>
+  <title>HookTea 購物商城</title>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:480px;min-height:100vh;margin:0 auto;background:#050505;padding-bottom:88px}.top{position:sticky;top:0;z-index:20;background:#050505;padding:18px 18px 14px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #161616}.icon{width:38px;height:38px;border:0;background:transparent;color:#fff;font-size:28px}.brand{flex:1;font-weight:900;letter-spacing:.02em}.brand small{display:block;color:#8d8d8d;font-size:12px;margin-top:2px}.tabs{padding:22px 18px 12px}.tabs h2{margin:0 0 14px;font-size:20px}.tabrow{display:flex;gap:10px;overflow:auto;padding-bottom:4px}.pill{white-space:nowrap;border:1px solid #1b1b1b;background:#111;color:#fff;border-radius:8px;padding:10px 14px;font-weight:800}.pill.active{background:#09251f;border-color:#16c7a2;color:#7fffe2}.hero{position:relative;min-height:310px;background:linear-gradient(135deg,#083172,#07142f 55%,#000);overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 75% 20%,rgba(255,210,92,.32),transparent 28%)}.hero-content{position:relative;padding:26px 22px}.hero-kicker{display:inline-block;background:#d7ae4f;color:#101010;border-radius:7px;padding:7px 11px;font-weight:900}.hero h1{font-size:38px;line-height:1.05;margin:18px 0 10px;color:#ffe28d;text-shadow:0 3px 0 #1a1a1a}.hero p{font-size:15px;line-height:1.5;max-width:300px;color:#f3f3f3}.section{padding:22px 16px}.section h2{margin:0 0 14px;font-size:22px}.products{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:#111;border:1px solid #202020;border-radius:10px;overflow:hidden}.card img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}.card-body{padding:12px}.badge{display:inline-block;background:#062a22;color:#78ffde;border:1px solid #0b6f5a;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900}.card h3{font-size:16px;line-height:1.25;margin:10px 0 4px}.card p{color:#aaa;font-size:12px;margin:0 0 10px;min-height:32px}.price{font-weight:900;color:#ffe28d;font-size:20px}.original{font-size:12px;color:#777;text-decoration:line-through;margin-left:4px}.buy{width:100%;margin-top:10px;border:0;border-radius:7px;background:#13b99a;color:#04100d;font-weight:900;padding:10px}.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;background:#050505;border-top:1px solid #151515;display:grid;grid-template-columns:repeat(4,1fr);padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:25}.nav button{background:transparent;border:0;color:#fff;font-size:25px;position:relative}.nav small{display:block;font-size:11px;margin-top:2px}.count{position:absolute;top:-2px;right:28%;background:#13b99a;color:#00110d;border-radius:999px;font-size:12px;min-width:20px;padding:2px 5px}.drawer,.cart{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45);display:none}.panel{width:82%;max-width:370px;height:100%;background:#050505;padding:24px 18px;overflow:auto}.panel.right{margin-left:auto}.drawer.open,.cart.open{display:block}.menu-logo{font-weight:900;margin-bottom:32px}.menu-item{border-bottom:1px solid #333;padding:16px 0;font-size:20px;font-weight:800}.cart-item{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #222;padding:14px 0}.cart-item button{background:#222;color:#fff;border:0;border-radius:6px;padding:7px 10px}.field{width:100%;background:#111;border:1px solid #2a2a2a;color:#fff;border-radius:7px;padding:12px;margin:8px 0;font-size:16px}.checkout{width:100%;border:0;border-radius:8px;background:#13b99a;color:#04100d;font-weight:900;padding:14px;font-size:16px;margin-top:12px}.empty{color:#888;padding:24px 0}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#13b99a;color:#04100d;border-radius:999px;padding:12px 18px;font-weight:900;display:none;z-index:60}.toast.show{display:block}
@@ -3102,7 +3107,7 @@ function renderHuaxuShopHtml() {
   <div class="app">
     <header class="top">
       <button class="icon" onclick="toggleDrawer(true)">☰</button>
-      <div class="brand">華旭購物商城<small>LINE 好友限定商城</small></div>
+      <div class="brand">HookTea 購物商城<small>LINE 好友限定商城</small></div>
       <button class="icon" onclick="location.href='/'">⌂</button>
     </header>
     <section class="tabs">
@@ -3112,8 +3117,8 @@ function renderHuaxuShopHtml() {
     <section class="hero">
       <div class="hero-content">
         <span class="hero-kicker">新會員限定</span>
-        <h1>華旭精選<br>LINE 限定商城</h1>
-        <p>延用華旭商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。</p>
+        <h1>HookTea 精選<br>LINE 限定商城</h1>
+        <p>延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。</p>
       </div>
     </section>
     <section class="section">
@@ -3129,7 +3134,7 @@ function renderHuaxuShopHtml() {
   </nav>
   <div class="drawer" id="drawer" onclick="toggleDrawer(false)">
     <div class="panel" onclick="event.stopPropagation()">
-      <div class="menu-logo">華旭購物商城</div>
+      <div class="menu-logo">HookTea 購物商城</div>
       <div class="menu-item" onclick="setCategory('熱門商品');toggleDrawer(false)">所有商品</div>
       <div class="menu-item" onclick="setCategory('新會員優惠');toggleDrawer(false)">新會員優惠</div>
       <div class="menu-item" onclick="setCategory('本月活動');toggleDrawer(false)">本月活動</div>
@@ -3185,7 +3190,7 @@ function renderHuaxuShopHtml() {
     }
     function renderProducts(){
       const shown = products.filter(p => activeCategory === "熱門商品" || p.category === activeCategory);
-      document.getElementById("products").innerHTML = shown.map(p => '<article class="card"><img src="'+escapeAttr(p.image)+'" alt=""><div class="card-body"><span class="badge">'+escapeHtml(p.badge || "華旭")+'</span><h3>'+escapeHtml(p.name)+'</h3><p>'+escapeHtml(p.subtitle || "")+'</p><div><span class="price">$'+money(p.price)+'</span>'+(p.originalPrice && p.originalPrice > p.price ? '<span class="original">$'+money(p.originalPrice)+'</span>' : '')+'</div><button class="buy" onclick="addToCart(\\''+escapeAttr(p.id)+'\\')">加入購物車</button></div></article>').join("") || '<div class="empty">目前沒有商品</div>';
+      document.getElementById("products").innerHTML = shown.map(p => '<article class="card"><img src="'+escapeAttr(p.image)+'" alt=""><div class="card-body"><span class="badge">'+escapeHtml(p.badge || "HookTea")+'</span><h3>'+escapeHtml(p.name)+'</h3><p>'+escapeHtml(p.subtitle || "")+'</p><div><span class="price">$'+money(p.price)+'</span>'+(p.originalPrice && p.originalPrice > p.price ? '<span class="original">$'+money(p.originalPrice)+'</span>' : '')+'</div><button class="buy" onclick="addToCart(\\''+escapeAttr(p.id)+'\\')">加入購物車</button></div></article>').join("") || '<div class="empty">目前沒有商品</div>';
     }
     function addToCart(id){
       const found = cart.find(item => item.id === id);

@@ -244,10 +244,11 @@
                     </div>
                     <div class="admin-table-container !mt-0 !mx-0 !border-x-0 !border-t-0 shadow-none">
                         <table class="admin-table">
-                            <thead><tr><th>商品</th><th>代碼</th><th>商品售價</th><th>可扣點</th><th>庫存</th><th>狀態</th><th class="text-right">操作</th></tr></thead>
+                            <thead><tr><th>商品</th><th>分類</th><th>代碼</th><th>商品售價</th><th>可扣點</th><th>庫存</th><th>狀態</th><th class="text-right">操作</th></tr></thead>
                             <tbody>
                                 <tr v-for="p in filteredProducts" :key="p.id">
-                                    <td><div class="flex items-center gap-3"><div class="w-14 h-14 rounded-xl overflow-hidden bg-slate-100 flex items-center justify-center text-slate-300"><img v-if="p.image" :src="p.image" class="w-full h-full object-cover"><i v-else class="fas fa-box-open text-xl"></i></div><div><div class="font-black text-slate-800">{{ p.name }}</div><div class="text-xs text-slate-400 font-bold">{{ p.storeName || '未設定店家' }}</div></div></div></td>
+                                    <td><div class="flex items-center gap-3"><div class="w-14 h-14 rounded-xl overflow-hidden bg-slate-100 flex items-center justify-center text-slate-300"><img v-if="p.image" :src="p.image" class="w-full h-full object-cover"><i v-else class="fas fa-box-open text-xl"></i></div><div><div class="font-black text-slate-800">{{ p.name }}</div><div class="text-xs text-slate-400 font-bold">{{ p.subtitle || p.storeName || '未設定摘要' }}</div></div></div></td>
+                                    <td><div class="font-black text-slate-700">{{ p.category || p.storeName || '-' }}</div><div v-if="p.badge" class="text-xs font-black text-emerald-600 mt-1">{{ p.badge }}</div></td>
                                     <td class="font-mono font-bold text-slate-500">{{ p.code || '-' }}</td>
                                     <td class="font-black text-slate-800">$ {{ formatPrice(p.price || 0) }}</td>
                                     <td class="font-black text-[#06C755]">{{ formatPrice(p.pointsPrice || 0) }} 點</td>
@@ -255,7 +256,7 @@
                                     <td><span class="status-badge" :class="p.isPublished !== false ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-600'">{{ p.isPublished !== false ? '上架' : '下架' }}</span></td>
                                     <td class="text-right"><button @click="openEditProductModal(p)" class="text-blue-600 font-bold text-sm bg-blue-50 px-3 py-1 rounded hover:bg-blue-100 transition">編輯</button></td>
                                 </tr>
-                                <tr v-if="!filteredProducts.length"><td colspan="7" class="text-center py-20 text-slate-300 font-bold">目前沒有商品</td></tr>
+                                <tr v-if="!filteredProducts.length"><td colspan="8" class="text-center py-20 text-slate-300 font-bold">目前沒有商品</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1243,7 +1244,11 @@
                         <div><label class="input-label">商品名稱</label><input type="text" v-model="editingProduct.name" class="input-field font-bold text-slate-800"></div>
                         <div><label class="input-label">商品代碼</label><input type="text" v-model="editingProduct.code" class="input-field font-mono font-bold"></div>
                         <div><label class="input-label">店家名稱</label><input type="text" v-model="editingProduct.storeName" class="input-field"></div>
+                        <div><label class="input-label">商城分類</label><input type="text" v-model="editingProduct.category" class="input-field font-bold" placeholder="虎克茶、禮盒、活動組合"></div>
+                        <div><label class="input-label">商品標籤 / 徽章</label><input type="text" v-model="editingProduct.badge" class="input-field font-bold" placeholder="熱銷、新品、LINE限定"></div>
+                        <div><label class="input-label">商品短標</label><input type="text" v-model="editingProduct.subtitle" class="input-field" placeholder="顯示於商城卡片的簡短說明"></div>
                         <div><label class="input-label">商品售價（刷卡 / 匯款金額基礎）</label><input type="number" v-model.number="editingProduct.price" class="input-field font-black text-slate-800"></div>
+                        <div><label class="input-label">商品原價（選填）</label><input type="number" v-model.number="editingProduct.originalPrice" class="input-field font-black text-slate-500" placeholder="未填則等同售價"></div>
                         <div><label class="input-label">最高可扣點數</label><input type="number" v-model.number="editingProduct.pointsPrice" class="input-field font-black text-[#06C755]"></div>
                         <div><label class="input-label">庫存數量（留空代表不限量）</label><input type="number" min="0" v-model.number="editingProduct.stock" class="input-field font-black text-slate-700" placeholder="不限量"></div>
                         <div class="col-span-2">
@@ -2963,7 +2968,7 @@
                     };
 
                     const openNewProductModal = () => {
-                        editingProduct.value = { id: 'PROD_NEW_' + Date.now(), name: '', code: '', storeName: 'HookTea', status: '販賣中', price: 0, pointsPrice: 0, stock: null, image: '', description: '', isPublished: true };
+                        editingProduct.value = { id: 'PROD_NEW_' + Date.now(), name: '', code: '', storeName: 'HookTea', category: '虎克茶', subtitle: '', badge: '', status: '販賣中', price: 0, originalPrice: 0, pointsPrice: 0, stock: null, image: '', description: '', isPublished: true };
                     };
 
                     const openEditProductModal = (p) => { editingProduct.value = JSON.parse(JSON.stringify(p)); };
