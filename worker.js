@@ -2985,6 +2985,244 @@ async function filterHookTeaBroadcastRows(env, filters = {}) {
   });
 }
 
+async function getHuaxuShopProducts(env) {
+  const products = await safeGetProducts(env);
+  return (Array.isArray(products) ? products : [])
+    .filter(p => p && p.isPublished !== false && p.isDeleted !== true)
+    .map((p, index) => ({
+      id: String(p.id || p.code || `product-${index + 1}`),
+      category: String(p.category || p.storeName || "熱門商品"),
+      name: String(p.name || "未命名商品"),
+      subtitle: String(p.subtitle || p.description || p.storeName || "華旭商城精選"),
+      price: Math.max(0, Number(p.price || 0)),
+      originalPrice: Math.max(0, Number(p.originalPrice || p.original_price || p.price || 0)),
+      badge: String(p.badge || p.code || p.storeName || "華旭"),
+      image: String(p.image || "https://images.unsplash.com/photo-1583947215259-38e31be8751f?auto=format&fit=crop&w=900&q=80"),
+      code: String(p.code || ""),
+      stock: p.stock,
+      source: p.source || "hooktea",
+    }));
+}
+
+async function getHuaxuShopOrders(env) {
+  const orders = await safeGetKV(env, "ORDERS", []);
+  return (Array.isArray(orders) ? orders : []).filter(order => order && order.type === "PRODUCT");
+}
+
+async function handleHuaxuCreateOrder(request, env, ctx) {
+  const payload = await request.json().catch(() => null);
+  if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+    return json({ ok: false, message: "購物車是空的" }, 400);
+  }
+  const products = await getHuaxuShopProducts(env);
+  const byId = new Map(products.map(item => [item.id, item]));
+  const items = payload.items.map(item => {
+    const product = byId.get(String(item.id || ""));
+    const quantity = Math.max(1, Math.min(99, Number(item.quantity || 1)));
+    return product ? { ...product, quantity, lineTotal: product.price * quantity } : null;
+  }).filter(Boolean);
+  if (!items.length) return json({ ok: false, message: "找不到有效商品" }, 400);
+
+  const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  const customer = {
+    name: String(payload.customer?.name || "").trim().slice(0, 80),
+    phone: String(payload.customer?.phone || "").trim().slice(0, 40),
+    address: String(payload.customer?.address || "").trim().slice(0, 160),
+    note: String(payload.customer?.note || "").trim().slice(0, 300),
+  };
+  if (!customer.name || !customer.phone) return json({ ok: false, message: "請填寫姓名與手機" }, 400);
+  const lineProfile = {
+    userId: String(payload.lineProfile?.userId || "").slice(0, 80),
+    displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
+    pictureUrl: String(payload.lineProfile?.pictureUrl || "").slice(0, 300),
+  };
+  const order = {
+    orderId: `HX${Date.now()}`,
+    type: "PRODUCT",
+    source: "huaxu-shop",
+    userId: lineProfile.userId || "",
+    name: customer.name,
+    phone: customer.phone,
+    address: customer.address,
+    note: customer.note,
+    productId: items.map(item => item.id).join(","),
+    productName: items.map(item => `${item.name}${item.quantity > 1 ? ` x ${item.quantity}` : ""}`).join("\n"),
+    productCode: items.map(item => item.code).filter(Boolean).join(","),
+    quantity: items.reduce((sum, item) => sum + item.quantity, 0),
+    originalAmount: total,
+    amount: total,
+    pointsUsed: 0,
+    paymentMethod: "LINEPAY",
+    status: total > 0 ? "PENDING" : "PAID",
+    items: items.map(item => ({
+      id: item.id,
+      name: item.name,
+      code: item.code,
+      price: item.price,
+      quantity: item.quantity,
+      lineTotal: item.lineTotal,
+    })),
+    lineProfile,
+    createdAt: new Date().toLocaleString(),
+    createdAtIso: new Date().toISOString(),
+  };
+  const orders = await safeGetKV(env, "ORDERS", []);
+  const nextOrders = [order, ...(Array.isArray(orders) ? orders : [])].slice(0, 2000);
+  await putOrdersKV(env, ctx, nextOrders);
+  if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}));
+  return json({ ok: true, order });
+}
+
+async function handleHuaxuShopRoute(request, env, ctx) {
+  const url = new URL(request.url);
+  if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
+  if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
+  if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx);
+  if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
+    return new Response(renderHuaxuShopHtml(), {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+  return null;
+}
+
+function renderHuaxuShopHtml() {
+  return `<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>華旭購物商城</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:480px;min-height:100vh;margin:0 auto;background:#050505;padding-bottom:88px}.top{position:sticky;top:0;z-index:20;background:#050505;padding:18px 18px 14px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #161616}.icon{width:38px;height:38px;border:0;background:transparent;color:#fff;font-size:28px}.brand{flex:1;font-weight:900;letter-spacing:.02em}.brand small{display:block;color:#8d8d8d;font-size:12px;margin-top:2px}.tabs{padding:22px 18px 12px}.tabs h2{margin:0 0 14px;font-size:20px}.tabrow{display:flex;gap:10px;overflow:auto;padding-bottom:4px}.pill{white-space:nowrap;border:1px solid #1b1b1b;background:#111;color:#fff;border-radius:8px;padding:10px 14px;font-weight:800}.pill.active{background:#09251f;border-color:#16c7a2;color:#7fffe2}.hero{position:relative;min-height:310px;background:linear-gradient(135deg,#083172,#07142f 55%,#000);overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 75% 20%,rgba(255,210,92,.32),transparent 28%)}.hero-content{position:relative;padding:26px 22px}.hero-kicker{display:inline-block;background:#d7ae4f;color:#101010;border-radius:7px;padding:7px 11px;font-weight:900}.hero h1{font-size:38px;line-height:1.05;margin:18px 0 10px;color:#ffe28d;text-shadow:0 3px 0 #1a1a1a}.hero p{font-size:15px;line-height:1.5;max-width:300px;color:#f3f3f3}.section{padding:22px 16px}.section h2{margin:0 0 14px;font-size:22px}.products{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:#111;border:1px solid #202020;border-radius:10px;overflow:hidden}.card img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}.card-body{padding:12px}.badge{display:inline-block;background:#062a22;color:#78ffde;border:1px solid #0b6f5a;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900}.card h3{font-size:16px;line-height:1.25;margin:10px 0 4px}.card p{color:#aaa;font-size:12px;margin:0 0 10px;min-height:32px}.price{font-weight:900;color:#ffe28d;font-size:20px}.original{font-size:12px;color:#777;text-decoration:line-through;margin-left:4px}.buy{width:100%;margin-top:10px;border:0;border-radius:7px;background:#13b99a;color:#04100d;font-weight:900;padding:10px}.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;background:#050505;border-top:1px solid #151515;display:grid;grid-template-columns:repeat(4,1fr);padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:25}.nav button{background:transparent;border:0;color:#fff;font-size:25px;position:relative}.nav small{display:block;font-size:11px;margin-top:2px}.count{position:absolute;top:-2px;right:28%;background:#13b99a;color:#00110d;border-radius:999px;font-size:12px;min-width:20px;padding:2px 5px}.drawer,.cart{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45);display:none}.panel{width:82%;max-width:370px;height:100%;background:#050505;padding:24px 18px;overflow:auto}.panel.right{margin-left:auto}.drawer.open,.cart.open{display:block}.menu-logo{font-weight:900;margin-bottom:32px}.menu-item{border-bottom:1px solid #333;padding:16px 0;font-size:20px;font-weight:800}.cart-item{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #222;padding:14px 0}.cart-item button{background:#222;color:#fff;border:0;border-radius:6px;padding:7px 10px}.field{width:100%;background:#111;border:1px solid #2a2a2a;color:#fff;border-radius:7px;padding:12px;margin:8px 0;font-size:16px}.checkout{width:100%;border:0;border-radius:8px;background:#13b99a;color:#04100d;font-weight:900;padding:14px;font-size:16px;margin-top:12px}.empty{color:#888;padding:24px 0}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#13b99a;color:#04100d;border-radius:999px;padding:12px 18px;font-weight:900;display:none;z-index:60}.toast.show{display:block}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <button class="icon" onclick="toggleDrawer(true)">☰</button>
+      <div class="brand">華旭購物商城<small>LINE 好友限定商城</small></div>
+      <button class="icon" onclick="location.href='/'">⌂</button>
+    </header>
+    <section class="tabs">
+      <h2 id="productTitle">熱門商品</h2>
+      <div class="tabrow" id="tabs"></div>
+    </section>
+    <section class="hero">
+      <div class="hero-content">
+        <span class="hero-kicker">新會員限定</span>
+        <h1>華旭精選<br>LINE 限定商城</h1>
+        <p>延用華旭商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。</p>
+      </div>
+    </section>
+    <section class="section">
+      <h2 id="listTitle">熱門商品</h2>
+      <div class="products" id="products"></div>
+    </section>
+  </div>
+  <nav class="nav">
+    <button onclick="window.scrollTo({top:0,behavior:'smooth'})">⌂<small>首頁</small></button>
+    <button onclick="setCategory('熱門商品')">★<small>熱門</small></button>
+    <button onclick="toggleCart(true)">🛒<span class="count" id="cartCount">0</span><small>購物車</small></button>
+    <button onclick="loginLine()">👤<small>會員</small></button>
+  </nav>
+  <div class="drawer" id="drawer" onclick="toggleDrawer(false)">
+    <div class="panel" onclick="event.stopPropagation()">
+      <div class="menu-logo">華旭購物商城</div>
+      <div class="menu-item" onclick="setCategory('熱門商品');toggleDrawer(false)">所有商品</div>
+      <div class="menu-item" onclick="setCategory('新會員優惠');toggleDrawer(false)">新會員優惠</div>
+      <div class="menu-item" onclick="setCategory('本月活動');toggleDrawer(false)">本月活動</div>
+      <div class="menu-item" onclick="setCategory('回購專區');toggleDrawer(false)">回購專區</div>
+    </div>
+  </div>
+  <div class="cart" id="cart" onclick="toggleCart(false)">
+    <div class="panel right" onclick="event.stopPropagation()">
+      <h2>購物車</h2>
+      <div id="cartItems"></div>
+      <input class="field" id="name" placeholder="姓名">
+      <input class="field" id="phone" placeholder="手機">
+      <input class="field" id="address" placeholder="配送地址">
+      <textarea class="field" id="note" placeholder="備註"></textarea>
+      <button class="checkout" onclick="checkout()">送出訂單</button>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    let products = [];
+    let activeCategory = "熱門商品";
+    let cart = JSON.parse(localStorage.getItem("huaxu_cart") || "[]");
+    let lineProfile = {};
+    init();
+    async function init(){
+      if (window.liff) {
+        try {
+          const params = new URLSearchParams(location.search);
+          const liffId = params.get("liffId");
+          if (liffId) {
+            await liff.init({ liffId });
+            if (liff.isLoggedIn()) lineProfile = await liff.getProfile();
+          }
+        } catch (error) { console.warn("LIFF init failed", error); }
+      }
+      products = await fetch("/api/huaxu/products").then(r => r.json());
+      renderTabs(); renderProducts(); renderCart();
+    }
+    function categories(){
+      const set = new Set(["熱門商品", ...products.map(p => p.category).filter(Boolean), "新會員優惠", "本月活動", "回購專區", "LINE限定"]);
+      return Array.from(set);
+    }
+    function renderTabs(){
+      document.getElementById("tabs").innerHTML = categories().map(cat =>
+        '<button class="pill '+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(cat)+'</button>'
+      ).join("");
+    }
+    function setCategory(category){
+      activeCategory = category;
+      document.getElementById("productTitle").textContent = category;
+      document.getElementById("listTitle").textContent = category;
+      renderTabs(); renderProducts();
+    }
+    function renderProducts(){
+      const shown = products.filter(p => activeCategory === "熱門商品" || p.category === activeCategory);
+      document.getElementById("products").innerHTML = shown.map(p => '<article class="card"><img src="'+escapeAttr(p.image)+'" alt=""><div class="card-body"><span class="badge">'+escapeHtml(p.badge || "華旭")+'</span><h3>'+escapeHtml(p.name)+'</h3><p>'+escapeHtml(p.subtitle || "")+'</p><div><span class="price">$'+money(p.price)+'</span>'+(p.originalPrice && p.originalPrice > p.price ? '<span class="original">$'+money(p.originalPrice)+'</span>' : '')+'</div><button class="buy" onclick="addToCart(\\''+escapeAttr(p.id)+'\\')">加入購物車</button></div></article>').join("") || '<div class="empty">目前沒有商品</div>';
+    }
+    function addToCart(id){
+      const found = cart.find(item => item.id === id);
+      if (found) found.quantity += 1; else cart.push({ id, quantity: 1 });
+      saveCart(); toast("已加入購物車");
+    }
+    function saveCart(){ localStorage.setItem("huaxu_cart", JSON.stringify(cart)); renderCart(); }
+    function renderCart(){
+      document.getElementById("cartCount").textContent = cart.reduce((sum,item)=>sum+item.quantity,0);
+      const rows = cart.map(item => {
+        const p = products.find(product => product.id === item.id);
+        return p ? '<div class="cart-item"><div><b>'+escapeHtml(p.name)+'</b><br><small>$'+money(p.price)+' x '+item.quantity+'</small></div><button onclick="removeCart(\\''+escapeAttr(item.id)+'\\')">移除</button></div>' : "";
+      }).join("");
+      document.getElementById("cartItems").innerHTML = rows || '<div class="empty">購物車目前是空的</div>';
+    }
+    function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); }
+    async function checkout(){
+      if (!cart.length) return toast("購物車是空的");
+      const customer = { name: val("name"), phone: val("phone"), address: val("address"), note: val("note") };
+      if (!customer.name || !customer.phone) return toast("請填寫姓名與手機");
+      const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: cart, customer, lineProfile }) }).then(r => r.json());
+      if (!res.ok) return toast(res.message || "訂單送出失敗");
+      cart = []; saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
+    }
+    function toggleDrawer(open){ document.getElementById("drawer").classList.toggle("open", open); }
+    function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); }
+    function loginLine(){ toast(lineProfile.displayName ? "已登入：" + lineProfile.displayName : "未設定 LIFF ID"); }
+    function toast(message){ const el = document.getElementById("toast"); el.textContent = message; el.classList.add("show"); setTimeout(() => el.classList.remove("show"), 2200); }
+    function val(id){ return document.getElementById(id).value.trim(); }
+    function money(value){ return Number(value || 0).toLocaleString("zh-TW"); }
+    function escapeHtml(value){ return String(value || "").replace(/[&<>"']/g, ch => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;" }[ch])); }
+    function escapeAttr(value){ return escapeHtml(value).replace(/\\\\/g, "\\\\").replace(/'/g, "&#39;"); }
+  </script>
+</body>
+</html>`;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const corsHeaders = {
@@ -2996,6 +3234,10 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop" || url.pathname.startsWith("/api/huaxu/")) {
+      const huaxuResponse = await handleHuaxuShopRoute(request, env, ctx);
+      if (huaxuResponse) return huaxuResponse;
+    }
     if (url.pathname.startsWith("/linepay/confirm") || url.searchParams.get("action") === "LINEPAY_CONFIRM") {
       return this.handleLinePayConfirm(request, env, ctx);
     }
