@@ -3057,6 +3057,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
     pictureUrl: String(payload.lineProfile?.pictureUrl || "").slice(0, 300),
   };
+  const entryParams = payload.entryParams && typeof payload.entryParams === "object" && !Array.isArray(payload.entryParams)
+    ? Object.fromEntries(Object.entries(payload.entryParams).map(([key, value]) => [String(key).slice(0, 80), String(value ?? "").slice(0, 500)]))
+    : {};
   const requestedMethod = String(payload.paymentMethod || "LINEPAY").toUpperCase();
   const paymentMethod = ["LINEPAY", "REMITTANCE"].includes(requestedMethod) ? requestedMethod : "LINEPAY";
   const order = {
@@ -3077,6 +3080,8 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     pointsUsed: 0,
     paymentMethod,
     status: total > 0 ? "PENDING" : "PAID",
+    entryUrl: String(payload.entryUrl || "").slice(0, 1000),
+    entryParams,
     items: items.map(item => ({
       id: item.id,
       name: item.name,
@@ -3221,8 +3226,10 @@ function renderHuaxuShopHtml() {
     let paymentMethod = localStorage.getItem("huaxu_payment") || "LINEPAY";
     if (!["LINEPAY","REMITTANCE"].includes(paymentMethod)) paymentMethod = "LINEPAY";
     let lineProfile = {};
+    let entryContext = { url: location.href.split("#")[0], params: {} };
     init();
     async function init(){
+      entryContext = restoreEntryContext();
       if (window.liff) {
         try {
           const params = new URLSearchParams(location.search);
@@ -3315,7 +3322,8 @@ function renderHuaxuShopHtml() {
       if (!cart.length) return toast("購物車是空的");
       const customer = { name: val("name"), phone: val("phone"), address: val("address"), note: val("note") };
       if (!customer.name || !customer.phone) return toast("請填寫姓名與手機");
-      const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: cart, customer, lineProfile, paymentMethod, workerUrl: location.origin, returnUrl: location.href.split("#")[0] }) }).then(r => r.json());
+      entryContext = restoreEntryContext();
+      const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: cart, customer, lineProfile, paymentMethod, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
       if (!res.ok) return toast(res.message || "訂單送出失敗");
       if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
         location.href = res.payment.redirectUrl;
@@ -3349,6 +3357,36 @@ function renderHuaxuShopHtml() {
     }
     function toggleDrawer(open){ document.getElementById("drawer").classList.toggle("open", open); }
     function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); }
+    function restoreEntryContext(){
+      let current = new URL(location.href);
+      const state = current.searchParams.get("liff.state");
+      if (state) {
+        try {
+          const restoredUrl = new URL(decodeURIComponent(state), location.origin);
+          const restoredPath = restoredUrl.pathname + restoredUrl.search + location.hash;
+          if (restoredUrl.pathname && restoredPath !== location.pathname + location.search + location.hash) {
+            history.replaceState(null, "", restoredPath);
+            current = new URL(location.href);
+          }
+        } catch (error) { console.warn("LIFF state restore failed", error); }
+      }
+      const ignored = new Set(["code", "state", "liff.state", "friendship_status_changed"]);
+      const hasEntryParams = Array.from(current.searchParams.keys()).some(key => !ignored.has(key));
+      try {
+        if (hasEntryParams || !sessionStorage.getItem("huaxu_entry_url")) {
+          sessionStorage.setItem("huaxu_entry_url", current.href.split("#")[0]);
+        }
+        const savedUrl = sessionStorage.getItem("huaxu_entry_url") || current.href.split("#")[0];
+        const saved = new URL(savedUrl, location.origin);
+        const params = {};
+        saved.searchParams.forEach((value, key) => { if (!ignored.has(key)) params[key] = value; });
+        return { url: saved.href.split("#")[0], params };
+      } catch (error) {
+        const params = {};
+        current.searchParams.forEach((value, key) => { if (!ignored.has(key)) params[key] = value; });
+        return { url: current.href.split("#")[0], params };
+      }
+    }
     function renderLineProfile(){
       const ready = !!lineProfile.userId;
       const button = document.getElementById("profileButton");
@@ -3366,7 +3404,8 @@ function renderHuaxuShopHtml() {
       if (lineProfile.displayName) return toast("已登入：" + lineProfile.displayName);
       if (window.liff) {
         try {
-          if (!liff.isLoggedIn()) return liff.login({ redirectUri: location.href.split("#")[0] });
+          entryContext = restoreEntryContext();
+          if (!liff.isLoggedIn()) return liff.login({ redirectUri: entryContext.url || location.href.split("#")[0] });
         } catch (error) { console.warn("LINE login failed", error); }
       }
       toast("請在 LINE 內開啟，或稍後再試");
