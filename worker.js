@@ -3036,11 +3036,17 @@ async function getHuaxuShopConfig(env) {
     .split(/[,\n，]/)
     .map(item => item.trim())
     .filter(Boolean);
+  const hookTeaCategories = ["虎克茶商品全品項", "虎克茶系列", "女王饗樂系列", "禮盒開運茶系列", "傳統茶系列"];
+  const savedCategories = splitList(settings.shop_categories || "");
+  const oldWashCategories = ["熱門商品", "線上購物商品", "新會員優惠", "本月活動"];
+  const categories = !savedCategories.length || savedCategories.some(item => oldWashCategories.includes(item))
+    ? hookTeaCategories
+    : savedCategories;
   return {
     heroTitle: String(settings.shop_hero_title || "HookTea 精選 LINE 限定商城"),
     heroBadge: String(settings.shop_hero_badge || "新會員限定"),
     heroSubtitle: String(settings.shop_hero_subtitle || "延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。"),
-    categories: splitList(settings.shop_categories || "熱門商品,線上購物商品,虎克茶,新會員優惠,本月活動"),
+    categories,
     memberTitle: String(settings.shop_member_title || "會員專區"),
     checkinLabel: String(settings.shop_checkin_label || "每日簽到領點"),
     memberModules: splitList(settings.shop_member_modules || "點數記錄,分享好友,推薦成果,個人基本資料"),
@@ -3258,7 +3264,7 @@ function renderHuaxuShopHtml() {
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:480px;min-height:100vh;margin:0 auto;background:#050505;padding-bottom:88px}.top{position:sticky;top:0;z-index:20;background:#050505;padding:18px 18px 14px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #161616}.icon{width:38px;height:38px;border:0;background:transparent;color:#fff;font-size:28px}.brand{flex:1;font-weight:900;letter-spacing:.02em}.brand small{display:block;color:#8d8d8d;font-size:12px;margin-top:2px}.tabs{padding:22px 18px 12px}.tabs h2{margin:0 0 14px;font-size:20px}.tabrow{display:flex;gap:10px;overflow:auto;padding-bottom:4px}.pill{white-space:nowrap;border:1px solid #1b1b1b;background:#111;color:#fff;border-radius:8px;padding:10px 14px;font-weight:800}.pill.active{background:#09251f;border-color:#16c7a2;color:#7fffe2}.hero{position:relative;min-height:310px;background:linear-gradient(135deg,#083172,#07142f 55%,#000);overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 75% 20%,rgba(255,210,92,.32),transparent 28%)}.hero-content{position:relative;padding:26px 22px}.hero-kicker{display:inline-block;background:#d7ae4f;color:#101010;border-radius:7px;padding:7px 11px;font-weight:900}.hero h1{font-size:38px;line-height:1.05;margin:18px 0 10px;color:#ffe28d;text-shadow:0 3px 0 #1a1a1a}.hero p{font-size:15px;line-height:1.5;max-width:300px;color:#f3f3f3}.section{padding:22px 16px}.section h2{margin:0 0 14px;font-size:22px}.products{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:#111;border:1px solid #202020;border-radius:10px;overflow:hidden}.product-link,.product-title{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;text-decoration:none}.card img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}.card-body{padding:12px}.badge{display:inline-block;background:#062a22;color:#78ffde;border:1px solid #0b6f5a;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900}.card h3{font-size:16px;line-height:1.25;margin:10px 0 4px}.card p{color:#aaa;font-size:12px;line-height:1.45;margin:0 0 10px;min-height:32px;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.price{font-weight:900;color:#ffe28d;font-size:20px}.original{font-size:12px;color:#777;text-decoration:line-through;margin-left:4px}.buy{width:100%;margin-top:10px;border:0;border-radius:7px;background:#13b99a;color:#04100d;font-weight:900;padding:10px}.source-link{display:block;width:100%;border:0;background:transparent;text-align:center;color:#8d8d8d;text-decoration:none;font-size:12px;font-weight:800;margin-top:8px;padding:4px}.source-link:hover{color:#fff}.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;background:#050505;border-top:1px solid #151515;display:grid;grid-template-columns:repeat(4,1fr);padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:25}.nav button{background:transparent;border:0;color:#fff;font-size:25px;position:relative}.nav small{display:block;font-size:11px;margin-top:2px}.count{position:absolute;top:-2px;right:28%;background:#13b99a;color:#00110d;border-radius:999px;font-size:12px;min-width:20px;padding:2px 5px}.drawer,.cart,.detail{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45);display:none}.panel{width:82%;max-width:370px;height:100%;background:#050505;padding:24px 18px;overflow:auto}.panel.right{margin-left:auto}.drawer.open,.cart.open,.detail.open{display:block}.menu-logo{font-weight:900;margin-bottom:32px}.menu-item{border-bottom:1px solid #333;padding:16px 0;font-size:20px;font-weight:800}.cart-item{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #222;padding:14px 0}.cart-item button{background:#222;color:#fff;border:0;border-radius:6px;padding:7px 10px}.field{width:100%;background:#111;border:1px solid #2a2a2a;color:#fff;border-radius:7px;padding:12px;margin:8px 0;font-size:16px}.checkout{width:100%;border:0;border-radius:8px;background:#13b99a;color:#04100d;font-weight:900;padding:14px;font-size:16px;margin-top:12px}.detail-card img{width:100%;border-radius:10px;aspect-ratio:1/1;object-fit:cover}.detail-card h2{font-size:24px;line-height:1.2;margin:16px 0 8px}.detail-desc{white-space:pre-wrap;color:#d7d7d7;font-size:14px;line-height:1.7;margin-top:14px}.detail-close{border:0;background:#151515;color:#fff;border-radius:8px;padding:10px 12px;font-weight:900}.empty{color:#888;padding:24px 0}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#13b99a;color:#04100d;border-radius:999px;padding:12px 18px;font-weight:900;display:none;z-index:60}.toast.show{display:block}
-    .profile-button{width:42px;height:42px;border:1px solid #242424;border-radius:999px;background:#111;color:#fff;display:grid;place-items:center;overflow:hidden}.profile-button.ready{border-color:#13b99a}.profile-button img{width:100%;height:100%;object-fit:cover;display:none}.profile-button.ready img{display:block}.profile-button.ready span{display:none}.profile-button span{font-size:18px;font-weight:900}.pay-title{color:#aaa;font-size:12px;font-weight:900;margin:12px 0 8px}.pay-options{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.pay-option{border:1px solid #2a2a2a;border-radius:7px;background:#111;color:#fff;font-weight:900;padding:10px 6px}.pay-option.active{background:#13b99a;color:#04100d;border-color:#13b99a}
+    .profile-button{width:42px;height:42px;border:1px solid #242424;border-radius:999px;background:#111;color:#fff;display:grid;place-items:center;overflow:hidden}.profile-button.ready{border-color:#13b99a}.profile-button img{width:100%;height:100%;object-fit:cover;display:none}.profile-button.ready img{display:block}.profile-button.ready span{display:none}.profile-button span{font-size:18px;font-weight:900}.category-head{position:relative;display:inline-block}.category-trigger{border:0;background:transparent;color:#fff;font-size:20px;font-weight:900;padding:0 24px 0 0}.category-trigger:after{content:"";position:absolute;right:0;top:50%;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #fff;transform:translateY(-25%)}.category-menu{position:absolute;left:0;top:30px;z-index:30;min-width:178px;background:#fff;color:#111;border-radius:2px;box-shadow:0 8px 18px rgba(0,0,0,.28);padding:8px 0;display:none}.category-menu.open{display:block}.category-menu button{display:block;width:100%;border:0;background:#fff;color:#111;text-align:left;font-size:16px;font-weight:900;padding:12px 20px}.category-menu button.active,.category-menu button:hover{background:#f1f5f9}.pay-title{color:#aaa;font-size:12px;font-weight:900;margin:12px 0 8px}.pay-options{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.pay-option{border:1px solid #2a2a2a;border-radius:7px;background:#111;color:#fff;font-weight:900;padding:10px 6px}.pay-option.active{background:#13b99a;color:#04100d;border-color:#13b99a}
     .member{position:fixed;inset:0;z-index:50;background:#f4f6f8;color:#020b1c;display:none;overflow:auto}.member.open{display:block}.member-sheet{max-width:480px;min-height:100%;margin:0 auto;padding:20px 18px 96px}.member-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.member-top h2{margin:0;font-size:24px}.member-close{width:42px;height:42px;border:1px solid #d5dde8;border-radius:10px;background:#fff;color:#020b1c;font-size:24px;font-weight:900}.member-profile{position:relative;background:#fff;border:1px solid #d5dde8;border-radius:18px;text-align:center;overflow:hidden;margin-bottom:18px;box-shadow:0 8px 24px rgba(15,23,42,.06)}.member-cover{height:112px;background:#0d1728;background-image:radial-gradient(#24344e 1px,transparent 1px);background-size:18px 18px}.member-avatar{width:96px;height:96px;border-radius:999px;border:5px solid #fff;object-fit:cover;background:#e6f7ff;margin:-48px auto 8px;display:block}.member-name{font-size:24px;font-weight:900;line-height:1.2;padding:0 14px}.member-tier{display:inline-block;margin:10px 0 20px;border:1px solid #9fe9ca;background:#dcffef;color:#00925f;border-radius:7px;padding:6px 14px;font-size:13px;font-weight:900}.member-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.member-action{border:0;border-radius:14px;background:#fff;color:#020b1c;padding:18px 8px;box-shadow:0 10px 24px rgba(15,23,42,.07);font-weight:900}.member-action b{display:block;color:#14b99a;font-size:32px;line-height:1}.member-action span{display:block;margin-top:8px;font-size:13px}.checkin-button{width:78%;margin:6px auto 18px;display:block;border:1px solid #d5dde8;border-radius:999px;background:#fff;color:#14213d;padding:14px;font-weight:900;font-size:15px}.member-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:12px;background:#fff;border:1px solid #d5dde8;border-radius:12px;padding:14px 16px;margin:10px 0;font-weight:900}.member-row small{color:#13b99a;margin-right:6px}.member-row button{border:0;border-radius:999px;background:#e5e7eb;color:#020b1c;font-weight:900;padding:7px 12px}
   </style>
 </head>
@@ -3273,8 +3279,10 @@ function renderHuaxuShopHtml() {
       </button>
     </header>
     <section class="tabs">
-      <h2 id="productTitle">熱門商品</h2>
-      <div class="tabrow" id="tabs"></div>
+      <div class="category-head">
+        <button class="category-trigger" id="productTitle" onclick="toggleCategoryMenu()">虎克茶商品全品項</button>
+        <div class="category-menu" id="tabs"></div>
+      </div>
     </section>
     <section class="hero">
       <div class="hero-content">
@@ -3284,23 +3292,24 @@ function renderHuaxuShopHtml() {
       </div>
     </section>
     <section class="section">
-      <h2 id="listTitle">熱門商品</h2>
+      <h2 id="listTitle">虎克茶商品全品項</h2>
       <div class="products" id="products"></div>
     </section>
   </div>
   <nav class="nav">
     <button onclick="window.scrollTo({top:0,behavior:'smooth'})">⌂<small>首頁</small></button>
-    <button onclick="setCategory('熱門商品')">★<small>熱門</small></button>
+    <button onclick="setCategory('虎克茶商品全品項')">★<small>熱門</small></button>
     <button onclick="toggleCart(true)">🛒<span class="count" id="cartCount">0</span><small>購物車</small></button>
     <button onclick="openMember()"><span id="memberNavIcon">👤</span><small id="memberNavText">我的</small></button>
   </nav>
   <div class="drawer" id="drawer" onclick="toggleDrawer(false)">
     <div class="panel" onclick="event.stopPropagation()">
       <div class="menu-logo">HookTea 購物商城</div>
-      <div class="menu-item" onclick="setCategory('熱門商品');toggleDrawer(false)">所有商品</div>
-      <div class="menu-item" onclick="setCategory('新會員優惠');toggleDrawer(false)">新會員優惠</div>
-      <div class="menu-item" onclick="setCategory('本月活動');toggleDrawer(false)">本月活動</div>
-      <div class="menu-item" onclick="setCategory('回購專區');toggleDrawer(false)">回購專區</div>
+      <div class="menu-item" onclick="setCategory('虎克茶商品全品項');toggleDrawer(false)">虎克茶商品全品項</div>
+      <div class="menu-item" onclick="setCategory('虎克茶系列');toggleDrawer(false)">虎克茶系列</div>
+      <div class="menu-item" onclick="setCategory('女王饗樂系列');toggleDrawer(false)">女王饗樂系列</div>
+      <div class="menu-item" onclick="setCategory('禮盒開運茶系列');toggleDrawer(false)">禮盒開運茶系列</div>
+      <div class="menu-item" onclick="setCategory('傳統茶系列');toggleDrawer(false)">傳統茶系列</div>
     </div>
   </div>
   <div class="cart" id="cart" onclick="toggleCart(false)">
@@ -3342,8 +3351,9 @@ function renderHuaxuShopHtml() {
   <div class="toast" id="toast"></div>
   <script>
     let products = [];
-    let shopConfig = { categories:["熱門商品","線上購物商品","虎克茶","新會員優惠","本月活動"] };
-    let activeCategory = "熱門商品";
+    const hookTeaCategories = ["虎克茶商品全品項","虎克茶系列","女王饗樂系列","禮盒開運茶系列","傳統茶系列"];
+    let shopConfig = { categories: hookTeaCategories };
+    let activeCategory = "虎克茶商品全品項";
     let cart = JSON.parse(localStorage.getItem("huaxu_cart") || "[]");
     let paymentMethod = localStorage.getItem("huaxu_payment") || "LINEPAY";
     if (!["LINEPAY","REMITTANCE"].includes(paymentMethod)) paymentMethod = "LINEPAY";
@@ -3386,23 +3396,34 @@ function renderHuaxuShopHtml() {
       if (heroSubtitle) heroSubtitle.textContent = shopConfig.heroSubtitle || "";
     }
     function categories(){
-      const configured = Array.isArray(shopConfig.categories) && shopConfig.categories.length ? shopConfig.categories : ["熱門商品"];
-      const set = new Set([...configured, ...products.map(p => p.category).filter(Boolean)]);
-      return Array.from(set);
+      const configured = Array.isArray(shopConfig.categories) && shopConfig.categories.length ? shopConfig.categories : hookTeaCategories;
+      const oldWash = ["熱門商品","線上購物商品","虎克茶","新會員優惠","本月活動"];
+      return configured.some(cat => oldWash.includes(cat)) ? hookTeaCategories : configured;
     }
     function renderTabs(){
       document.getElementById("tabs").innerHTML = categories().map(cat =>
-        '<button class="pill '+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(cat)+'</button>'
+        '<button class="'+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(cat)+'</button>'
       ).join("");
     }
     function setCategory(category){
       activeCategory = category;
       document.getElementById("productTitle").textContent = category;
       document.getElementById("listTitle").textContent = category;
+      document.getElementById("tabs").classList.remove("open");
       renderTabs(); renderProducts();
     }
+    function toggleCategoryMenu(){ document.getElementById("tabs").classList.toggle("open"); }
+    function productInCategory(product, category){
+      const text = [product.category, product.name, product.subtitle, product.badge, product.code].map(v => String(v || "")).join(" ");
+      if (!category || category === "虎克茶商品全品項") return true;
+      if (category === "虎克茶系列") return String(product.category || "") === "虎克茶" || /虎克茶|翔琪|漂浮|苦瓜胜肽/.test(text);
+      if (category === "女王饗樂系列") return /女王|蜂蜜|小藝術|饗樂/.test(text);
+      if (category === "禮盒開運茶系列") return /禮盒|禮袋|好運|竹縣|一手掌握|組盒|組/.test(text);
+      if (category === "傳統茶系列") return /經典檸檬茶|暖心檸檬薑茶|翔琪檸檬茶|漂浮檸檬茶/.test(text);
+      return String(product.category || "") === category;
+    }
     function renderProducts(){
-      const shown = products.filter(p => activeCategory === "熱門商品" || p.category === activeCategory);
+      const shown = products.filter(p => productInCategory(p, activeCategory));
       document.getElementById("products").innerHTML = shown.map(p => {
         const image = '<img src="'+escapeAttr(p.image)+'" alt="'+escapeAttr(p.name || "")+'">';
         const title = '<h3>'+escapeHtml(p.name)+'</h3>';
