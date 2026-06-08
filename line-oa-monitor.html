@@ -350,6 +350,7 @@
           <h2 class="truncate text-xl font-black">${esc(thread.name)}</h2>
           <p class="mt-1 text-sm text-slate-500">${esc(thread.unread || 0)} 則訊息 · ${esc(thread.id)}</p>
           <div class="mt-2 flex flex-wrap gap-2">
+            <span class="rounded-full px-3 py-1.5 text-xs font-black ${statusClass(thread.status)}">${esc(statusLabel(thread.status))}</span>
             ${thread.tags.slice(0, 5).map(tag => `<span class="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-black text-sky-700">${esc(tag)}</span>`).join("")}
             <span class="rounded-full px-3 py-1.5 text-xs font-black ${riskClass(thread.riskLevel)}">${esc(riskLabel(thread.riskLevel))}風險</span>
           </div>

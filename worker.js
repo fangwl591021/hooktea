@@ -1002,6 +1002,9 @@ async function appendLineMonitorD1Event(env, event, threadId, text) {
       tags = CASE
         WHEN line_threads.tags = '' THEN excluded.tags
         WHEN excluded.tags = '' THEN line_threads.tags
+        WHEN excluded.tags = 'LINE' AND instr(',' || line_threads.tags || ',', ',LINE,') > 0 THEN line_threads.tags
+        WHEN excluded.tags = 'LINE,高風險' AND instr(',' || line_threads.tags || ',', ',高風險,') > 0 THEN line_threads.tags
+        WHEN excluded.tags = 'LINE,高風險' AND instr(',' || line_threads.tags || ',', ',LINE,') > 0 THEN line_threads.tags || ',高風險'
         ELSE line_threads.tags || ',' || excluded.tags
       END,
       legacy_user_id = CASE WHEN excluded.legacy_user_id <> '' THEN excluded.legacy_user_id ELSE line_threads.legacy_user_id END,
@@ -2430,10 +2433,10 @@ async function generateHookTeaAiSignals(env, row, thread) {
 }
 
 function splitTags(value) {
-  return String(value || "")
+  return Array.from(new Set(String(value || "")
     .split(/[,，\s]+/)
     .map(x => x.trim())
-    .filter(Boolean);
+    .filter(Boolean)));
 }
 
 function inferHookTeaRisk(user = {}, orders = [], pointData = null, overlay = {}) {
