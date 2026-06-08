@@ -2630,6 +2630,13 @@ async function buildHookTeaMonitorRows(env, options = {}) {
   return rows;
 }
 
+function filterLineMonitorRows(rows = []) {
+  return (Array.isArray(rows) ? rows : []).filter(row => {
+    const tags = Array.isArray(row?.tags) ? row.tags.map(tag => String(tag || "").toUpperCase()) : [];
+    return tags.includes("LINE") || Number(row?.unread || 0) > 0 || /^U[a-f0-9]{32}$/i.test(String(row?.id || ""));
+  });
+}
+
 async function getHookTeaMonitorThread(env, id) {
   const uid = String(id || "").trim();
   if (!uid) return null;
@@ -2833,7 +2840,8 @@ async function handleHookTeaMonitorApi(request, env) {
   if (!auth.ok) return auth.response;
   const url = new URL(request.url);
   if (url.pathname === "/api/line-oa/audience" && request.method === "GET") {
-    const rows = await buildHookTeaMonitorRows(env);
+    let rows = await buildHookTeaMonitorRows(env);
+    if (url.searchParams.get("lineOnly") === "1") rows = filterLineMonitorRows(rows);
     const tagCounts = new Map();
     let unreadMessages = 0;
     let messages7d = 0;
@@ -2874,7 +2882,9 @@ async function handleHookTeaMonitorApi(request, env) {
     }});
   }
   if (url.pathname === "/api/line-oa/threads" && request.method === "GET") {
-    return json({ success: true, data: await buildHookTeaMonitorRows(env) });
+    let rows = await buildHookTeaMonitorRows(env);
+    if (url.searchParams.get("lineOnly") === "1") rows = filterLineMonitorRows(rows);
+    return json({ success: true, data: rows });
   }
   if (url.pathname === "/api/line-oa/thread" && request.method === "GET") {
     const data = await getHookTeaMonitorThread(env, url.searchParams.get("id") || "");

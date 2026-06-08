@@ -490,8 +490,8 @@
 
     async function loadAll(keepActive = true) {
       const [audienceRes, threadsRes] = await Promise.all([
-        fetchJson(`${WORKER_URL}/api/line-oa/audience`),
-        fetchJson(`${WORKER_URL}/api/line-oa/threads`),
+        fetchJson(`${WORKER_URL}/api/line-oa/audience?lineOnly=1`),
+        fetchJson(`${WORKER_URL}/api/line-oa/threads?lineOnly=1`),
       ]);
       state.audience = normalizeAudience(audienceRes);
       state.threads = (threadsRes.data || []).map(normalizeThread);
