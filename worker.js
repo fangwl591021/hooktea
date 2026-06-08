@@ -2624,8 +2624,10 @@ async function buildHookTeaMonitorRows(env, options = {}) {
     });
   }
   rows.sort((a, b) => {
+    const timeDiff = (Date.parse(b.lastMessageAt || "") || 0) - (Date.parse(a.lastMessageAt || "") || 0);
+    if (timeDiff) return timeDiff;
     const rank = { high: 3, medium: 2, low: 1 };
-    return (rank[b.riskLevel] || 0) - (rank[a.riskLevel] || 0) || String(b.lastMessageAt).localeCompare(String(a.lastMessageAt));
+    return (rank[b.riskLevel] || 0) - (rank[a.riskLevel] || 0);
   });
   return rows;
 }
