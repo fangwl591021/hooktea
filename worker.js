@@ -3048,6 +3048,89 @@ async function getHuaxuShopConfig(env) {
   };
 }
 
+async function findHuaxuMemberByLineUid(env, lineUid) {
+  const uid = String(lineUid || "").trim();
+  if (!uid) return { memberUid: "", member: null, binding: null };
+  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
+  const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
+  for (const candidateId of candidateIds) {
+    const member = await safeGetKV(env, `USER_${candidateId}`, null);
+    if (member && (member.userId || candidateId)) return { memberUid: member.userId || candidateId, member, binding };
+  }
+  const users = await listKVRecords(env, "USER_");
+  const found = users.find(row => {
+    const member = row?.data || {};
+    return [member.lineUserId, member.linkedLineUid, member.lineUid, member.userId]
+      .map(value => String(value || "").trim())
+      .includes(uid);
+  });
+  if (!found?.data) return { memberUid: uid, member: null, binding };
+  return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data, binding };
+}
+
+async function handleHuaxuMemberProfile(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  let verifiedProfile = null;
+  try {
+    verifiedProfile = await verifyLineAccessToken(payload.accessToken);
+  } catch (error) {
+    verifiedProfile = null;
+  }
+  const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
+  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
+  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  const memberUid = resolved.memberUid || lineUid;
+  const member = resolved.member || null;
+  const points = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] });
+  const orders = await getHuaxuShopOrders(env);
+  const memberOrders = orders.filter(order => {
+    const ids = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId].map(value => String(value || "").trim());
+    return ids.includes(lineUid) || ids.includes(memberUid);
+  });
+  const safeMember = member ? {
+    userId: member.userId || memberUid,
+    lineUserId: member.lineUserId || lineUid,
+    name: member.name || member.displayName || member.lineDisplayName || verifiedProfile?.name || "",
+    displayName: member.displayName || member.name || verifiedProfile?.name || "",
+    phone: member.phone || member.mobile || member.tel || member.memberPhone || "",
+    memberTier: member.memberTier || "一般會員",
+    pictureUrl: member.pictureUrl || member.avatar || verifiedProfile?.picture || "",
+    createdAt: member.createdAt || "",
+    updatedAt: member.updatedAt || "",
+  } : {
+    userId: lineUid,
+    lineUserId: lineUid,
+    name: verifiedProfile?.name || payload.lineProfile?.displayName || "",
+    displayName: verifiedProfile?.name || payload.lineProfile?.displayName || "",
+    phone: "",
+    memberTier: "一般會員",
+    pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
+  };
+  return json({
+    ok: true,
+    bound: !!member,
+    lineUserId: lineUid,
+    memberUid,
+    member: safeMember,
+    points: {
+      balance: Number(points?.balance || 0),
+      logs: Array.isArray(points?.logs) ? points.logs.slice(0, 10) : [],
+    },
+    orders: {
+      count: memberOrders.length,
+      latest: memberOrders.slice(0, 5).map(order => ({
+        orderId: order.orderId,
+        amount: order.amount,
+        status: order.status,
+        createdAt: order.createdAt || order.createdAtIso || "",
+      })),
+    },
+    referrals: {
+      count: Number(member?.referralCount || member?.shareCount || member?.referrals || 0) || 0,
+    },
+  });
+}
+
 async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const payload = await request.json().catch(() => null);
   if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
@@ -3155,6 +3238,7 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/config" && request.method === "GET") return json(await getHuaxuShopConfig(env));
   if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
   if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
+  if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
     return new Response(renderHuaxuShopHtml(), {
@@ -3264,6 +3348,8 @@ function renderHuaxuShopHtml() {
     let paymentMethod = localStorage.getItem("huaxu_payment") || "LINEPAY";
     if (!["LINEPAY","REMITTANCE"].includes(paymentMethod)) paymentMethod = "LINEPAY";
     let lineProfile = {};
+    let memberData = null;
+    let memberLoading = false;
     let entryContext = { url: location.href.split("#")[0], params: {} };
     init();
     async function init(){
@@ -3274,7 +3360,10 @@ function renderHuaxuShopHtml() {
           const liffId = params.get("liffId") || "2007674851-lQljb6Cm";
           if (liffId) {
             await liff.init({ liffId });
-            if (liff.isLoggedIn()) lineProfile = await liff.getProfile();
+            if (liff.isLoggedIn()) {
+              lineProfile = await liff.getProfile();
+              await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
+            }
             renderLineProfile();
           }
         } catch (error) { console.warn("LIFF init failed", error); }
@@ -3286,7 +3375,7 @@ function renderHuaxuShopHtml() {
       if (loaded[0]) shopConfig = loaded[0];
       products = loaded[1] || [];
       applyShopConfig();
-      renderTabs(); renderProducts(); renderCart(); renderPayOptions();
+      renderTabs(); renderProducts(); renderCart(); renderPayOptions(); renderMemberPanel();
     }
     function applyShopConfig(){
       const heroTitle = document.getElementById("heroTitle");
@@ -3454,6 +3543,25 @@ function renderHuaxuShopHtml() {
       if (navText) navText.textContent = "我的";
       renderMemberPanel();
     }
+    async function loadMemberData(accessToken){
+      if (!lineProfile.userId) return;
+      memberLoading = true;
+      renderMemberPanel();
+      try {
+        const res = await fetch("/api/huaxu/member", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile })
+        }).then(r => r.json());
+        memberData = res && res.ok ? res : null;
+      } catch (error) {
+        console.warn("Member profile load failed", error);
+        memberData = null;
+      } finally {
+        memberLoading = false;
+        renderMemberPanel();
+      }
+    }
     function openMember(){
       if (!lineProfile.userId) return loginLine();
       renderMemberPanel();
@@ -3464,19 +3572,25 @@ function renderHuaxuShopHtml() {
       if (panel) panel.classList.toggle("open", !!open);
     }
     function renderMemberPanel(){
-      const name = lineProfile.displayName || "LINE 會員";
-      const avatar = lineProfile.pictureUrl || "";
+      const member = memberData?.member || {};
+      const name = member.name || member.displayName || lineProfile.displayName || "LINE 會員";
+      const avatar = member.pictureUrl || lineProfile.pictureUrl || "";
+      const tier = member.memberTier || "一般會員";
+      const balance = memberLoading ? "讀取中" : (memberData?.points ? Number(memberData.points.balance || 0).toLocaleString("zh-TW") + " 點" : "尚未連動");
+      const shareCount = memberData?.referrals ? Number(memberData.referrals.count || 0) : 0;
       const modules = Array.isArray(shopConfig.memberModules) && shopConfig.memberModules.length
         ? shopConfig.memberModules
         : ["點數記錄","分享好友","推薦成果","個人基本資料"];
       const panelTitle = document.getElementById("memberPanelTitle");
       const memberName = document.getElementById("memberName");
       const memberAvatar = document.getElementById("memberAvatar");
+      const memberTier = document.getElementById("memberTier");
       const actions = document.getElementById("memberActions");
       const checkin = document.getElementById("checkinButton");
       const rows = document.getElementById("memberRows");
       if (panelTitle) panelTitle.textContent = shopConfig.memberTitle || "會員專區";
       if (memberName) memberName.textContent = name;
+      if (memberTier) memberTier.textContent = tier;
       if (memberAvatar) {
         memberAvatar.src = avatar || "https://placehold.co/160x160/e6f7ff/0f172a?text=LINE";
       }
@@ -3493,9 +3607,9 @@ function renderHuaxuShopHtml() {
       }
       if (rows) {
         const rowDefs = [
-          { label: modules.includes("個人基本資料") ? "個人基本資料" : modules[0] || "個人基本資料", value: lineProfile.userId ? "已註冊" : "未登入" },
-          { label: modules.includes("點數記錄") ? "點數記載" : modules[1] || "點數記載", value: "-" },
-          { label: modules.includes("分享好友") ? "分享連結" : modules[2] || "分享連結", value: "0 人" }
+          { label: modules.includes("個人基本資料") ? "個人基本資料" : modules[0] || "個人基本資料", value: memberData?.bound ? "已註冊" : "尚未綁定" },
+          { label: modules.includes("點數記錄") ? "點數記載" : modules[1] || "點數記載", value: balance },
+          { label: modules.includes("分享好友") ? "分享連結" : modules[2] || "分享連結", value: shareCount + " 人" }
         ];
         rows.innerHTML = rowDefs.map(row =>
           '<div class="member-row"><div><small>□</small>'+escapeHtml(row.label)+'</div><div>'+escapeHtml(row.value)+'</div><button onclick="memberAction(\\''+escapeAttr(row.label)+'\\')">展開</button></div>'
@@ -3512,8 +3626,29 @@ function renderHuaxuShopHtml() {
       }
       toast("請在 LINE 內開啟，或稍後再試");
     }
-    function dailyCheckin(){ toast(shopConfig.checkinLabel || "每日簽到領點"); }
-    function memberAction(label){ toast(label + "功能整理中"); }
+    function dailyCheckin(){ memberAction("每日簽到"); }
+    function memberAction(label){
+      if (!memberData) return toast(memberLoading ? "會員資料讀取中" : "尚未連動會員資料");
+      const member = memberData.member || {};
+      if (label.includes("點")) {
+        const logs = (memberData.points?.logs || []).map(log => {
+          const amount = Number(log.amount || 0);
+          const sign = amount > 0 ? "+" : "";
+          return (log.createdAt || "") + " " + sign + amount + " " + (log.reason || "");
+        }).filter(Boolean).join("\\n");
+        alert("目前點數：" + Number(memberData.points?.balance || 0).toLocaleString("zh-TW") + " 點" + (logs ? "\\n\\n近期紀錄：\\n" + logs : "\\n\\n尚無近期點數紀錄"));
+        return;
+      }
+      if (label.includes("個人")) {
+        alert("會員：" + (member.name || member.displayName || lineProfile.displayName || "") + "\\n手機：" + (member.phone || "尚未填寫") + "\\n會員 UID：" + (memberData.memberUid || member.userId || "") + "\\nLINE UID：" + (memberData.lineUserId || lineProfile.userId || ""));
+        return;
+      }
+      if (label.includes("分享") || label.includes("推薦") || label.includes("邀")) {
+        alert("推薦成果：" + Number(memberData.referrals?.count || 0) + " 人\\n訂單紀錄：" + Number(memberData.orders?.count || 0) + " 筆");
+        return;
+      }
+      toast(label + "已連動");
+    }
     function toast(message){ const el = document.getElementById("toast"); el.textContent = message; el.classList.add("show"); setTimeout(() => el.classList.remove("show"), 2200); }
     function val(id){ return document.getElementById(id).value.trim(); }
     function money(value){ return Number(value || 0).toLocaleString("zh-TW"); }
