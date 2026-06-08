@@ -3030,7 +3030,7 @@ async function getHuaxuShopOrders(env) {
   return (Array.isArray(orders) ? orders : []).filter(order => order && order.type === "PRODUCT");
 }
 
-async function handleHuaxuCreateOrder(request, env, ctx) {
+async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const payload = await request.json().catch(() => null);
   if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
     return json({ ok: false, message: "購物車是空的" }, 400);
@@ -3057,6 +3057,8 @@ async function handleHuaxuCreateOrder(request, env, ctx) {
     displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
     pictureUrl: String(payload.lineProfile?.pictureUrl || "").slice(0, 300),
   };
+  const requestedMethod = String(payload.paymentMethod || "LINEPAY").toUpperCase();
+  const paymentMethod = ["LINEPAY", "NEWEBPAY", "REMITTANCE"].includes(requestedMethod) ? requestedMethod : "LINEPAY";
   const order = {
     orderId: `HX${Date.now()}`,
     type: "PRODUCT",
@@ -3073,7 +3075,7 @@ async function handleHuaxuCreateOrder(request, env, ctx) {
     originalAmount: total,
     amount: total,
     pointsUsed: 0,
-    paymentMethod: "LINEPAY",
+    paymentMethod,
     status: total > 0 ? "PENDING" : "PAID",
     items: items.map(item => ({
       id: item.id,
@@ -3091,14 +3093,44 @@ async function handleHuaxuCreateOrder(request, env, ctx) {
   const nextOrders = [order, ...(Array.isArray(orders) ? orders : [])].slice(0, 2000);
   await putOrdersKV(env, ctx, nextOrders);
   if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}));
-  return json({ ok: true, order });
+
+  let payment = null;
+  let remittanceInfo = "";
+  if (total > 0 && paymentMethod === "REMITTANCE") {
+    const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+    remittanceInfo = String(
+      settings.remittance_info ||
+      settings.bankTransferInfo ||
+      settings.bank_account ||
+      settings.bankAccount ||
+      "尚未設定匯款帳號，請等候客服提供匯款資訊。"
+    );
+    payment = { provider: "REMITTANCE", orderId: order.orderId, status: "PENDING" };
+  } else if (total > 0 && apiHandler?.preparePayment) {
+    const workerUrl = String(payload.workerUrl || new URL(request.url).origin).replace(/\/+$/, "");
+    const returnUrl = String(payload.returnUrl || `${workerUrl}/huaxu-shop.html`);
+    try {
+      payment = await apiHandler.preparePayment({
+        orderId: order.orderId,
+        amount: total,
+        courseName: order.productName,
+        paymentMethod,
+        email: String(payload.customer?.email || ""),
+        workerUrl,
+        returnUrl,
+      }, env);
+    } catch (error) {
+      return json({ ok: false, message: error?.message || "付款建立失敗，請稍後再試。", order }, 502);
+    }
+  }
+  return json({ ok: true, order, payment, remittanceInfo });
 }
 
-async function handleHuaxuShopRoute(request, env, ctx) {
+async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   const url = new URL(request.url);
   if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
   if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
-  if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx);
+  if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
     return new Response(renderHuaxuShopHtml(), {
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
@@ -3117,6 +3149,7 @@ function renderHuaxuShopHtml() {
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:480px;min-height:100vh;margin:0 auto;background:#050505;padding-bottom:88px}.top{position:sticky;top:0;z-index:20;background:#050505;padding:18px 18px 14px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #161616}.icon{width:38px;height:38px;border:0;background:transparent;color:#fff;font-size:28px}.brand{flex:1;font-weight:900;letter-spacing:.02em}.brand small{display:block;color:#8d8d8d;font-size:12px;margin-top:2px}.tabs{padding:22px 18px 12px}.tabs h2{margin:0 0 14px;font-size:20px}.tabrow{display:flex;gap:10px;overflow:auto;padding-bottom:4px}.pill{white-space:nowrap;border:1px solid #1b1b1b;background:#111;color:#fff;border-radius:8px;padding:10px 14px;font-weight:800}.pill.active{background:#09251f;border-color:#16c7a2;color:#7fffe2}.hero{position:relative;min-height:310px;background:linear-gradient(135deg,#083172,#07142f 55%,#000);overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 75% 20%,rgba(255,210,92,.32),transparent 28%)}.hero-content{position:relative;padding:26px 22px}.hero-kicker{display:inline-block;background:#d7ae4f;color:#101010;border-radius:7px;padding:7px 11px;font-weight:900}.hero h1{font-size:38px;line-height:1.05;margin:18px 0 10px;color:#ffe28d;text-shadow:0 3px 0 #1a1a1a}.hero p{font-size:15px;line-height:1.5;max-width:300px;color:#f3f3f3}.section{padding:22px 16px}.section h2{margin:0 0 14px;font-size:22px}.products{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:#111;border:1px solid #202020;border-radius:10px;overflow:hidden}.product-link,.product-title{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;text-decoration:none}.card img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}.card-body{padding:12px}.badge{display:inline-block;background:#062a22;color:#78ffde;border:1px solid #0b6f5a;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900}.card h3{font-size:16px;line-height:1.25;margin:10px 0 4px}.card p{color:#aaa;font-size:12px;line-height:1.45;margin:0 0 10px;min-height:32px;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.price{font-weight:900;color:#ffe28d;font-size:20px}.original{font-size:12px;color:#777;text-decoration:line-through;margin-left:4px}.buy{width:100%;margin-top:10px;border:0;border-radius:7px;background:#13b99a;color:#04100d;font-weight:900;padding:10px}.source-link{display:block;width:100%;border:0;background:transparent;text-align:center;color:#8d8d8d;text-decoration:none;font-size:12px;font-weight:800;margin-top:8px;padding:4px}.source-link:hover{color:#fff}.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;background:#050505;border-top:1px solid #151515;display:grid;grid-template-columns:repeat(4,1fr);padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:25}.nav button{background:transparent;border:0;color:#fff;font-size:25px;position:relative}.nav small{display:block;font-size:11px;margin-top:2px}.count{position:absolute;top:-2px;right:28%;background:#13b99a;color:#00110d;border-radius:999px;font-size:12px;min-width:20px;padding:2px 5px}.drawer,.cart,.detail{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45);display:none}.panel{width:82%;max-width:370px;height:100%;background:#050505;padding:24px 18px;overflow:auto}.panel.right{margin-left:auto}.drawer.open,.cart.open,.detail.open{display:block}.menu-logo{font-weight:900;margin-bottom:32px}.menu-item{border-bottom:1px solid #333;padding:16px 0;font-size:20px;font-weight:800}.cart-item{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #222;padding:14px 0}.cart-item button{background:#222;color:#fff;border:0;border-radius:6px;padding:7px 10px}.field{width:100%;background:#111;border:1px solid #2a2a2a;color:#fff;border-radius:7px;padding:12px;margin:8px 0;font-size:16px}.checkout{width:100%;border:0;border-radius:8px;background:#13b99a;color:#04100d;font-weight:900;padding:14px;font-size:16px;margin-top:12px}.detail-card img{width:100%;border-radius:10px;aspect-ratio:1/1;object-fit:cover}.detail-card h2{font-size:24px;line-height:1.2;margin:16px 0 8px}.detail-desc{white-space:pre-wrap;color:#d7d7d7;font-size:14px;line-height:1.7;margin-top:14px}.detail-close{border:0;background:#151515;color:#fff;border-radius:8px;padding:10px 12px;font-weight:900}.empty{color:#888;padding:24px 0}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#13b99a;color:#04100d;border-radius:999px;padding:12px 18px;font-weight:900;display:none;z-index:60}.toast.show{display:block}
+    .pay-title{color:#aaa;font-size:12px;font-weight:900;margin:12px 0 8px}.pay-options{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.pay-option{border:1px solid #2a2a2a;border-radius:7px;background:#111;color:#fff;font-weight:900;padding:10px 6px}.pay-option.active{background:#13b99a;color:#04100d;border-color:#13b99a}
   </style>
 </head>
 <body>
@@ -3165,6 +3198,8 @@ function renderHuaxuShopHtml() {
       <input class="field" id="phone" placeholder="手機">
       <input class="field" id="address" placeholder="配送地址">
       <textarea class="field" id="note" placeholder="備註"></textarea>
+      <div class="pay-title">付款方式</div>
+      <div class="pay-options" id="payOptions"></div>
       <button class="checkout" onclick="checkout()">送出訂單</button>
     </div>
   </div>
@@ -3179,6 +3214,7 @@ function renderHuaxuShopHtml() {
     let products = [];
     let activeCategory = "熱門商品";
     let cart = JSON.parse(localStorage.getItem("huaxu_cart") || "[]");
+    let paymentMethod = localStorage.getItem("huaxu_payment") || "LINEPAY";
     let lineProfile = {};
     init();
     async function init(){
@@ -3193,7 +3229,7 @@ function renderHuaxuShopHtml() {
         } catch (error) { console.warn("LIFF init failed", error); }
       }
       products = await fetch("/api/huaxu/products").then(r => r.json());
-      renderTabs(); renderProducts(); renderCart();
+      renderTabs(); renderProducts(); renderCart(); renderPayOptions();
     }
     function categories(){
       const set = new Set(["熱門商品", ...products.map(p => p.category).filter(Boolean), "新會員優惠", "本月活動", "回購專區", "LINE限定"]);
@@ -3247,6 +3283,19 @@ function renderHuaxuShopHtml() {
       saveCart(); toast("已加入購物車");
     }
     function saveCart(){ localStorage.setItem("huaxu_cart", JSON.stringify(cart)); renderCart(); }
+    function setPaymentMethod(method){
+      paymentMethod = method;
+      localStorage.setItem("huaxu_payment", method);
+      renderPayOptions();
+    }
+    function renderPayOptions(){
+      const labels = { LINEPAY:"LINE Pay", NEWEBPAY:"刷卡", REMITTANCE:"匯款" };
+      const el = document.getElementById("payOptions");
+      if (!el) return;
+      el.innerHTML = Object.keys(labels).map(method =>
+        '<button type="button" class="pay-option '+(paymentMethod===method?'active':'')+'" onclick="setPaymentMethod(\\''+method+'\\')">'+labels[method]+'</button>'
+      ).join("");
+    }
     function renderCart(){
       document.getElementById("cartCount").textContent = cart.reduce((sum,item)=>sum+item.quantity,0);
       const rows = cart.map(item => {
@@ -3260,9 +3309,37 @@ function renderHuaxuShopHtml() {
       if (!cart.length) return toast("購物車是空的");
       const customer = { name: val("name"), phone: val("phone"), address: val("address"), note: val("note") };
       if (!customer.name || !customer.phone) return toast("請填寫姓名與手機");
-      const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: cart, customer, lineProfile }) }).then(r => r.json());
+      const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: cart, customer, lineProfile, paymentMethod, workerUrl: location.origin, returnUrl: location.href.split("#")[0] }) }).then(r => r.json());
       if (!res.ok) return toast(res.message || "訂單送出失敗");
+      if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
+        location.href = res.payment.redirectUrl;
+        return;
+      }
+      if (res.payment && res.payment.GatewayUrl) {
+        submitPaymentForm(res.payment);
+        return;
+      }
       cart = []; saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
+      if (paymentMethod === "REMITTANCE") {
+        alert("訂單已成立：" + res.order.orderId + "\\n\\n匯款資訊：\\n" + (res.remittanceInfo || "尚未設定匯款帳號，請等候客服提供匯款資訊。"));
+      }
+    }
+    function submitPaymentForm(payRes){
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = payRes.GatewayUrl;
+      form.target = "_top";
+      form.style.display = "none";
+      const params = { MerchantID: payRes.MerchantID, TradeInfo: payRes.TradeInfo, TradeSha: payRes.TradeSha, Version: payRes.Version };
+      Object.keys(params).forEach(key => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = key;
+        input.value = params[key] || "";
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
     }
     function toggleDrawer(open){ document.getElementById("drawer").classList.toggle("open", open); }
     function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); }
@@ -3289,7 +3366,7 @@ export default {
 
     const url = new URL(request.url);
     if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop" || url.pathname.startsWith("/api/huaxu/")) {
-      const huaxuResponse = await handleHuaxuShopRoute(request, env, ctx);
+      const huaxuResponse = await handleHuaxuShopRoute(request, env, ctx, this);
       if (huaxuResponse) return huaxuResponse;
     }
     if (url.pathname.startsWith("/linepay/confirm") || url.searchParams.get("action") === "LINEPAY_CONFIRM") {
