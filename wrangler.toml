@@ -7,6 +7,15 @@ account_id = "8058cf61f0cd44c4edd78080b193033a"
 LINEPAY_ENV = "production"
 LINEPAY_CHANNEL_ID = "2004409296"
 LINEPAY_CURRENCY = "TWD"
+REMITTANCE_INFO = """
+永豐銀行 Bank SinoPac
+銀行代號：807
+往來行：竹北自強分行
+戶名：江鴻卡寧區國際茶行銷有限公司
+帳號：039-018-0005831-8
+SWIFT CODE：SINOTWTP
+匯款後請保留收據，並回覆匯款帳號末五碼。
+"""
 
 [[kv_namespaces]]
 binding = "ACTION_DATA"

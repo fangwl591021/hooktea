@@ -3103,6 +3103,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       settings.bankTransferInfo ||
       settings.bank_account ||
       settings.bankAccount ||
+      env.REMITTANCE_INFO ||
       "尚未設定匯款帳號，請等候客服提供匯款資訊。"
     );
     payment = { provider: "REMITTANCE", orderId: order.orderId, status: "PENDING" };
