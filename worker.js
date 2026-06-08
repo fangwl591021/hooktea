@@ -3222,7 +3222,7 @@ function renderHuaxuShopHtml() {
       if (window.liff) {
         try {
           const params = new URLSearchParams(location.search);
-          const liffId = params.get("liffId");
+          const liffId = params.get("liffId") || "2007674851-lQljb6Cm";
           if (liffId) {
             await liff.init({ liffId });
             if (liff.isLoggedIn()) lineProfile = await liff.getProfile();
