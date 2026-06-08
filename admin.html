@@ -102,6 +102,7 @@
                             <div v-if="canManageRichMenu" @click="switchView('richmenu')" class="nav-item" :class="{'nav-active': view === 'richmenu'}"><i class="fas fa-layer-group w-6 text-center"></i>圖文選單</div>
                             <div v-if="isAdminRole" @click="switchView('paid_broadcast')" class="nav-item" :class="{'nav-active': view === 'paid_broadcast'}"><i class="fas fa-bullhorn w-6 text-center"></i>付費推播</div>
                             <div v-if="isAdminRole" @click="switchView('flex_rules')" class="nav-item" :class="{'nav-active': view === 'flex_rules'}"><i class="fas fa-robot w-6 text-center"></i>機器人與專區卡片</div>
+                            <div v-if="isAdminRole" @click="switchView('shop_modules')" class="nav-item" :class="{'nav-active': view === 'shop_modules'}"><i class="fas fa-th-large w-6 text-center"></i>商城模組</div>
                             <div v-if="isAdminRole" @click="switchView('wasabi_migration')" class="nav-item" :class="{'nav-active': view === 'wasabi_migration'}"><i class="fas fa-database w-6 text-center"></i>Wasabi 遷移檢查</div>
                             <div v-if="isAdminRole" @click="switchView('audit_logs')" class="nav-item" :class="{'nav-active': view === 'audit_logs'}"><i class="fas fa-clipboard-check w-6 text-center"></i>操作紀錄</div>
                             <div v-if="isAdminRole" @click="switchView('settings')" class="nav-item" :class="{'nav-active': view === 'settings'}"><i class="fas fa-cog w-6 text-center"></i>系統設定</div>
@@ -670,7 +671,106 @@
                         </table>
                     </div>
                 </div>
-                
+
+                <div v-if="isAdminRole && view === 'shop_modules'" class="p-8 animate-fade-in bg-slate-50 min-h-[calc(100vh-73px)]">
+                    <div class="max-w-6xl mx-auto space-y-6">
+                        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-5">
+                                <div>
+                                    <h3 class="text-xl font-black text-slate-800 flex items-center gap-2"><i class="fas fa-th-large text-sky-600"></i> 華旭商城模組</h3>
+                                    <p class="text-sm text-slate-500 font-bold mt-1">參照 wash 後台模組區，集中管理前台商城模組，不再放在系統設定頁。</p>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button @click="saveSettings" :disabled="isLoading" class="btn-green-main !py-3 px-5"><i v-if="isLoading" class="fas fa-spinner fa-spin mr-2"></i><i v-else class="fas fa-save mr-2"></i>儲存模組設定</button>
+                                    <a href="./huaxu-shop.html" target="_blank" class="btn-outline bg-white text-slate-700 border-slate-200 hover:bg-slate-50 !py-3 px-5"><i class="fas fa-external-link-alt mr-2"></i>前台預覽</a>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <button v-for="tab in shopModuleTabs" :key="tab.id" @click="activeShopModuleTab = tab.id" class="rounded-xl border px-4 py-3 text-left font-black transition" :class="activeShopModuleTab === tab.id ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'">
+                                    <i class="fas mr-2" :class="tab.icon"></i>{{ tab.label }}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
+                            <div class="space-y-6">
+                                <div v-if="activeShopModuleTab === 'source'" class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                                    <div class="section-title !mb-5 text-sky-700 border-sky-500">商城資料來源</div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="input-label">商城模式</label>
+                                            <select v-model="sysSettings.shop_module" class="input-field font-black bg-white">
+                                                <option value="hooktea">HookTea 本地商品</option>
+                                                <option value="huaxu">華旭商城 API</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="input-label">前台 LIFF ID</label>
+                                            <input type="text" v-model="sysSettings.liff_id" class="input-field font-mono" placeholder="2007674851-lQljb6Cm">
+                                        </div>
+                                        <div class="md:col-span-2">
+                                            <label class="input-label">華旭商品 API URL</label>
+                                            <input type="url" v-model="sysSettings.huaxu_products_url" class="input-field font-mono text-sm" placeholder="https://.../products.json 或華旭商品 API">
+                                        </div>
+                                        <div class="md:col-span-2">
+                                            <label class="input-label">華旭 API Key</label>
+                                            <input type="password" v-model="sysSettings.huaxu_api_key" class="input-field font-mono text-sm" placeholder="可留空；正式建議放 Cloudflare Worker Secret">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div v-if="activeShopModuleTab === 'home'" class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                                    <div class="section-title !mb-5 text-emerald-700 border-emerald-500">首頁主視覺與分類</div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div><label class="input-label">主標題</label><input v-model="sysSettings.shop_hero_title" class="input-field" placeholder="HookTea 精選 LINE 限定商城"></div>
+                                        <div><label class="input-label">標籤文字</label><input v-model="sysSettings.shop_hero_badge" class="input-field" placeholder="新會員限定"></div>
+                                        <div class="md:col-span-2"><label class="input-label">副標文字</label><textarea v-model="sysSettings.shop_hero_subtitle" class="input-field h-24 resize-none" placeholder="延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。"></textarea></div>
+                                        <div class="md:col-span-2"><label class="input-label">分類列</label><input v-model="sysSettings.shop_categories" class="input-field" placeholder="熱門商品,線上購物商品,虎克茶,新會員優惠,本月活動"></div>
+                                    </div>
+                                </div>
+
+                                <div v-if="activeShopModuleTab === 'member'" class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                                    <div class="section-title !mb-5 text-purple-700 border-purple-500">會員專區模組</div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div><label class="input-label">會員卡標題</label><input v-model="sysSettings.shop_member_title" class="input-field" placeholder="會員專區"></div>
+                                        <div><label class="input-label">每日簽到按鈕</label><input v-model="sysSettings.shop_checkin_label" class="input-field" placeholder="每日簽到領點"></div>
+                                        <div class="md:col-span-2"><label class="input-label">會員功能</label><input v-model="sysSettings.shop_member_modules" class="input-field" placeholder="點數記錄,分享好友,推薦成果,個人基本資料"></div>
+                                    </div>
+                                    <div class="mt-5 rounded-xl border border-purple-100 bg-purple-50 p-4 text-sm font-bold text-purple-800">
+                                        會員模組會保留 LINE profile、入口參數與推薦來源，訂單會寫入 entryUrl / entryParams。
+                                    </div>
+                                </div>
+
+                                <div v-if="activeShopModuleTab === 'payment'" class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                                    <div class="section-title !mb-5 text-amber-700 border-amber-500">付款與訂單模組</div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div><label class="input-label">付款方式</label><input v-model="sysSettings.shop_payment_methods" class="input-field" placeholder="LINEPAY,REMITTANCE"></div>
+                                        <div><label class="input-label">LINE Pay 環境</label><select v-model="sysSettings.linepay_env" class="input-field bg-white"><option value="sandbox">Sandbox 測試</option><option value="production">Production 正式</option></select></div>
+                                        <div class="md:col-span-2"><label class="input-label">匯款資訊</label><textarea v-model="sysSettings.remittance_info" class="input-field h-32 resize-none leading-relaxed"></textarea></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 h-fit sticky top-24">
+                                <div class="font-black text-slate-800 mb-3">模組預覽</div>
+                                <div class="rounded-[22px] border-[10px] border-slate-900 bg-black text-white overflow-hidden shadow-2xl">
+                                    <div class="px-4 py-3 border-b border-white/10 font-black">HookTea 購物商城</div>
+                                    <div class="p-5 bg-gradient-to-br from-blue-950 to-black min-h-[220px]">
+                                        <span class="inline-block bg-yellow-400 text-slate-900 rounded-lg px-3 py-2 font-black text-sm">{{ sysSettings.shop_hero_badge || '新會員限定' }}</span>
+                                        <div class="text-3xl font-black leading-tight mt-5 text-yellow-200">{{ sysSettings.shop_hero_title || 'HookTea 精選 LINE 限定商城' }}</div>
+                                        <p class="text-sm text-slate-200 mt-4 leading-relaxed">{{ sysSettings.shop_hero_subtitle || '訂單送出後會進入 HookTea 後台訂單維護。' }}</p>
+                                    </div>
+                                    <div class="p-4 grid grid-cols-2 gap-3">
+                                        <div class="rounded-lg bg-white/10 h-24"></div>
+                                        <div class="rounded-lg bg-white/10 h-24"></div>
+                                    </div>
+                                </div>
+                                <div class="mt-4 text-xs text-slate-500 font-bold leading-relaxed">這裡只管理商城模組設定；商品內容仍在「商城商品」頁維護。</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div v-if="isAdminRole && view === 'wasabi_migration'" class="p-8 animate-fade-in space-y-6">
                     <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
                         <div>
@@ -961,22 +1061,6 @@
                         <div class="mb-8 flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
                             <div><div class="font-bold text-slate-700 text-sm">開放學員自行取消報名</div><div class="text-xs text-slate-400 mt-1">啟用後，學員可在「待付款」訂單下方看見取消按鈕</div></div>
                             <select v-model="sysSettings.allow_cancel_order" class="input-field !w-32 !py-2 !text-sm font-bold bg-white"><option value="true">🟢 啟用</option><option value="false">🔴 停用</option></select>
-                        </div>
-
-                        <div class="section-title !mb-4 text-sky-700 border-sky-500 mt-8">華旭商城模組</div>
-                        <div class="mb-8 flex items-center justify-between bg-sky-50 p-4 rounded-xl border border-sky-100">
-                            <div>
-                                <div class="font-bold text-slate-700 text-sm">商城商品來源</div>
-                                <div class="text-xs text-slate-500 mt-1">切到華旭後，前台商城與後台商品清單會優先讀取華旭商品 API；API 未設定或失敗時會回退本地商品。</div>
-                            </div>
-                            <select v-model="sysSettings.shop_module" class="input-field !w-36 !py-2 !text-sm font-bold bg-white">
-                                <option value="hooktea">HookTea</option>
-                                <option value="huaxu">華旭商城</option>
-                            </select>
-                        </div>
-                        <div class="grid grid-cols-1 gap-4 mb-8" v-if="sysSettings.shop_module === 'huaxu'">
-                            <div><label class="input-label">華旭商品 API URL</label><input type="url" v-model="sysSettings.huaxu_products_url" class="input-field text-sm font-mono text-sky-700" placeholder="https://.../products.json 或華旭商品 API"></div>
-                            <div><label class="input-label">華旭 API Key</label><input type="password" v-model="sysSettings.huaxu_api_key" class="input-field text-sm font-mono text-sky-700" placeholder="可留空；正式建議放 Cloudflare Worker Secret"></div>
                         </div>
 
                         <div class="section-title !mb-4 text-emerald-700 border-emerald-500 mt-8">WordPress 點數系統串接 (資料備份與遷徙)</div>
@@ -1467,7 +1551,7 @@
 
             const { createApp, ref, computed, onMounted } = Vue;
             const WORKER_URL = 'https://hooktea.fangwl591021.workers.dev/';
-            const CACHE_VERSION = 'v257';
+            const CACHE_VERSION = 'v258';
             const CACHE_KEY = `act_admin_cache_${CACHE_VERSION}`;
 
             createApp({
@@ -1498,6 +1582,13 @@
                     const auditLogs = ref([]);
                     const broadcastTags = ref([]);
                     const broadcastCampaigns = ref([]);
+                    const activeShopModuleTab = ref('source');
+                    const shopModuleTabs = [
+                        { id: 'source', label: '資料來源', icon: 'fa-plug' },
+                        { id: 'home', label: '首頁模組', icon: 'fa-home' },
+                        { id: 'member', label: '會員專區', icon: 'fa-user-circle' },
+                        { id: 'payment', label: '付款訂單', icon: 'fa-money-check-alt' }
+                    ];
                     const wasabiCheck = ref(null);
                     const wasabiExportResult = ref(null);
                     const wasabiVerifyResult = ref(null);
@@ -1514,7 +1605,15 @@
                         linepay_currency: String(settings.linepay_currency || 'TWD'),
                         shop_module: String(settings.shop_module || 'hooktea'),
                         huaxu_products_url: String(settings.huaxu_products_url || ''),
-                        huaxu_api_key: String(settings.huaxu_api_key || '')
+                        huaxu_api_key: String(settings.huaxu_api_key || ''),
+                        shop_hero_title: String(settings.shop_hero_title || 'HookTea 精選 LINE 限定商城'),
+                        shop_hero_badge: String(settings.shop_hero_badge || '新會員限定'),
+                        shop_hero_subtitle: String(settings.shop_hero_subtitle || '延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。'),
+                        shop_categories: String(settings.shop_categories || '熱門商品,線上購物商品,虎克茶,新會員優惠,本月活動'),
+                        shop_member_title: String(settings.shop_member_title || '會員專區'),
+                        shop_checkin_label: String(settings.shop_checkin_label || '每日簽到領點'),
+                        shop_member_modules: String(settings.shop_member_modules || '點數記錄,分享好友,推薦成果,個人基本資料'),
+                        shop_payment_methods: String(settings.shop_payment_methods || 'LINEPAY,REMITTANCE')
                     });
                     
                     const memberSearch = ref('');
@@ -1654,7 +1753,7 @@
                         if (!user || user.isDeleted === true || !user.userId) return false;
                         return user.isTeacher === true || user.role === 'teacher' || user.crmRole === 'teacher' || String(user.memberTier || '').includes('導師');
                     }));
-                    const adminOnlyViews = new Set(['dashboard', 'orders', 'booking_report', 'points_ledger', 'payment_logs', 'audit_logs', 'paid_broadcast', 'richmenu', 'settings', 'flex_rules']);
+                    const adminOnlyViews = new Set(['dashboard', 'orders', 'booking_report', 'points_ledger', 'payment_logs', 'audit_logs', 'paid_broadcast', 'richmenu', 'settings', 'flex_rules', 'shop_modules']);
                     const systemAllowedViews = new Set(['richmenu']);
                     const systemAllowedActions = new Set(['ADMIN_GET_DATA', 'ADMIN_GET_SLOTS', 'ADMIN_MANAGE_POINTS', 'GET_USER_POINTS', 'UPLOAD_IMAGE', 'DEPLOY_RICH_MENU', 'LOG_ADMIN_EVENT']);
                     const operatorDefaultView = 'members';
@@ -1933,7 +2032,7 @@
                         if (view.value === 'paid_broadcast') return '付費推播';
                         const map = {
                             dashboard: '營運統計中心', calendar: '日曆檢視', members: '學員 CRM', courses: '課程 / 預約服務', products: '商城商品',
-                            consultation: '預約設定', orders: '訂單維護', booking_report: '預約報表', points_ledger: '點數進出總表', payment_logs: '刷卡紀錄', richmenu: '圖文選單管理', settings: '系統參數設定', flex_rules: '機器人與專區卡片', wasabi_migration: 'Wasabi 遷移檢查'
+                            consultation: '預約設定', orders: '訂單維護', booking_report: '預約報表', points_ledger: '點數進出總表', payment_logs: '刷卡紀錄', richmenu: '圖文選單管理', settings: '系統參數設定', flex_rules: '機器人與專區卡片', shop_modules: '商城模組', wasabi_migration: 'Wasabi 遷移檢查'
                         };
                         return map[view.value] || '管理站';
                     });
@@ -3613,7 +3712,7 @@
 
                     return {
                         isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
-                        users, teachers, courses, products, orders, sysSettings, paymentLogs, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
+                        users, teachers, courses, products, orders, sysSettings, paymentLogs, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
                         adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
