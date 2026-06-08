@@ -1742,6 +1742,57 @@ function textLineMessage(text) {
   return { type: "text", text: String(text || "").slice(0, 5000) };
 }
 
+function imageLineMessage(url) {
+  const imageUrl = String(url || "").trim();
+  return { type: "image", originalContentUrl: imageUrl, previewImageUrl: imageUrl };
+}
+
+async function buildHookTeaInvite(env, lineUid) {
+  const uid = String(lineUid || "").trim();
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const binding = uid ? await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false }) : null;
+  const memberUid = String(binding?.legacyUserId || uid || "").trim();
+  const member = memberUid ? await safeGetKV(env, `USER_${memberUid}`, null).catch(() => null) : null;
+  const liffId = String(settings.liff_id || settings.shop_liff_id || env.LIFF_ID || "2007674851-lQljb6Cm").trim();
+  const baseUrl = String(settings.public_base_url || settings.worker_url || env.PUBLIC_BASE_URL || "https://hooktea.fangwl591021.workers.dev").replace(/\/+$/, "");
+  const params = new URLSearchParams();
+  if (memberUid) params.set("ref", memberUid);
+  if (uid) params.set("lineRef", uid);
+  params.set("source", "line_invite");
+  const workerInviteUrl = `${baseUrl}/huaxu-shop.html?${params.toString()}`;
+  const liffInviteUrl = liffId ? `https://liff.line.me/${encodeURIComponent(liffId)}?${params.toString()}` : workerInviteUrl;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(liffInviteUrl)}`;
+  return {
+    memberUid,
+    lineUid: uid,
+    memberName: member?.name || member?.displayName || binding?.name || "",
+    inviteUrl: liffInviteUrl,
+    workerInviteUrl,
+    qrUrl,
+  };
+}
+
+async function handleLineReferralInviteText(env, ctx, event) {
+  const uid = String(event?.source?.userId || "").trim();
+  const replyToken = event?.replyToken || "";
+  const text = String(event?.message?.text || "").trim();
+  if (!uid || !replyToken || !/^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QR Code)$/i.test(text)) return false;
+  const invite = await buildHookTeaInvite(env, uid);
+  await safePutKV(env, `REFERRAL_INVITE_${uid}`, {
+    ...invite,
+    keyword: text,
+    updatedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 30 }).catch(() => {});
+  const displayName = invite.memberName ? `${invite.memberName} 的` : "";
+  const message = [
+    textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\n好友從這個連結進入商城，系統會保留您的推薦來源。`),
+    imageLineMessage(invite.qrUrl),
+  ];
+  const reply = await deliverLineMessage(env, uid, replyToken, message);
+  if (ctx) ctx.waitUntil(safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {}));
+  return true;
+}
+
 function extractTaiwanPhone(text) {
   const digits = normalizeMemberPhone(text);
   return /^09\d{8}$/.test(digits) ? digits : "";
@@ -1752,6 +1803,7 @@ async function handleLineMemberBindText(env, ctx, event) {
   const replyToken = event?.replyToken || "";
   const text = String(event?.message?.text || "").trim();
   if (!uid || !replyToken || !text) return false;
+  if (await handleLineReferralInviteText(env, ctx, event)) return true;
   const pendingKey = `LINE_BIND_PENDING_${uid}`;
   const debugKey = `LINE_BIND_DEBUG_${uid}`;
   const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
