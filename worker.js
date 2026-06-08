@@ -1772,24 +1772,38 @@ async function buildHookTeaInvite(env, lineUid) {
   };
 }
 
+function isReferralInviteKeyword(text) {
+  const normalized = String(text || "").replace(/\s+/g, "").trim();
+  return /^(推薦好友|分享好友|會員分享|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
+}
+
 async function handleLineReferralInviteText(env, ctx, event) {
   const uid = String(event?.source?.userId || "").trim();
   const replyToken = event?.replyToken || "";
   const text = String(event?.message?.text || "").trim();
-  if (!uid || !replyToken || !/^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QR Code)$/i.test(text)) return false;
-  const invite = await buildHookTeaInvite(env, uid);
-  await safePutKV(env, `REFERRAL_INVITE_${uid}`, {
-    ...invite,
-    keyword: text,
-    updatedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 30 }).catch(() => {});
-  const displayName = invite.memberName ? `${invite.memberName} 的` : "";
-  const message = [
-    textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\n好友從這個連結進入商城，系統會保留您的推薦來源。`),
-    imageLineMessage(invite.qrUrl),
-  ];
-  const reply = await deliverLineMessage(env, uid, replyToken, message);
-  if (ctx) ctx.waitUntil(safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {}));
+  if (!uid || !replyToken || !isReferralInviteKeyword(text)) return false;
+  const startedAt = new Date().toISOString();
+  await safePutKV(env, `REFERRAL_INVITE_DEBUG_${uid}`, { step: "start", keyword: text, startedAt }, { expirationTtl: 86400 }).catch(() => {});
+  let invite = null;
+  let reply = null;
+  let imagePush = null;
+  try {
+    invite = await buildHookTeaInvite(env, uid);
+    await safePutKV(env, `REFERRAL_INVITE_${uid}`, {
+      ...invite,
+      keyword: text,
+      updatedAt: new Date().toISOString(),
+    }, { expirationTtl: 86400 * 30 }).catch(() => {});
+    const displayName = invite.memberName ? `${invite.memberName} 的` : "";
+    reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\nQR Code 圖片網址：\n${invite.qrUrl}\n\n好友從這個連結進入商城，系統會保留您的推薦來源。`));
+    imagePush = await pushLineMessage(env, uid, imageLineMessage(invite.qrUrl)).catch(error => ({ ok: false, error: error.message || String(error) }));
+  } catch (error) {
+    const fallbackUrl = `https://liff.line.me/2007674851-lQljb6Cm?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite`;
+    const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
+    invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, qrUrl: fallbackQr, error: error.message || String(error) };
+    reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${fallbackUrl}\n\nQR Code 圖片網址：\n${fallbackQr}`)).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
+  }
+  await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, keyword: text, reply, imagePush, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
   return true;
 }
 
@@ -5477,10 +5491,21 @@ export default {
 
       for (const event of events) {
         let handled = false;
+        if (event?.type === "message" && event?.message?.type === "text") {
+          const text = String(event?.message?.text || "").trim();
+          const uid = String(event?.source?.userId || "").trim();
+          if (isReferralInviteKeyword(text)) {
+            await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
+            handled = await handleLineReferralInviteText(env, ctx, event).catch(e => {
+              console.error("LINE Referral Error:", e);
+              return false;
+            });
+          }
+        }
         await appendLineMonitorEvent(env, ctx, event).catch(e => {
           console.error("LINE Monitor Append Error:", e);
         });
-        if (event?.type === "message" && event?.message?.type === "text") {
+        if (!handled && event?.type === "message" && event?.message?.type === "text") {
           handled = await handleLineMemberBindText(env, ctx, event).catch(e => {
             console.error("LINE Bind Error:", e);
             return false;
