@@ -3030,6 +3030,24 @@ async function getHuaxuShopOrders(env) {
   return (Array.isArray(orders) ? orders : []).filter(order => order && order.type === "PRODUCT");
 }
 
+async function getHuaxuShopConfig(env) {
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const splitList = value => String(value || "")
+    .split(/[,\n，]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+  return {
+    heroTitle: String(settings.shop_hero_title || "HookTea 精選 LINE 限定商城"),
+    heroBadge: String(settings.shop_hero_badge || "新會員限定"),
+    heroSubtitle: String(settings.shop_hero_subtitle || "延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。"),
+    categories: splitList(settings.shop_categories || "熱門商品,線上購物商品,虎克茶,新會員優惠,本月活動"),
+    memberTitle: String(settings.shop_member_title || "會員專區"),
+    checkinLabel: String(settings.shop_checkin_label || "每日簽到領點"),
+    memberModules: splitList(settings.shop_member_modules || "點數記錄,分享好友,推薦成果,個人基本資料"),
+    paymentMethods: splitList(settings.shop_payment_methods || "LINEPAY,REMITTANCE"),
+  };
+}
+
 async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const payload = await request.json().catch(() => null);
   if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
@@ -3134,6 +3152,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
 
 async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   const url = new URL(request.url);
+  if (url.pathname === "/api/huaxu/config" && request.method === "GET") return json(await getHuaxuShopConfig(env));
   if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
   if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
@@ -3174,9 +3193,9 @@ function renderHuaxuShopHtml() {
     </section>
     <section class="hero">
       <div class="hero-content">
-        <span class="hero-kicker">新會員限定</span>
-        <h1>HookTea 精選<br>LINE 限定商城</h1>
-        <p>延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。</p>
+        <span class="hero-kicker" id="heroBadge">新會員限定</span>
+        <h1 id="heroTitle">HookTea 精選<br>LINE 限定商城</h1>
+        <p id="heroSubtitle">延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。</p>
       </div>
     </section>
     <section class="section">
@@ -3221,6 +3240,7 @@ function renderHuaxuShopHtml() {
   <div class="toast" id="toast"></div>
   <script>
     let products = [];
+    let shopConfig = { categories:["熱門商品","線上購物商品","虎克茶","新會員優惠","本月活動"] };
     let activeCategory = "熱門商品";
     let cart = JSON.parse(localStorage.getItem("huaxu_cart") || "[]");
     let paymentMethod = localStorage.getItem("huaxu_payment") || "LINEPAY";
@@ -3241,11 +3261,26 @@ function renderHuaxuShopHtml() {
           }
         } catch (error) { console.warn("LIFF init failed", error); }
       }
-      products = await fetch("/api/huaxu/products").then(r => r.json());
+      const loaded = await Promise.all([
+        fetch("/api/huaxu/config").then(r => r.json()).catch(() => null),
+        fetch("/api/huaxu/products").then(r => r.json())
+      ]);
+      if (loaded[0]) shopConfig = loaded[0];
+      products = loaded[1] || [];
+      applyShopConfig();
       renderTabs(); renderProducts(); renderCart(); renderPayOptions();
     }
+    function applyShopConfig(){
+      const heroTitle = document.getElementById("heroTitle");
+      const heroBadge = document.getElementById("heroBadge");
+      const heroSubtitle = document.getElementById("heroSubtitle");
+      if (heroTitle) heroTitle.innerHTML = escapeHtml(shopConfig.heroTitle || "HookTea 精選 LINE 限定商城").replace(/\\n/g, "<br>");
+      if (heroBadge) heroBadge.textContent = shopConfig.heroBadge || "新會員限定";
+      if (heroSubtitle) heroSubtitle.textContent = shopConfig.heroSubtitle || "";
+    }
     function categories(){
-      const set = new Set(["熱門商品", ...products.map(p => p.category).filter(Boolean), "新會員優惠", "本月活動", "回購專區", "LINE限定"]);
+      const configured = Array.isArray(shopConfig.categories) && shopConfig.categories.length ? shopConfig.categories : ["熱門商品"];
+      const set = new Set([...configured, ...products.map(p => p.category).filter(Boolean)]);
       return Array.from(set);
     }
     function renderTabs(){
