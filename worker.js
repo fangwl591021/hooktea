@@ -3683,12 +3683,32 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   return json({ ok: true, order, payment, remittanceInfo });
 }
 
+async function handleHuaxuLiffDebug(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const entry = {
+    step: String(payload.step || "").slice(0, 80),
+    detail: String(payload.detail || "").slice(0, 300),
+    liffId: String(payload.liffId || "").slice(0, 80),
+    href: String(payload.href || "").slice(0, 500),
+    isInClient: Boolean(payload.isInClient),
+    isLoggedIn: Boolean(payload.isLoggedIn),
+    userId: String(payload.userId || "").slice(0, 100),
+    createdAt: new Date().toISOString(),
+  };
+  await safePutKV(env, "HUAXU_LIFF_DEBUG_LAST", entry, { expirationTtl: 86400 }).catch(() => {});
+  const rows = await safeGetKV(env, "HUAXU_LIFF_DEBUG_LOG", []).catch(() => []);
+  const nextRows = [entry, ...(Array.isArray(rows) ? rows : [])].slice(0, 50);
+  await safePutKV(env, "HUAXU_LIFF_DEBUG_LOG", nextRows, { expirationTtl: 86400 }).catch(() => {});
+  return json({ ok: true });
+}
+
 async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   const url = new URL(request.url);
   if (url.pathname === "/api/huaxu/config" && request.method === "GET") return json(await getHuaxuShopConfig(env));
   if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
   if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
   if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env);
+  if (url.pathname === "/api/huaxu/liff-debug" && request.method === "POST") return handleHuaxuLiffDebug(request, env);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
     const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
@@ -3811,22 +3831,6 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     init();
     async function init(){
       entryContext = restoreEntryContext();
-      if (window.liff) {
-        try {
-          const params = new URLSearchParams(location.search);
-          const liffId = params.get("liffId") || SHOP_LIFF_ID || "2007674851-ijenzSk8";
-          if (liffId) {
-            await liff.init({ liffId, withLoginOnExternalBrowser: true });
-            if (!liff.isLoggedIn()) {
-              liff.login({ redirectUri: location.href });
-              return;
-            }
-            lineProfile = await liff.getProfile();
-            await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
-            renderLineProfile();
-          }
-        } catch (error) { console.warn("LIFF init failed", error); }
-      }
       const loaded = await Promise.all([
         fetch("/api/huaxu/config").then(r => r.json()).catch(() => null),
         fetch("/api/huaxu/products").then(r => r.json())
@@ -3834,7 +3838,56 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (loaded[0]) shopConfig = loaded[0];
       products = loaded[1] || [];
       applyShopConfig();
-      renderTabs(); renderProducts(); renderCart(); renderPayOptions(); renderMemberPanel();
+      renderTabs(); renderProducts(); renderCart(); renderPayOptions(); renderMemberPanel(); renderLineProfile();
+      initLineIdentity();
+    }
+    async function logShopLiff(step, detail, extra){
+      try {
+        let isInClient = false;
+        let isLoggedIn = false;
+        try { isInClient = !!(window.liff && liff.isInClient && liff.isInClient()); } catch (error) {}
+        try { isLoggedIn = !!(window.liff && liff.isLoggedIn && liff.isLoggedIn()); } catch (error) {}
+        await fetch("/api/huaxu/liff-debug", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(Object.assign({
+            step,
+            detail: detail || "",
+            liffId: SHOP_LIFF_ID,
+            href: location.href,
+            isInClient,
+            isLoggedIn,
+            userId: lineProfile.userId || ""
+          }, extra || {}))
+        });
+      } catch (error) {}
+    }
+    async function initLineIdentity(forceLogin){
+      if (!window.liff) {
+        await logShopLiff("no_sdk", "LIFF SDK not available");
+        return;
+      }
+      try {
+        entryContext = restoreEntryContext();
+        const params = new URLSearchParams(location.search);
+        const liffId = params.get("liffId") || shopConfig.shopLiffId || SHOP_LIFF_ID || "2007674851-ijenzSk8";
+        if (!liffId) return;
+        await liff.init({ liffId, withLoginOnExternalBrowser: true });
+        await logShopLiff("init_done", "", { liffId });
+        if (!liff.isLoggedIn()) {
+          await logShopLiff(forceLogin ? "login_manual" : "login_redirect", "", { liffId });
+          liff.login({ redirectUri: entryContext.url || location.href.split("#")[0] });
+          return;
+        }
+        lineProfile = await liff.getProfile();
+        await logShopLiff("profile_done", "", { liffId, userId: lineProfile.userId || "" });
+        renderLineProfile();
+        await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
+        renderLineProfile();
+      } catch (error) {
+        console.warn("LIFF init failed", error);
+        await logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
+      }
     }
     function applyShopConfig(){
       const heroTitle = document.getElementById("heroTitle");
@@ -4088,13 +4141,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     function loginLine(){
       if (lineProfile.userId) return openMember();
-      if (window.liff) {
-        try {
-          entryContext = restoreEntryContext();
-          if (!liff.isLoggedIn()) return liff.login({ redirectUri: entryContext.url || location.href.split("#")[0] });
-        } catch (error) { console.warn("LINE login failed", error); }
-      }
-      toast("請在 LINE 內開啟，或稍後再試");
+      initLineIdentity(true);
+      toast("正在確認 LINE 身分");
     }
     function dailyCheckin(){ memberAction("每日簽到"); }
     function memberAction(label){
