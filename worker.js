@@ -1828,7 +1828,16 @@ function isReferralInviteKeyword(text) {
 
 function isMotherSiteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
-  return /^(會員分享)$/i.test(normalized);
+  return /^(會員分享|會員打卡)$/i.test(normalized);
+}
+
+function getMotherWebhookUrl(env, settings = {}) {
+  return String(
+    env.FORWARD_WEBHOOK_URL ||
+    env.SECOND_WEBHOOK_URL ||
+    settings.second_webhook_url ||
+    "https://aiwe.cc/index.php/line_login/9890/"
+  ).trim();
 }
 
 async function handleLineReferralInviteText(env, ctx, event) {
@@ -3660,6 +3669,94 @@ async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
   });
 }
 
+async function handleHuaxuMemberCheckin(request, env, ctx) {
+  const payload = await request.json().catch(() => ({}));
+  let verifiedProfile = null;
+  try {
+    verifiedProfile = await verifyLineAccessToken(payload.accessToken);
+  } catch (error) {
+    verifiedProfile = null;
+  }
+  const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
+  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const keyword = String(payload.keyword || settings.shop_checkin_keyword || env.SHOP_CHECKIN_KEYWORD || "會員打卡").trim();
+  const forwardWebhook = getMotherWebhookUrl(env, settings);
+  const now = new Date();
+  const dateKey = now.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+  const recordKey = `CHECKIN_${lineUid}_${dateKey}`;
+  const existing = await safeGetKV(env, recordKey, null).catch(() => null);
+  if (existing?.forwarded) {
+    return json({ ok: true, alreadyCheckedIn: true, message: "今日已完成打卡", record: existing });
+  }
+  const event = {
+    type: "message",
+    mode: "active",
+    timestamp: now.getTime(),
+    source: { type: "user", userId: lineUid },
+    replyToken: `hooktea-checkin-${now.getTime()}`,
+    message: {
+      id: `huaxu-checkin-${now.getTime()}`,
+      type: "text",
+      text: keyword,
+    },
+  };
+  const forwardPayload = {
+    destination: String(env.LINE_BOT_USER_ID || settings.line_bot_user_id || ""),
+    events: [event],
+  };
+  const attempt = {
+    lineUserId: lineUid,
+    displayName: verifiedProfile?.name || payload.lineProfile?.displayName || "",
+    keyword,
+    url: forwardWebhook,
+    dateKey,
+    attemptedAt: now.toISOString(),
+  };
+  await safePutKV(env, "HUAXU_CHECKIN_ATTEMPT_LAST", attempt, { expirationTtl: 86400 }).catch(() => {});
+  let result = null;
+  try {
+    const response = await fetch(forwardWebhook, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-line-signature": "",
+        "x-hooktea-forwarded-by": "huaxu-shop-checkin",
+      },
+      body: JSON.stringify(forwardPayload),
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+    });
+    const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
+    result = {
+      ...attempt,
+      forwarded: response.ok,
+      status: response.status,
+      ok: response.ok,
+      response: responseText.slice(0, 300),
+      forwardedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    result = {
+      ...attempt,
+      forwarded: false,
+      ok: false,
+      error: error?.message || String(error),
+      forwardedAt: new Date().toISOString(),
+    };
+  }
+  await safePutKV(env, "HUAXU_CHECKIN_FORWARD_LAST", result, { expirationTtl: 86400 }).catch(() => {});
+  if (result.forwarded) await safePutKV(env, recordKey, result, { expirationTtl: 86400 * 7 }).catch(() => {});
+  return json({
+    ok: !!result.forwarded,
+    message: result.forwarded ? "打卡已送出" : "打卡送出失敗",
+    keyword,
+    status: result.status || 0,
+    response: result.response || "",
+    error: result.error || "",
+  }, result.forwarded ? 200 : 502);
+}
+
 async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const payload = await request.json().catch(() => null);
   if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
@@ -3788,6 +3885,7 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
   if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env);
   if (url.pathname === "/api/huaxu/member" && request.method === "PUT") return handleHuaxuUpdateMemberProfile(request, env, ctx);
+  if (url.pathname === "/api/huaxu/checkin" && request.method === "POST") return handleHuaxuMemberCheckin(request, env, ctx);
   if (url.pathname === "/api/huaxu/liff-debug" && request.method === "POST") return handleHuaxuLiffDebug(request, env);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
@@ -4226,7 +4324,32 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       initLineIdentity(true);
       toast("正在確認 LINE 身分");
     }
-    function dailyCheckin(){ memberAction("每日簽到"); }
+    async function dailyCheckin(){
+      if (!lineProfile.userId) return loginLine();
+      const button = document.getElementById("checkinButton");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "打卡送出中...";
+      }
+      try {
+        const accessToken = window.liff && liff.getAccessToken ? liff.getAccessToken() : "";
+        const res = await fetch("/api/huaxu/checkin", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile, keyword: "會員打卡" })
+        }).then(r => r.json());
+        if (!res.ok) throw new Error(res.message || "打卡送出失敗");
+        toast(res.alreadyCheckedIn ? "今日已完成打卡" : "打卡已送出");
+        await refreshMemberData();
+      } catch (error) {
+        toast(error.message || "打卡送出失敗");
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = shopConfig.checkinLabel || "每日簽到領點";
+        }
+      }
+    }
     function memberAction(label){
       if (!memberData) return toast(memberLoading ? "會員資料讀取中" : "尚未連動會員資料");
       const member = memberData.member || {};
