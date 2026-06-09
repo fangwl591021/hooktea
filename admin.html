@@ -1004,7 +1004,8 @@
                     <div class="bg-white p-8 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
                         <div class="absolute top-0 left-0 w-full h-1 bg-red-500"></div>
                         <div class="section-title !mb-4 text-red-700 border-red-500">紅包獎勵、LIFF 與社群連結</div>
-                        <div class="mb-6"><label class="input-label">系統主 LIFF ID</label><input type="text" v-model="sysSettings.liff_id" class="input-field font-mono"></div>
+                        <div class="mb-4"><label class="input-label">前台推薦好友 LIFF ID</label><input type="text" v-model="sysSettings.liff_id" class="input-field font-mono" placeholder="Endpoint URL: https://hooktea.fangwl591021.workers.dev/referral"></div>
+                        <div class="mb-6"><label class="input-label">後台 CRM LIFF ID</label><input type="text" v-model="sysSettings.crm_liff_id" class="input-field font-mono" placeholder="Endpoint URL: https://hooktea.fangwl591021.workers.dev/admin.html"><div class="text-xs text-rose-500 mt-2 font-bold">後台 LINE 登入必須使用獨立 LIFF，不能共用前台推薦好友 LIFF，否則 LINE 會回 400 Bad Request。</div></div>
                         <div class="mb-8 flex items-center justify-between bg-green-50 p-4 rounded-xl border border-green-100">
                             <div>
                                 <div class="font-bold text-slate-700 text-sm">CRM LINE Login 免帳密登入</div>
@@ -1762,6 +1763,13 @@
                         localStorage.removeItem('act_crm_access');
                         window.location.href = './consult_admin.html';
                     };
+                    const resolveCrmLiffId = (settings = {}) => {
+                        let finalLiffId = String(settings.crm_liff_id || settings.admin_liff_id || settings.crm_login_liff_id || '').trim();
+                        if (finalLiffId.includes('liff.line.me/')) {
+                            finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
+                        }
+                        return finalLiffId;
+                    };
                     const ensureLineToken = () => {
                         if (typeof liff === 'undefined' || typeof liff.isLoggedIn !== 'function') return null;
                         if (!liff.isLoggedIn()) {
@@ -1883,10 +1891,7 @@
                         try {
                             const data = await callApi('GET_SETTINGS', {}, true);
                             if (String(data.crm_line_login_enabled || 'false') !== 'true') return;
-                            let finalLiffId = String(data.liff_id || '').trim();
-                            if (finalLiffId.includes('liff.line.me/')) {
-                                finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
-                            }
+                            let finalLiffId = resolveCrmLiffId(data);
                             if (finalLiffId) {
                                 await liff.init({ liffId: finalLiffId });
                                 if (liff.isLoggedIn()) {
@@ -1922,11 +1927,8 @@
                                 alert('CRM LINE Login 目前未啟用，請先使用管理員帳密登入。');
                                 return;
                             }
-                            let finalLiffId = String(data.liff_id || '').trim();
-                            if (finalLiffId.includes('liff.line.me/')) {
-                                finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
-                            }
-                            if (!finalLiffId) throw new Error('管理員尚未設定系統主 LIFF ID');
+                            let finalLiffId = resolveCrmLiffId(data);
+                            if (!finalLiffId) throw new Error('尚未設定後台 CRM LIFF ID。請先用密碼登入，並在系統設定新增一個 Endpoint URL 為 /admin.html 的 LIFF。');
 
                             await liff.init({ liffId: finalLiffId });
                             if (!ensureLineToken()) return;
