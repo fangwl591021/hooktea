@@ -1773,7 +1773,7 @@ async function buildHookTeaInvite(env, lineUid) {
 
 function isReferralInviteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
-  return /^(推薦好友|分享好友|會員分享|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
+  return /^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
 }
 
 async function handleLineReferralInviteText(env, ctx, event) {
