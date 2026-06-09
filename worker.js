@@ -5738,9 +5738,29 @@ export default {
                 "Content-Type": "application/json",
                 "x-line-signature": signature
               },
-              body: JSON.stringify(forwardPayload), 
+              body: rawText,
               redirect: "follow"
-            }).catch(e => console.error("Forward Webhook Error:", e))
+            }).then(async response => {
+              const responseText = await response.text().catch(() => "");
+              await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+                url: forwardWebhook,
+                status: response.status,
+                ok: response.ok,
+                eventCount: unhandledEvents.length,
+                texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+                response: responseText.slice(0, 300),
+                forwardedAt: new Date().toISOString(),
+              }, { expirationTtl: 86400 }).catch(() => {});
+            }).catch(async e => {
+              console.error("Forward Webhook Error:", e);
+              await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+                url: forwardWebhook,
+                ok: false,
+                error: e.message || String(e),
+                eventCount: unhandledEvents.length,
+                forwardedAt: new Date().toISOString(),
+              }, { expirationTtl: 86400 }).catch(() => {});
+            })
           );
         }
 
