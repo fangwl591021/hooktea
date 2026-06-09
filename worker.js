@@ -5672,7 +5672,7 @@ export default {
         }
 
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/7364/";
+        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         
         if (forwardWebhook && unhandledEvents.length) {
           promises.push(

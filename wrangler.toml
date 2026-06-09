@@ -9,6 +9,8 @@ LINEPAY_CHANNEL_ID = "2004409296"
 LINEPAY_CURRENCY = "TWD"
 LINE_OA_CHAT_URL = "https://lin.ee/68HOGAe"
 LINE_OA_BASIC_ID = "@hooktea"
+SECOND_WEBHOOK_URL = "https://aiwe.cc/index.php/line_login/9890/"
+FORWARD_WEBHOOK_URL = "https://aiwe.cc/index.php/line_login/9890/"
 REMITTANCE_INFO = """
 永豐銀行 Bank SinoPac
 銀行代號：807
