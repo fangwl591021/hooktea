@@ -1966,33 +1966,44 @@ function getWpApiUrl(settings) {
 const WETW_INSERT_POINT_URL = "https://aiwe.cc/index.php/wp-json/wetw-point/v1/insert-user-point";
 const WETW_QUERY_POINT_URL = "https://aiwe.cc/index.php/wp-json/wetw-point/v1/query-user-point-list";
 
-function getWetwPointUrl(settings, type) {
+function getWetwPointUrl(settings, type, env = {}) {
   const explicit = type === "insert"
-    ? settings?.wp_insert_point_url
-    : settings?.wp_query_point_url;
+    ? (env?.WP_INSERT_POINT_URL || env?.WETW_INSERT_POINT_URL || settings?.wp_insert_point_url)
+    : (env?.WP_QUERY_POINT_URL || env?.WETW_QUERY_POINT_URL || settings?.wp_query_point_url);
   return String(explicit || getWpApiUrl(settings) || (type === "insert" ? WETW_INSERT_POINT_URL : WETW_QUERY_POINT_URL)).trim();
 }
 
-function getWetwConfig(settings) {
+function getWetwConfig(settings, env = {}) {
+  const apiKey = String(env?.WP_API_KEY || env?.WETW_API_KEY || settings?.wp_api_key || settings?.wetw_api_key || "").trim();
+  const shopId = Number(env?.WP_SHOP_ID || env?.WETW_SHOP_ID || settings?.wp_shop_id || settings?.wetw_shop_id || 0);
+  const enabledFlag = String(env?.WP_SYNC_ENABLED || env?.WETW_SYNC_ENABLED || settings?.wp_sync_enabled || "").toLowerCase();
   return {
-    enabled: String(settings?.wp_sync_enabled || "").toLowerCase() === "true",
-    apiKey: String(settings?.wp_api_key || "").trim(),
-    shopId: Number(settings?.wp_shop_id || 0),
-    pointType: String(settings?.wp_point_type || "system_point").trim(),
+    enabled: enabledFlag === "true" || (!!apiKey && !!shopId),
+    apiKey,
+    shopId,
+    pointType: String(env?.WP_POINT_TYPE || env?.WETW_POINT_TYPE || settings?.wp_point_type || settings?.wetw_point_type || "system_point").trim(),
   };
 }
 
-async function queryWetwPointList(settings, member) {
-  const cfg = getWetwConfig(settings);
+function getMemberLineUid(member, fallback = "") {
+  const direct = member?.lineUserId || member?.linkedLineUid || member?.lineUid || member?.lineProfile?.userId || "";
+  const userId = String(member?.userId || "").trim();
+  return String(direct || (userId.startsWith("U") ? userId : "") || fallback || "").trim();
+}
+
+async function queryWetwPointList(settings, member, env = {}) {
+  const cfg = getWetwConfig(settings, env);
   if (!cfg.enabled) return { ok: false, reason: "wp_disabled", message: "WordPress 點數同步目前未啟用。" };
   if (!cfg.apiKey || !cfg.shopId) return { ok: false, reason: "missing_credentials", message: "缺少 WordPress API Key 或 shop_id。" };
+  const lineUid = getMemberLineUid(member);
+  if (!lineUid) return { ok: false, reason: "missing_line_uid", message: "缺少 LINE UID，無法查詢共用點數。" };
 
-  const res = await fetch(getWetwPointUrl(settings, "query"), {
+  const res = await fetch(getWetwPointUrl(settings, "query", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       api_key: cfg.apiKey,
-      LINE_user_id: member?.userId,
+      LINE_user_id: lineUid,
       shop_id: cfg.shopId,
       point_type: cfg.pointType,
       page: 1,
@@ -2013,20 +2024,22 @@ async function queryWetwPointList(settings, member) {
   return { ok: true, balance: Number.isFinite(balance) ? balance : 0, list, raw: data };
 }
 
-async function insertWetwPoint(settings, uid, amount, reason) {
-  const cfg = getWetwConfig(settings);
-  if (!cfg.enabled || !cfg.apiKey || !cfg.shopId || !uid || !amount) return { ok: false, skipped: true };
-  const res = await fetch(getWetwPointUrl(settings, "insert"), {
+async function insertWetwPoint(settings, uid, amount, reason, env = {}, member = null) {
+  const cfg = getWetwConfig(settings, env);
+  const lineUid = getMemberLineUid(member, String(uid || "").startsWith("U") ? uid : "");
+  if (!cfg.enabled || !cfg.apiKey || !cfg.shopId || !lineUid || !amount) return { ok: false, skipped: true };
+  const res = await fetch(getWetwPointUrl(settings, "insert", env), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       api_key: cfg.apiKey,
-      LINE_user_id: uid,
+      LINE_user_id: lineUid,
       shop_id: cfg.shopId,
       event_name: amount >= 0 ? "HookTea 贈點" : "HookTea 扣點",
       event_content: reason || "HookTea 系統點數異動",
       point_type: cfg.pointType,
       get_point: amount,
+      local_uid: uid,
       shop_user_lineid: "",
       child_shop_name: "",
       child_shop_renew: 0,
@@ -3283,7 +3296,7 @@ async function handleHuaxuMemberProfile(request, env) {
   const resolved = await findHuaxuMemberByLineUid(env, lineUid);
   const memberUid = resolved.memberUid || lineUid;
   const member = resolved.member || null;
-  const points = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] });
+  const localPoints = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] });
   const orders = await getHuaxuShopOrders(env);
   const memberOrders = orders.filter(order => {
     const ids = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId].map(value => String(value || "").trim());
@@ -3308,6 +3321,13 @@ async function handleHuaxuMemberProfile(request, env) {
     memberTier: "一般會員",
     pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
   };
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const sharedPoints = await queryWetwPointList(settings, safeMember, env).catch(error => ({
+    ok: false,
+    reason: "wp_query_exception",
+    message: error?.message || String(error),
+  }));
+  const pointBalance = sharedPoints?.ok ? Number(sharedPoints.balance || 0) : Number(localPoints?.balance || 0);
   return json({
     ok: true,
     bound: !!member,
@@ -3315,8 +3335,18 @@ async function handleHuaxuMemberProfile(request, env) {
     memberUid,
     member: safeMember,
     points: {
-      balance: Number(points?.balance || 0),
-      logs: Array.isArray(points?.logs) ? points.logs.slice(0, 10) : [],
+      balance: pointBalance,
+      source: sharedPoints?.ok ? "wetw" : "local",
+      shared: sharedPoints?.ok ? { ok: true, count: Array.isArray(sharedPoints.list) ? sharedPoints.list.length : 0 } : { ok: false, reason: sharedPoints?.reason || "unavailable" },
+      logs: sharedPoints?.ok && Array.isArray(sharedPoints.list)
+        ? sharedPoints.list.slice(0, 10).map(item => ({
+          logId: item.id || "",
+          amount: Math.abs(Number(item.get_point) || 0),
+          reason: item.event_content || item.event_name || "母站點數異動",
+          createdAt: item.created_at || "",
+          type: Number(item.get_point) >= 0 ? "EARN" : "SPEND",
+        }))
+        : (Array.isArray(localPoints?.logs) ? localPoints.logs.slice(0, 10) : []),
     },
     orders: {
       count: memberOrders.length,
@@ -4115,7 +4145,32 @@ export default {
         }
           
         case "GET_USER_POINTS":
-          result.data = await safeGetKV(env, `POINTS_${payload?.targetUid || userId}`, { balance: 0, logs: [] });
+          {
+            const pointUid = payload?.targetUid || userId;
+            const localPointData = await safeGetKV(env, `POINTS_${pointUid}`, { balance: 0, logs: [] });
+            const pointMember = await safeGetKV(env, `USER_${pointUid}`, null);
+            const pointSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+            const sharedPointData = await queryWetwPointList(pointSettings, pointMember || { userId: pointUid, lineUserId: pointUid }, env).catch(error => ({
+              ok: false,
+              reason: "wp_query_exception",
+              message: error?.message || String(error),
+            }));
+            result.data = sharedPointData?.ok
+              ? {
+                balance: Number(sharedPointData.balance || 0),
+                logs: Array.isArray(sharedPointData.list)
+                  ? sharedPointData.list.slice(0, 50).map(item => ({
+                    logId: item.id || "",
+                    amount: Math.abs(Number(item.get_point) || 0),
+                    reason: item.event_content || item.event_name || "母站點數異動",
+                    createdAt: item.created_at || "",
+                    type: Number(item.get_point) >= 0 ? "EARN" : "SPEND",
+                  }))
+                  : [],
+                source: "wetw",
+              }
+              : { ...localPointData, source: "local", shared: { ok: false, reason: sharedPointData?.reason || "unavailable" } };
+          }
           break;
           
         case "GET_USER_ORDERS":
@@ -5191,7 +5246,7 @@ export default {
 
         case "SYSTEM_HEALTH_CHECK":
           if (!access.isAdmin) throw new Error("Admin authorization required");
-          const healthCfg = getWetwConfig(access.settings);
+          const healthCfg = getWetwConfig(access.settings, env);
           const healthLogNew = [
             "Cloudflare Worker：正常",
             `KV ACTION_DATA：${env.ACTION_DATA ? "正常" : "未綁定"}`,
@@ -5199,12 +5254,12 @@ export default {
             `WordPress API Key：${healthCfg.apiKey ? "已設定" : "未設定"}`,
             `WordPress shop_id：${healthCfg.shopId || "未設定"}`,
             `WordPress point_type：${healthCfg.pointType}`,
-            `WordPress 查詢 API：${getWetwPointUrl(access.settings, "query")}`,
-            `WordPress 新增 API：${getWetwPointUrl(access.settings, "insert")}`,
+            `WordPress 查詢 API：${getWetwPointUrl(access.settings, "query", env)}`,
+            `WordPress 新增 API：${getWetwPointUrl(access.settings, "insert", env)}`,
           ];
           if (healthCfg.enabled && healthCfg.apiKey && healthCfg.shopId) {
             try {
-              const testRes = await fetch(getWetwPointUrl(access.settings, "query"), {
+              const testRes = await fetch(getWetwPointUrl(access.settings, "query", env), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ api_key: healthCfg.apiKey, shop_id: healthCfg.shopId, page: 1, per_page: 1 }),
@@ -5231,7 +5286,7 @@ export default {
           }
           const currentPointsNew = await safeGetKV(env, `POINTS_${syncUidNew}`, { balance: 0, logs: [] });
           const currentBalanceNew = Number(currentPointsNew.balance) || 0;
-          const legacyPointsNew = await queryWetwPointList(access.settings, syncMemberNew);
+          const legacyPointsNew = await queryWetwPointList(access.settings, syncMemberNew, env);
           if (!legacyPointsNew.ok) {
             result.data = { success: false, reason: legacyPointsNew.reason, imported: 0, balance: currentBalanceNew, message: legacyPointsNew.message || "外站點數查詢失敗" };
             break;
@@ -5599,7 +5654,8 @@ export default {
     if (!options.skipWpSync && ctx) {
       ctx.waitUntil((async () => {
         const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-        const wpRes = await insertWetwPoint(settings, uid, numericAmount, reason);
+        const memberForWp = await safeGetKV(env, `USER_${uid}`, null).catch(() => null);
+        const wpRes = await insertWetwPoint(settings, uid, numericAmount, reason, env, memberForWp);
         if (!wpRes.ok && !wpRes.skipped) console.error("WordPress Points Sync Error", wpRes);
       })());
     }

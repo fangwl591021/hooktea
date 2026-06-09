@@ -11,6 +11,11 @@ LINE_OA_CHAT_URL = "https://lin.ee/68HOGAe"
 LINE_OA_BASIC_ID = "@hooktea"
 SECOND_WEBHOOK_URL = "https://aiwe.cc/index.php/line_login/9890/"
 FORWARD_WEBHOOK_URL = "https://aiwe.cc/index.php/line_login/9890/"
+WP_SYNC_ENABLED = "true"
+WP_SHOP_ID = "35"
+WP_POINT_TYPE = "system_point"
+WP_INSERT_POINT_URL = "https://aiwe.cc/index.php/wp-json/wetw-point/v1/insert-user-point"
+WP_QUERY_POINT_URL = "https://aiwe.cc/index.php/wp-json/wetw-point/v1/query-user-point-list"
 REMITTANCE_INFO = """
 永豐銀行 Bank SinoPac
 銀行代號：807
