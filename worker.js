@@ -2524,8 +2524,21 @@ async function renderReferralHtml(env, requestUrl) {
     const OA_URL = ${JSON.stringify(oaUrl)};
     const statusEl = document.getElementById("status");
     const params = new URLSearchParams(location.search);
-    const liffState = params.get("liff.state") || "";
-    const stateParams = liffState.includes("?") ? new URLSearchParams(liffState.slice(liffState.indexOf("?") + 1)) : new URLSearchParams();
+    function safeDecode(value) {
+      try { return decodeURIComponent(value || ""); } catch (error) { return value || ""; }
+    }
+    const liffState = safeDecode(params.get("liff.state") || "");
+    function parseStateParams(state) {
+      if (!state) return new URLSearchParams();
+      try {
+        const stateUrl = new URL(state, location.origin);
+        return stateUrl.searchParams;
+      } catch (error) {
+        if (state.includes("?")) return new URLSearchParams(state.slice(state.indexOf("?") + 1));
+        return new URLSearchParams(state.replace(/^#?\??/, ""));
+      }
+    }
+    const stateParams = parseStateParams(liffState);
     function param(name) {
       return params.get(name) || stateParams.get(name) || "";
     }
@@ -2575,8 +2588,13 @@ async function renderReferralHtml(env, requestUrl) {
     async function run(){
       try {
         await liff.init({ liffId: LIFF_ID });
-        if (param("mode") === "share") {
-          await runShareMode();
+        const mode = param("mode");
+        if (mode === "share") {
+          try {
+            await runShareMode();
+          } catch (shareError) {
+            statusEl.textContent = shareError.message || "分享功能啟動失敗，請回 LINE 聊天室重新點分享。";
+          }
           return;
         }
         if (!liff.isLoggedIn()) {
