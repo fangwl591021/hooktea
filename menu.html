@@ -217,7 +217,7 @@
                                     const res = await ApiHelper.call('UPLOAD_IMAGE', { imageBase64: b64 });
                                     if (res && res.url) {
                                         // 只替換底圖，保留目前選單名稱、熱區與 action 參數。
-                                        const currentConfig = JSON.stringify(MenuModule.getCurrentConfig());
+                                        const currentConfig = JSON.stringify(MenuModule.getCurrentConfig(true));
                                         MenuModule.setDeployBase64(b64);
                                         MenuModule.load(file.name, encodeURIComponent(currentConfig), res.url);
                                     } else {
@@ -225,7 +225,7 @@
                                     }
                                 } catch (err) {
                                     // 若失敗則退回使用純 Base64，但仍保留原本熱區設定。
-                                    const currentConfig = JSON.stringify(MenuModule.getCurrentConfig());
+                                    const currentConfig = JSON.stringify(MenuModule.getCurrentConfig(true));
                                     MenuModule.setDeployBase64(b64);
                                     MenuModule.load(file.name, encodeURIComponent(currentConfig), b64);
                                 } finally {
@@ -261,17 +261,9 @@
                 setDeployBase64: (base64) => {
                     if (base64 && base64.startsWith('data:image')) deployBase64Image = base64;
                 },
-                getCurrentConfig: function() {
-                    const output = document.getElementById('json-output').value;
-                    try {
-                        const parsed = JSON.parse(output || "{}");
-                        if (parsed && Array.isArray(parsed.areas)) return JSON.parse(JSON.stringify(parsed));
-                    } catch(e) {}
-                    if (currentMenuConfig && Array.isArray(currentMenuConfig.areas)) {
-                        return JSON.parse(JSON.stringify(currentMenuConfig));
-                    }
+                getCurrentConfig: function(preferNonEmptyAreas = false) {
                     const scale = canvas && canvas.getWidth() ? 2500 / canvas.getWidth() : 1;
-                    const areas = canvas ? canvas.getObjects('rect').map(o => ({
+                    const canvasAreas = canvas ? canvas.getObjects('rect').map(o => ({
                         bounds: {
                             x: Math.max(0, Math.round(o.left * scale)),
                             y: Math.max(0, Math.round(o.top * scale)),
@@ -280,12 +272,36 @@
                         },
                         action: JSON.parse(JSON.stringify(o.action || { type: 'message', text: '' }))
                     })) : [];
+                    if (preferNonEmptyAreas && canvasAreas.length) {
+                        return {
+                            size: { width: 2500, height: currentImgHeight },
+                            selected: true,
+                            name: document.getElementById('save-filename').value,
+                            chatBarText: document.getElementById('rich-menu-chatbar').value,
+                            areas: canvasAreas
+                        };
+                    }
+                    if (preferNonEmptyAreas && currentMenuConfig && Array.isArray(currentMenuConfig.areas) && currentMenuConfig.areas.length) {
+                        return JSON.parse(JSON.stringify({
+                            ...currentMenuConfig,
+                            name: document.getElementById('save-filename').value || currentMenuConfig.name,
+                            chatBarText: document.getElementById('rich-menu-chatbar').value || currentMenuConfig.chatBarText
+                        }));
+                    }
+                    const output = document.getElementById('json-output').value;
+                    try {
+                        const parsed = JSON.parse(output || "{}");
+                        if (parsed && Array.isArray(parsed.areas)) return JSON.parse(JSON.stringify(parsed));
+                    } catch(e) {}
+                    if (currentMenuConfig && Array.isArray(currentMenuConfig.areas)) {
+                        return JSON.parse(JSON.stringify(currentMenuConfig));
+                    }
                     return {
                         size: { width: 2500, height: currentImgHeight },
                         selected: true,
                         name: document.getElementById('save-filename').value,
                         chatBarText: document.getElementById('rich-menu-chatbar').value,
-                        areas
+                        areas: canvasAreas
                     };
                 },
                 load: function(name, jsonStr, base64) {
@@ -294,6 +310,7 @@
                         if (base64 && base64.startsWith('data:image')) deployBase64Image = base64;
                         document.getElementById('canvas-placeholder').style.display = 'none';
                         var data = {}; try { data = JSON.parse(decodeURIComponent(jsonStr || "{}")); } catch(e) {}
+                        if (data && Array.isArray(data.areas)) currentMenuConfig = JSON.parse(JSON.stringify(data));
                         if (data.name) document.getElementById('save-filename').value = data.name;
                         if (data.chatBarText) document.getElementById('rich-menu-chatbar').value = data.chatBarText;
                         
