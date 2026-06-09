@@ -3472,6 +3472,7 @@ async function getHuaxuShopConfig(env) {
     heroTitle: String(settings.shop_hero_title || "HookTea 精選 LINE 限定商城"),
     heroBadge: String(settings.shop_hero_badge || "新會員限定"),
     heroSubtitle: String(settings.shop_hero_subtitle || "延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。"),
+    shopLiffId: String(settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8"),
     categories,
     memberTitle: String(settings.shop_member_title || "會員專區"),
     checkinLabel: String(settings.shop_checkin_label || "每日簽到領點"),
@@ -3690,14 +3691,16 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
-    return new Response(renderHuaxuShopHtml(), {
+    const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+    const shopLiffId = String(settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8").trim();
+    return new Response(renderHuaxuShopHtml(shopLiffId), {
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
     });
   }
   return null;
 }
 
-function renderHuaxuShopHtml() {
+function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -3804,19 +3807,22 @@ function renderHuaxuShopHtml() {
     let memberData = null;
     let memberLoading = false;
     let entryContext = { url: location.href.split("#")[0], params: {} };
+    const SHOP_LIFF_ID = ${JSON.stringify(String(shopLiffId || "2007674851-ijenzSk8"))};
     init();
     async function init(){
       entryContext = restoreEntryContext();
       if (window.liff) {
         try {
           const params = new URLSearchParams(location.search);
-          const liffId = params.get("liffId") || "2007674851-lQljb6Cm";
+          const liffId = params.get("liffId") || SHOP_LIFF_ID || "2007674851-ijenzSk8";
           if (liffId) {
-            await liff.init({ liffId });
-            if (liff.isLoggedIn()) {
-              lineProfile = await liff.getProfile();
-              await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
+            await liff.init({ liffId, withLoginOnExternalBrowser: true });
+            if (!liff.isLoggedIn()) {
+              liff.login({ redirectUri: location.href });
+              return;
             }
+            lineProfile = await liff.getProfile();
+            await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
             renderLineProfile();
           }
         } catch (error) { console.warn("LIFF init failed", error); }
