@@ -2542,6 +2542,28 @@ async function renderReferralHtml(env, requestUrl) {
     function param(name) {
       return params.get(name) || stateParams.get(name) || "";
     }
+    function withTimeout(promise, ms, label) {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(label + "逾時")), ms))
+      ]);
+    }
+    async function logStep(step, detail) {
+      try {
+        await fetch("/api/referral/debug", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            step,
+            detail: String(detail || "").slice(0, 300),
+            ref: param("ref"),
+            lineRef: param("lineRef"),
+            mode: param("mode"),
+            href: location.href.split("#")[0]
+          })
+        });
+      } catch (error) {}
+    }
     function referralUrl() {
       const invite = new URL(location.origin + "/referral");
       ["ref", "lineRef", "source"].forEach((name) => {
@@ -2587,7 +2609,10 @@ async function renderReferralHtml(env, requestUrl) {
     }
     async function run(){
       try {
-        await liff.init({ liffId: LIFF_ID });
+        statusEl.textContent = "正在啟動 LINE 身分驗證...";
+        await logStep("init_start", LIFF_ID);
+        await withTimeout(liff.init({ liffId: LIFF_ID }), 8000, "LINE 身分驗證");
+        await logStep("init_done", "");
         const mode = param("mode");
         if (mode === "share") {
           try {
@@ -2598,12 +2623,16 @@ async function renderReferralHtml(env, requestUrl) {
           return;
         }
         if (!liff.isLoggedIn()) {
+          statusEl.textContent = "正在開啟 LINE 登入...";
+          await logStep("login_redirect", "");
           liff.login({ redirectUri: location.href });
           return;
         }
-        const profile = await liff.getProfile();
+        statusEl.textContent = "正在讀取 LINE 身分...";
+        const profile = await withTimeout(liff.getProfile(), 8000, "讀取 LINE 身分");
         const accessToken = liff.getAccessToken ? liff.getAccessToken() : "";
-        const res = await fetch("/api/referral/register", {
+        statusEl.textContent = "正在完成推薦登記...";
+        const res = await withTimeout(fetch("/api/referral/register", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -2613,19 +2642,39 @@ async function renderReferralHtml(env, requestUrl) {
             lineRef: param("lineRef"),
             source: param("source") || "line_invite"
           })
-        }).then(r => r.json());
+        }).then(r => r.json()), 10000, "推薦登記");
         if (!res.ok) throw new Error(res.message || "推薦登記失敗");
+        await logStep("register_done", profile.userId || "");
         statusEl.textContent = "推薦人登記完成，正在開啟 LINE 官方帳號。";
         const target = res.oaUrl || OA_URL;
         if (target) location.replace(target);
       } catch (error) {
-        statusEl.textContent = error.message || "推薦登記失敗，請回 LINE 聊天室聯繫客服。";
+        await logStep("error", error.message || String(error));
+        statusEl.textContent = error.message || "推薦流程啟動失敗，請回 LINE 聊天室聯繫客服。";
       }
     }
     run();
   </script>
 </body>
 </html>`;
+}
+
+async function handleReferralDebug(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const entry = {
+    step: String(payload.step || "").slice(0, 80),
+    detail: String(payload.detail || "").slice(0, 300),
+    ref: String(payload.ref || "").slice(0, 120),
+    lineRef: String(payload.lineRef || "").slice(0, 120),
+    mode: String(payload.mode || "").slice(0, 40),
+    href: String(payload.href || "").slice(0, 500),
+    createdAt: new Date().toISOString(),
+  };
+  await safePutKV(env, "REFERRAL_DEBUG_LAST", entry, { expirationTtl: 86400 }).catch(() => {});
+  const rows = await safeGetKV(env, "REFERRAL_DEBUG_LOG", []).catch(() => []);
+  const nextRows = [entry, ...(Array.isArray(rows) ? rows : [])].slice(0, 50);
+  await safePutKV(env, "REFERRAL_DEBUG_LOG", nextRows, { expirationTtl: 86400 }).catch(() => {});
+  return json({ ok: true });
 }
 
 function envValue(env, names) {
@@ -4043,6 +4092,9 @@ export default {
     }
     if (url.pathname === "/api/referral/register" && request.method === "POST") {
       return handleReferralRegister(request, env, ctx);
+    }
+    if (url.pathname === "/api/referral/debug" && request.method === "POST") {
+      return handleReferralDebug(request, env);
     }
     if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop" || url.pathname.startsWith("/api/huaxu/")) {
       const huaxuResponse = await handleHuaxuShopRoute(request, env, ctx, this);
