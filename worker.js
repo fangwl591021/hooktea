@@ -2458,12 +2458,12 @@ function getLineOaChatUrl(env, settings = {}) {
 
 async function handleReferralRegister(request, env, ctx) {
   const payload = await request.json().catch(() => ({}));
-  let profile = null;
-  try {
-    profile = await verifyLineAccessToken(payload.accessToken);
-  } catch (error) {
-    profile = null;
-  }
+  const payloadProfile = payload.lineProfile || {};
+  let profile = payloadProfile?.userId ? {
+    sub: payloadProfile.userId,
+    name: payloadProfile.displayName || "",
+    picture: payloadProfile.pictureUrl || "",
+  } : null;
   const newLineUid = String(profile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
   const referrerUid = String(payload.ref || payload.referrerUid || "").trim();
   const referrerLineUid = String(payload.lineRef || payload.referrerLineUid || referrerUid || "").trim();
@@ -2485,6 +2485,22 @@ async function handleReferralRegister(request, env, ctx) {
   const rows = await safeGetKV(env, "REFERRAL_REGISTRATIONS", []);
   const nextRows = [record, ...(Array.isArray(rows) ? rows : []).filter(row => row?.newLineUid !== newLineUid)].slice(0, 5000);
   await safePutKV(env, "REFERRAL_REGISTRATIONS", nextRows).catch(() => {});
+  const accessToken = String(payload.accessToken || "").trim();
+  if (accessToken && ctx?.waitUntil) {
+    ctx.waitUntil((async () => {
+      try {
+        const verified = await verifyLineAccessToken(accessToken);
+        if (!verified?.sub || verified.sub !== newLineUid) return;
+        const verifiedRecord = {
+          ...record,
+          displayName: verified.name || record.displayName,
+          pictureUrl: verified.picture || record.pictureUrl,
+          verifiedAt: new Date().toISOString(),
+        };
+        await safePutKV(env, `REFERRAL_REG_${newLineUid}`, verifiedRecord, { expirationTtl: 86400 * 365 });
+      } catch (error) {}
+    })());
+  }
   const user = await safeGetKV(env, `USER_${newLineUid}`, null).catch(() => null);
   if (user && !selfReferral) {
     await putUserKV(env, ctx, newLineUid, {
@@ -2629,10 +2645,10 @@ async function renderReferralHtml(env, requestUrl) {
     async function run(){
       try {
         statusEl.textContent = "正在啟動 LINE 身分驗證...";
-        await logStep("init_start", LIFF_ID);
+        logStep("init_start", LIFF_ID);
         const lineLiff = await waitForLiff();
         await withTimeout(lineLiff.init({ liffId: LIFF_ID, withLoginOnExternalBrowser: true }), 8000, "LINE 身分驗證");
-        await logStep("init_done", "");
+        logStep("init_done", "");
         const mode = param("mode");
         if (mode === "share") {
           try {
@@ -2644,7 +2660,7 @@ async function renderReferralHtml(env, requestUrl) {
         }
         if (!lineLiff.isLoggedIn()) {
           statusEl.textContent = "正在開啟 LINE 登入...";
-          await logStep("login_redirect", "");
+          logStep("login_redirect", "");
           lineLiff.login({ redirectUri: location.href });
           return;
         }
@@ -2664,7 +2680,7 @@ async function renderReferralHtml(env, requestUrl) {
           })
         }).then(r => r.json()), 10000, "推薦登記");
         if (!res.ok) throw new Error(res.message || "推薦登記失敗");
-        await logStep("register_done", profile.userId || "");
+        logStep("register_done", profile.userId || "");
         statusEl.textContent = "推薦人登記完成，正在開啟 LINE 官方帳號。";
         const target = res.oaUrl || OA_URL;
         if (target) location.replace(target);
