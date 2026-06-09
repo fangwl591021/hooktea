@@ -2703,6 +2703,13 @@ async function handleReferralDebug(request, env) {
   return json({ ok: true });
 }
 
+function isReferralLiffRequest(url) {
+  if (!url || url.pathname === "/referral") return false;
+  if (!url.pathname.includes("line-webhook") && url.pathname !== "/line-webhook") return false;
+  if (url.searchParams.has("liff.state")) return true;
+  return ["ref", "lineRef", "source"].some(name => url.searchParams.has(name));
+}
+
 function envValue(env, names) {
   for (const name of names) {
     const value = env[name];
@@ -4158,6 +4165,12 @@ export default {
 
     if (url.pathname === "/hub-status") {
         return new Response(JSON.stringify({ gas: 'success', forward: 'success', line: 'success', allGood: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    if (request.method === "GET" && isReferralLiffRequest(url)) {
+      return new Response(await renderReferralHtml(env, request.url), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
     }
 
     if (url.pathname.includes("line-webhook") || request.headers.get("x-line-signature")) {
