@@ -1798,6 +1798,7 @@ async function buildHookTeaInvite(env, lineUid) {
   if (memberUid) params.set("ref", memberUid);
   if (uid) params.set("lineRef", uid);
   params.set("source", "line_invite");
+  params.set("v", "20260609c");
   const workerInviteUrl = `${baseUrl}/referral?${params.toString()}`;
   const liffInviteUrl = `https://liff.line.me/${encodeURIComponent(liffId)}?${params.toString()}`;
   const inviteUrl = workerInviteUrl;
@@ -1847,7 +1848,7 @@ async function handleLineReferralInviteText(env, ctx, event) {
       referralShareFlexMessage(invite)
     ]);
   } catch (error) {
-    const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/referral?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite`;
+    const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/referral?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite&v=20260609c`;
     const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
     invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, shareUrl: buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid, "https://hooktea.fangwl591021.workers.dev"), qrUrl: fallbackQr, error: error.message || String(error) };
     reply = await deliverLineMessage(env, uid, replyToken, [
@@ -2504,7 +2505,7 @@ async function renderReferralHtml(env, requestUrl) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>HookTea 推薦好友</title>
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script async src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#05110f;color:#fff;min-height:100vh;display:grid;place-items:center;padding:24px}
     .card{width:min(420px,100%);background:#fff;color:#06120f;border-radius:18px;padding:28px;box-shadow:0 18px 48px rgba(0,0,0,.35)}
@@ -2525,6 +2526,7 @@ async function renderReferralHtml(env, requestUrl) {
     const OA_URL = ${JSON.stringify(oaUrl)};
     const statusEl = document.getElementById("status");
     const fallbackOa = document.getElementById("fallbackOa");
+    statusEl.textContent = "正在準備 LINE 驗證...";
     const params = new URLSearchParams(location.search);
     function safeDecode(value) {
       try { return decodeURIComponent(value || ""); } catch (error) { return value || ""; }
@@ -5932,7 +5934,7 @@ export default {
           const text = String(event?.message?.text || "").trim();
           const uid = String(event?.source?.userId || "").trim();
           if (isReferralInviteKeyword(text)) {
-            const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite" });
+            const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite", v: "20260609c" });
             const inviteUrl = `https://hooktea.fangwl591021.workers.dev/referral?${params.toString()}`;
             const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid, "https://hooktea.fangwl591021.workers.dev");
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
