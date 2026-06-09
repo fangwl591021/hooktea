@@ -494,10 +494,21 @@
             };
             const sortSaves = (saves) => (Array.isArray(saves) ? saves : []).slice().sort((a, b) => saveTimeValue(b) - saveTimeValue(a));
             const readLocalSaves = () => {
-                try { return JSON.parse(localStorage.getItem('rich_menu_saves') || '[]'); } catch(e) { return []; }
+                try {
+                    const primary = JSON.parse(localStorage.getItem('rich_menu_saves') || '[]');
+                    if (Array.isArray(primary) && primary.length) return primary;
+                    const backup = JSON.parse(localStorage.getItem('rich_menu_saves_backup') || '[]');
+                    return Array.isArray(backup) ? backup : [];
+                } catch(e) { return []; }
             };
             const cacheLocalSaves = (saves) => {
-                try { localStorage.setItem('rich_menu_saves', JSON.stringify((saves || []).slice(0, 5))); } catch(e) {}
+                try {
+                    const next = Array.isArray(saves) ? saves.slice(0, 5) : [];
+                    if (!next.length) return;
+                    const existing = localStorage.getItem('rich_menu_saves');
+                    if (existing && existing !== '[]') localStorage.setItem('rich_menu_saves_backup', existing);
+                    localStorage.setItem('rich_menu_saves', JSON.stringify(next));
+                } catch(e) {}
             };
             return {
                 toggleDrawer: function() { const d = document.getElementById('right-drawer'); const o = document.getElementById('right-drawer-overlay'); if (d.classList.contains('translate-x-full')) { d.classList.remove('translate-x-full'); o.classList.remove('hidden'); this.renderList(); } else { d.classList.add('translate-x-full'); o.classList.add('hidden'); } },
