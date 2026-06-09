@@ -1749,17 +1749,41 @@ function imageLineMessage(url) {
   return { type: "image", originalContentUrl: imageUrl, previewImageUrl: imageUrl };
 }
 
-function referralShareButtonMessage(inviteUrl) {
+function buildReferralShareUrl(liffId, refUid, lineUid) {
+  const params = new URLSearchParams();
+  params.set("mode", "share");
+  if (refUid) params.set("ref", refUid);
+  if (lineUid) params.set("lineRef", lineUid);
+  params.set("source", "line_invite");
+  return `https://liff.line.me/${encodeURIComponent(liffId || "2007674851-lQljb6Cm")}?${params.toString()}`;
+}
+
+function referralShareFlexMessage(invite) {
+  const inviteUrl = String(invite?.inviteUrl || "https://hooktea.fangwl591021.workers.dev/referral").slice(0, 1000);
+  const shareUrl = String(invite?.shareUrl || inviteUrl).slice(0, 1000);
+  const qrUrl = String(invite?.qrUrl || "").slice(0, 1000);
   return {
-    type: "template",
+    type: "flex",
     altText: "HookTea 推薦好友",
-    template: {
-      type: "buttons",
-      title: "HookTea 推薦好友",
-      text: "點下方按鈕分享邀請連結，或請好友掃描 QR Code。",
-      actions: [
-        { type: "uri", label: "分享邀請", uri: String(inviteUrl || "https://hooktea.fangwl591021.workers.dev/referral").slice(0, 1000) }
-      ]
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "lg",
+        contents: [
+          { type: "text", text: "推薦好友加入會員", weight: "bold", size: "xl", align: "center", color: "#1f2937" },
+          { type: "image", url: qrUrl, size: "full", aspectMode: "fit", aspectRatio: "1:1" },
+          {
+            type: "button",
+            style: "primary",
+            color: "#1f7bc6",
+            height: "sm",
+            action: { type: "uri", label: "分享給好友", uri: shareUrl }
+          }
+        ]
+      }
     }
   };
 }
@@ -1776,6 +1800,7 @@ async function buildHookTeaInvite(env, lineUid) {
   const workerInviteUrl = `${baseUrl}/referral?${params.toString()}`;
   const liffInviteUrl = `https://liff.line.me/${encodeURIComponent(liffId)}?${params.toString()}`;
   const inviteUrl = workerInviteUrl;
+  const shareUrl = buildReferralShareUrl(liffId, memberUid, uid);
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(workerInviteUrl)}`;
   return {
     memberUid,
@@ -1784,6 +1809,7 @@ async function buildHookTeaInvite(env, lineUid) {
     inviteUrl,
     workerInviteUrl,
     liffInviteUrl,
+    shareUrl,
     qrUrl,
   };
 }
@@ -1817,16 +1843,14 @@ async function handleLineReferralInviteText(env, ctx, event) {
     }, { expirationTtl: 86400 * 30 }).catch(() => {});
     await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, keyword: text, step: "generated", updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
     reply = await deliverLineMessage(env, uid, replyToken, [
-      imageLineMessage(invite.qrUrl),
-      referralShareButtonMessage(invite.inviteUrl)
+      referralShareFlexMessage(invite)
     ]);
   } catch (error) {
     const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/referral?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite`;
     const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
-    invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, qrUrl: fallbackQr, error: error.message || String(error) };
+    invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, shareUrl: buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid), qrUrl: fallbackQr, error: error.message || String(error) };
     reply = await deliverLineMessage(env, uid, replyToken, [
-      imageLineMessage(fallbackQr),
-      referralShareButtonMessage(fallbackUrl)
+      referralShareFlexMessage(invite)
     ]).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
   }
   await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, keyword: text, reply, imagePush, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
@@ -2504,9 +2528,56 @@ async function renderReferralHtml(env, requestUrl) {
     function param(name) {
       return params.get(name) || stateParams.get(name) || "";
     }
+    function referralUrl() {
+      const invite = new URL(location.origin + "/referral");
+      ["ref", "lineRef", "source"].forEach((name) => {
+        const value = param(name);
+        if (value) invite.searchParams.set(name, value);
+      });
+      if (!invite.searchParams.get("source")) invite.searchParams.set("source", "line_invite");
+      return invite.toString();
+    }
+    function shareFlexMessage(inviteUrl) {
+      return {
+        type: "flex",
+        altText: "HookTea 會員邀請",
+        contents: {
+          type: "bubble",
+          body: {
+            type: "box",
+            layout: "vertical",
+            spacing: "md",
+            contents: [
+              { type: "text", text: "HookTea 會員邀請", weight: "bold", size: "xl", align: "center" },
+              { type: "text", text: "點下方按鈕加入會員，完成後系統會保留推薦來源。", wrap: true, size: "sm", color: "#64748b" },
+              { type: "button", style: "primary", color: "#1f7bc6", action: { type: "uri", label: "加入 HookTea 會員", uri: inviteUrl } }
+            ]
+          }
+        }
+      };
+    }
+    async function runShareMode() {
+      const inviteUrl = referralUrl();
+      statusEl.textContent = "正在開啟 LINE 分享對象...";
+      if (!liff.isLoggedIn()) {
+        liff.login({ redirectUri: location.href });
+        return;
+      }
+      if (!liff.isApiAvailable || !liff.isApiAvailable("shareTargetPicker")) {
+        statusEl.textContent = "此裝置不支援 LINE 分享選擇器，請更新 LINE 後再試。";
+        return;
+      }
+      const result = await liff.shareTargetPicker([shareFlexMessage(inviteUrl)]);
+      statusEl.textContent = result ? "已送出分享邀請。" : "已取消分享。";
+      setTimeout(() => { if (liff.closeWindow) liff.closeWindow(); }, 800);
+    }
     async function run(){
       try {
         await liff.init({ liffId: LIFF_ID });
+        if (param("mode") === "share") {
+          await runShareMode();
+          return;
+        }
         if (!liff.isLoggedIn()) {
           liff.login({ redirectUri: location.href });
           return;
@@ -5775,14 +5846,14 @@ export default {
           if (isReferralInviteKeyword(text)) {
             const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite" });
             const inviteUrl = `https://hooktea.fangwl591021.workers.dev/referral?${params.toString()}`;
+            const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid);
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
             const replyToken = event?.replyToken || "";
             await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, inviteUrl, qrUrl, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
             const reply = await replyLineMessage(env, replyToken, [
-              imageLineMessage(qrUrl),
-              referralShareButtonMessage(inviteUrl)
+              referralShareFlexMessage({ inviteUrl, shareUrl, qrUrl })
             ]).catch(e => ({ ok: false, error: e.message || String(e) }));
-            await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { lineUid: uid, memberUid: uid, inviteUrl, qrUrl, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { lineUid: uid, memberUid: uid, inviteUrl, shareUrl, qrUrl, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
             handled = true;
           }
         }
