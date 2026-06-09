@@ -2518,11 +2518,13 @@ async function renderReferralHtml(env, requestUrl) {
     <h1>HookTea 推薦好友</h1>
     <p class="muted">正在完成推薦人登記，完成後會帶您進入 LINE 官方帳號聊天室。</p>
     <div class="status" id="status">身分確認中...</div>
+    <a class="btn" id="fallbackOa" style="display:none" href="${htmlEscape(oaUrl || "#")}">開啟 LINE 官方帳號</a>
   </main>
   <script>
     const LIFF_ID = ${JSON.stringify(liffId)};
     const OA_URL = ${JSON.stringify(oaUrl)};
     const statusEl = document.getElementById("status");
+    const fallbackOa = document.getElementById("fallbackOa");
     const params = new URLSearchParams(location.search);
     function safeDecode(value) {
       try { return decodeURIComponent(value || ""); } catch (error) { return value || ""; }
@@ -2547,6 +2549,14 @@ async function renderReferralHtml(env, requestUrl) {
         promise,
         new Promise((_, reject) => setTimeout(() => reject(new Error(label + "逾時")), ms))
       ]);
+    }
+    async function waitForLiff() {
+      const started = Date.now();
+      while (!window.liff && Date.now() - started < 6000) {
+        await new Promise(resolve => setTimeout(resolve, 120));
+      }
+      if (!window.liff) throw new Error("LINE LIFF SDK 未載入，請在 LINE 內重新開啟。");
+      return window.liff;
     }
     async function logStep(step, detail) {
       try {
@@ -2611,7 +2621,8 @@ async function renderReferralHtml(env, requestUrl) {
       try {
         statusEl.textContent = "正在啟動 LINE 身分驗證...";
         await logStep("init_start", LIFF_ID);
-        await withTimeout(liff.init({ liffId: LIFF_ID }), 8000, "LINE 身分驗證");
+        const lineLiff = await waitForLiff();
+        await withTimeout(lineLiff.init({ liffId: LIFF_ID }), 8000, "LINE 身分驗證");
         await logStep("init_done", "");
         const mode = param("mode");
         if (mode === "share") {
@@ -2622,15 +2633,15 @@ async function renderReferralHtml(env, requestUrl) {
           }
           return;
         }
-        if (!liff.isLoggedIn()) {
+        if (!lineLiff.isLoggedIn()) {
           statusEl.textContent = "正在開啟 LINE 登入...";
           await logStep("login_redirect", "");
-          liff.login({ redirectUri: location.href });
+          lineLiff.login({ redirectUri: location.href });
           return;
         }
         statusEl.textContent = "正在讀取 LINE 身分...";
-        const profile = await withTimeout(liff.getProfile(), 8000, "讀取 LINE 身分");
-        const accessToken = liff.getAccessToken ? liff.getAccessToken() : "";
+        const profile = await withTimeout(lineLiff.getProfile(), 8000, "讀取 LINE 身分");
+        const accessToken = lineLiff.getAccessToken ? lineLiff.getAccessToken() : "";
         statusEl.textContent = "正在完成推薦登記...";
         const res = await withTimeout(fetch("/api/referral/register", {
           method: "POST",
@@ -2651,8 +2662,14 @@ async function renderReferralHtml(env, requestUrl) {
       } catch (error) {
         await logStep("error", error.message || String(error));
         statusEl.textContent = error.message || "推薦流程啟動失敗，請回 LINE 聊天室聯繫客服。";
+        if (fallbackOa && OA_URL) fallbackOa.style.display = "block";
       }
     }
+    setTimeout(() => {
+      if (statusEl.textContent === "身分確認中...") {
+        statusEl.textContent = "LINE 身分驗證載入較慢，請點下方按鈕回官方帳號，或重新開啟邀請連結。";
+      }
+    }, 3000);
     run();
   </script>
 </body>
