@@ -1710,6 +1710,7 @@ async function replyLineMessage(env, replyToken, messages) {
       replyToken: lineReplyToken,
       messages: Array.isArray(messages) ? messages : [messages],
     }),
+    signal: AbortSignal.timeout(4500),
   });
   if (!res.ok) return { ok: false, status: res.status, text: await res.text() };
   return { ok: true };
@@ -1726,6 +1727,7 @@ async function pushLineMessage(env, userId, messages) {
       to,
       messages: Array.isArray(messages) ? messages : [messages],
     }),
+    signal: AbortSignal.timeout(4500),
   });
   if (!res.ok) return { ok: false, status: res.status, text: await res.text() };
   return { ok: true };
@@ -1749,24 +1751,21 @@ function imageLineMessage(url) {
 
 async function buildHookTeaInvite(env, lineUid) {
   const uid = String(lineUid || "").trim();
-  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const binding = uid ? await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false }) : null;
-  const memberUid = String(binding?.legacyUserId || uid || "").trim();
-  const member = memberUid ? await safeGetKV(env, `USER_${memberUid}`, null).catch(() => null) : null;
-  const liffId = String(settings.liff_id || settings.shop_liff_id || env.LIFF_ID || "2007674851-lQljb6Cm").trim();
-  const baseUrl = String(settings.public_base_url || settings.worker_url || env.PUBLIC_BASE_URL || "https://hooktea.fangwl591021.workers.dev").replace(/\/+$/, "");
+  const memberUid = uid;
+  const liffId = String(env.LIFF_ID || "2007674851-lQljb6Cm").trim();
+  const baseUrl = String(env.PUBLIC_BASE_URL || "https://hooktea.fangwl591021.workers.dev").replace(/\/+$/, "");
   const params = new URLSearchParams();
   if (memberUid) params.set("ref", memberUid);
   if (uid) params.set("lineRef", uid);
   params.set("source", "line_invite");
+  params.set("liffId", liffId);
   const workerInviteUrl = `${baseUrl}/huaxu-shop.html?${params.toString()}`;
-  const liffInviteUrl = liffId ? `https://liff.line.me/${encodeURIComponent(liffId)}?${params.toString()}` : workerInviteUrl;
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(liffInviteUrl)}`;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(workerInviteUrl)}`;
   return {
     memberUid,
     lineUid: uid,
-    memberName: member?.name || member?.displayName || binding?.name || "",
-    inviteUrl: liffInviteUrl,
+    memberName: "",
+    inviteUrl: workerInviteUrl,
     workerInviteUrl,
     qrUrl,
   };
@@ -1794,11 +1793,12 @@ async function handleLineReferralInviteText(env, ctx, event) {
       keyword: text,
       updatedAt: new Date().toISOString(),
     }, { expirationTtl: 86400 * 30 }).catch(() => {});
+    await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, keyword: text, step: "generated", updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
     const displayName = invite.memberName ? `${invite.memberName} 的` : "";
     reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\nQR Code 圖片網址：\n${invite.qrUrl}\n\n好友從這個連結進入商城，系統會保留您的推薦來源。`));
     imagePush = await pushLineMessage(env, uid, imageLineMessage(invite.qrUrl)).catch(error => ({ ok: false, error: error.message || String(error) }));
   } catch (error) {
-    const fallbackUrl = `https://liff.line.me/2007674851-lQljb6Cm?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite`;
+    const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/huaxu-shop.html?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite&liffId=2007674851-lQljb6Cm`;
     const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
     invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, qrUrl: fallbackQr, error: error.message || String(error) };
     reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${fallbackUrl}\n\nQR Code 圖片網址：\n${fallbackQr}`)).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
@@ -5495,11 +5495,15 @@ export default {
           const text = String(event?.message?.text || "").trim();
           const uid = String(event?.source?.userId || "").trim();
           if (isReferralInviteKeyword(text)) {
-            await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
-            handled = await handleLineReferralInviteText(env, ctx, event).catch(e => {
-              console.error("LINE Referral Error:", e);
-              return false;
-            });
+            const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite", liffId: "2007674851-lQljb6Cm" });
+            const inviteUrl = `https://hooktea.fangwl591021.workers.dev/huaxu-shop.html?${params.toString()}`;
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
+            const replyToken = event?.replyToken || "";
+            await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, inviteUrl, qrUrl, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
+            const reply = await replyLineMessage(env, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${inviteUrl}\n\nQR Code：\n${qrUrl}`)).catch(e => ({ ok: false, error: e.message || String(e) }));
+            const imagePush = await pushLineMessage(env, uid, imageLineMessage(qrUrl)).catch(e => ({ ok: false, error: e.message || String(e) }));
+            await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { lineUid: uid, memberUid: uid, inviteUrl, qrUrl, reply, imagePush, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            handled = true;
           }
         }
         await appendLineMonitorEvent(env, ctx, event).catch(e => {
