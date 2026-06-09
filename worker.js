@@ -1758,14 +1758,14 @@ async function buildHookTeaInvite(env, lineUid) {
   if (memberUid) params.set("ref", memberUid);
   if (uid) params.set("lineRef", uid);
   params.set("source", "line_invite");
-  params.set("liffId", liffId);
   const workerInviteUrl = `${baseUrl}/referral?${params.toString()}`;
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(workerInviteUrl)}`;
+  const inviteUrl = `https://liff.line.me/${encodeURIComponent(liffId)}?${params.toString()}`;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
   return {
     memberUid,
     lineUid: uid,
     memberName: "",
-    inviteUrl: workerInviteUrl,
+    inviteUrl,
     workerInviteUrl,
     qrUrl,
   };
@@ -1774,6 +1774,11 @@ async function buildHookTeaInvite(env, lineUid) {
 function isReferralInviteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
   return /^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
+}
+
+function isMotherSiteKeyword(text) {
+  const normalized = String(text || "").replace(/\s+/g, "").trim();
+  return /^(會員分享)$/i.test(normalized);
 }
 
 async function handleLineReferralInviteText(env, ctx, event) {
@@ -1798,7 +1803,7 @@ async function handleLineReferralInviteText(env, ctx, event) {
     reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\nQR Code 圖片網址：\n${invite.qrUrl}\n\n好友從這個連結進入商城，系統會保留您的推薦來源。`));
     imagePush = await pushLineMessage(env, uid, imageLineMessage(invite.qrUrl)).catch(error => ({ ok: false, error: error.message || String(error) }));
   } catch (error) {
-    const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/referral?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite&liffId=2007674851-lQljb6Cm`;
+    const fallbackUrl = `https://liff.line.me/2007674851-lQljb6Cm?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite`;
     const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
     invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, qrUrl: fallbackQr, error: error.message || String(error) };
     reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${fallbackUrl}\n\nQR Code 圖片網址：\n${fallbackQr}`)).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
@@ -5683,14 +5688,76 @@ export default {
         })).slice(0, 10),
       }, { expirationTtl: 86400 });
 
+      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text));
+      if (motherKeywordEvents.length) {
+        const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
+        await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
+          receivedAt: new Date().toISOString(),
+          route: "mother_keyword_direct",
+          totalEvents: events.length,
+          unhandledCount: motherKeywordEvents.length,
+          texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+        }, { expirationTtl: 86400 }).catch(() => {});
+        try {
+          await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
+            url: forwardWebhook,
+            route: "mother_keyword_direct",
+            eventCount: motherKeywordEvents.length,
+            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            attemptedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
+          const response = await fetch(forwardWebhook, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-line-signature": signature
+            },
+            body: rawText,
+            redirect: "follow",
+            signal: AbortSignal.timeout(8000)
+          });
+          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+            url: forwardWebhook,
+            route: "mother_keyword_direct",
+            status: response.status,
+            ok: response.ok,
+            eventCount: motherKeywordEvents.length,
+            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            forwardedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
+          const responseText = await response.text().catch(() => "");
+          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+            url: forwardWebhook,
+            route: "mother_keyword_direct",
+            status: response.status,
+            ok: response.ok,
+            eventCount: motherKeywordEvents.length,
+            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            response: responseText.slice(0, 300),
+            forwardedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
+        } catch (error) {
+          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+            url: forwardWebhook,
+            route: "mother_keyword_direct",
+            ok: false,
+            error: error?.message || String(error),
+            eventCount: motherKeywordEvents.length,
+            forwardedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
+        }
+        return new Response("OK", { status: 200 });
+      }
+
       for (const event of events) {
         let handled = false;
         if (event?.type === "message" && event?.message?.type === "text") {
           const text = String(event?.message?.text || "").trim();
           const uid = String(event?.source?.userId || "").trim();
           if (isReferralInviteKeyword(text)) {
-            const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite", liffId: "2007674851-lQljb6Cm" });
-            const inviteUrl = `https://hooktea.fangwl591021.workers.dev/referral?${params.toString()}`;
+            const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite" });
+            const inviteUrl = `https://liff.line.me/2007674851-lQljb6Cm?${params.toString()}`;
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
             const replyToken = event?.replyToken || "";
             await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, inviteUrl, qrUrl, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
@@ -5713,6 +5780,12 @@ export default {
       }
 
       const forwardPayload = { ...parsedPayload, events: unhandledEvents };
+      await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
+        receivedAt: new Date().toISOString(),
+        totalEvents: events.length,
+        unhandledCount: unhandledEvents.length,
+        texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+      }, { expirationTtl: 86400 }).catch(() => {});
       ctx.waitUntil((async () => {
         const promises = [];
 
@@ -5731,16 +5804,31 @@ export default {
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         
         if (forwardWebhook && unhandledEvents.length) {
+          await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
+            url: forwardWebhook,
+            eventCount: unhandledEvents.length,
+            texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            attemptedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
           promises.push(
             fetch(forwardWebhook, {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-line-signature": signature
-              },
+            headers: {
+              "Content-Type": "application/json",
+              "x-line-signature": signature
+            },
               body: rawText,
-              redirect: "follow"
+              redirect: "follow",
+              signal: AbortSignal.timeout(8000)
             }).then(async response => {
+              await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+                url: forwardWebhook,
+                status: response.status,
+                ok: response.ok,
+                eventCount: unhandledEvents.length,
+                texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+                forwardedAt: new Date().toISOString(),
+              }, { expirationTtl: 86400 }).catch(() => {});
               const responseText = await response.text().catch(() => "");
               await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
                 url: forwardWebhook,
@@ -5765,7 +5853,15 @@ export default {
         }
 
         await Promise.all(promises);
-      })());
+      })().catch(async error => {
+        console.error("Webhook Forward WaitUntil Error:", error);
+        await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+          ok: false,
+          error: error?.message || String(error),
+          eventCount: unhandledEvents.length,
+          forwardedAt: new Date().toISOString(),
+        }, { expirationTtl: 86400 }).catch(() => {});
+      }));
     } catch (err) {
       console.error("Webhook processing error:", err);
     }
