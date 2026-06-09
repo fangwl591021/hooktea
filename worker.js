@@ -1759,7 +1759,7 @@ async function buildHookTeaInvite(env, lineUid) {
   if (uid) params.set("lineRef", uid);
   params.set("source", "line_invite");
   params.set("liffId", liffId);
-  const workerInviteUrl = `${baseUrl}/huaxu-shop.html?${params.toString()}`;
+  const workerInviteUrl = `${baseUrl}/referral?${params.toString()}`;
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(workerInviteUrl)}`;
   return {
     memberUid,
@@ -1798,7 +1798,7 @@ async function handleLineReferralInviteText(env, ctx, event) {
     reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\nQR Code 圖片網址：\n${invite.qrUrl}\n\n好友從這個連結進入商城，系統會保留您的推薦來源。`));
     imagePush = await pushLineMessage(env, uid, imageLineMessage(invite.qrUrl)).catch(error => ({ ok: false, error: error.message || String(error) }));
   } catch (error) {
-    const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/huaxu-shop.html?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite&liffId=2007674851-lQljb6Cm`;
+    const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/referral?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite&liffId=2007674851-lQljb6Cm`;
     const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
     invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, qrUrl: fallbackQr, error: error.message || String(error) };
     reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${fallbackUrl}\n\nQR Code 圖片網址：\n${fallbackQr}`)).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
@@ -2364,6 +2364,136 @@ function json(data, status = 200) {
       "Access-Control-Allow-Headers": "Content-Type, Authorization, x-line-signature, x-hooktea-admin-password",
     },
   });
+}
+
+function htmlEscape(value) {
+  return String(value || "").replace(/[&<>"']/g, ch => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[ch]));
+}
+
+function getLineOaChatUrl(env, settings = {}) {
+  const explicit = String(
+    env.LINE_OA_CHAT_URL ||
+    env.LINE_OFFICIAL_ACCOUNT_URL ||
+    settings.line_oa_chat_url ||
+    settings.line_official_account_url ||
+    settings.official_account_url ||
+    ""
+  ).trim();
+  if (explicit) return explicit;
+  const basicId = String(env.LINE_OA_BASIC_ID || settings.line_oa_basic_id || settings.line_basic_id || "").trim();
+  if (!basicId) return "";
+  const normalized = basicId.startsWith("@") ? basicId : `@${basicId}`;
+  return `https://line.me/R/ti/p/${encodeURIComponent(normalized)}`;
+}
+
+async function handleReferralRegister(request, env, ctx) {
+  const payload = await request.json().catch(() => ({}));
+  let profile = null;
+  try {
+    profile = await verifyLineAccessToken(payload.accessToken);
+  } catch (error) {
+    profile = null;
+  }
+  const newLineUid = String(profile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
+  const referrerUid = String(payload.ref || payload.referrerUid || "").trim();
+  const referrerLineUid = String(payload.lineRef || payload.referrerLineUid || referrerUid || "").trim();
+  if (!newLineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
+  if (!referrerUid && !referrerLineUid) return json({ ok: false, message: "缺少推薦人資料" }, 400);
+  const selfReferral = [referrerUid, referrerLineUid].filter(Boolean).includes(newLineUid);
+  const now = new Date().toISOString();
+  const record = {
+    newLineUid,
+    referrerUid,
+    referrerLineUid,
+    selfReferral,
+    displayName: profile?.name || payload.lineProfile?.displayName || "",
+    pictureUrl: profile?.picture || payload.lineProfile?.pictureUrl || "",
+    source: String(payload.source || "line_invite"),
+    registeredAt: now,
+  };
+  await safePutKV(env, `REFERRAL_REG_${newLineUid}`, record, { expirationTtl: 86400 * 365 }).catch(() => {});
+  const rows = await safeGetKV(env, "REFERRAL_REGISTRATIONS", []);
+  const nextRows = [record, ...(Array.isArray(rows) ? rows : []).filter(row => row?.newLineUid !== newLineUid)].slice(0, 5000);
+  await safePutKV(env, "REFERRAL_REGISTRATIONS", nextRows).catch(() => {});
+  const user = await safeGetKV(env, `USER_${newLineUid}`, null).catch(() => null);
+  if (user && !selfReferral) {
+    await putUserKV(env, ctx, newLineUid, {
+      ...user,
+      referredBy: user.referredBy || referrerUid || referrerLineUid,
+      referrerLineUid: user.referrerLineUid || referrerLineUid,
+      referralRegisteredAt: user.referralRegisteredAt || now,
+      updatedAt: now,
+    });
+  }
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  return json({ ok: true, record, oaUrl: getLineOaChatUrl(env, settings) });
+}
+
+async function renderReferralHtml(env, requestUrl) {
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const url = new URL(requestUrl);
+  const liffId = String(url.searchParams.get("liffId") || settings.liff_id || env.LIFF_ID || "2007674851-lQljb6Cm").trim();
+  const oaUrl = getLineOaChatUrl(env, settings);
+  return `<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>HookTea 推薦好友</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#05110f;color:#fff;min-height:100vh;display:grid;place-items:center;padding:24px}
+    .card{width:min(420px,100%);background:#fff;color:#06120f;border-radius:18px;padding:28px;box-shadow:0 18px 48px rgba(0,0,0,.35)}
+    h1{font-size:24px;margin:0 0 12px}.muted{color:#64748b;line-height:1.6}.status{margin:18px 0;padding:14px;border-radius:12px;background:#ecfdf5;color:#047857;font-weight:900;line-height:1.5}
+    .btn{display:block;width:100%;border:0;border-radius:12px;background:#06c755;color:#fff;font-weight:900;font-size:17px;padding:15px;text-align:center;text-decoration:none;margin-top:14px}
+    .ghost{background:#0f172a}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>HookTea 推薦好友</h1>
+    <p class="muted">正在完成推薦人登記，完成後會帶您進入 LINE 官方帳號聊天室。</p>
+    <div class="status" id="status">身分確認中...</div>
+    <a class="btn" id="oaButton" href="${htmlEscape(oaUrl || "#")}">開啟 LINE 聊天室</a>
+    <a class="btn ghost" href="/huaxu-shop.html">先逛 HookTea 商城</a>
+  </main>
+  <script>
+    const LIFF_ID = ${JSON.stringify(liffId)};
+    const OA_URL = ${JSON.stringify(oaUrl)};
+    const statusEl = document.getElementById("status");
+    const params = new URLSearchParams(location.search);
+    async function run(){
+      try {
+        await liff.init({ liffId: LIFF_ID });
+        if (!liff.isLoggedIn()) {
+          liff.login({ redirectUri: location.href });
+          return;
+        }
+        const profile = await liff.getProfile();
+        const accessToken = liff.getAccessToken ? liff.getAccessToken() : "";
+        const res = await fetch("/api/referral/register", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            accessToken,
+            lineProfile: profile,
+            ref: params.get("ref") || "",
+            lineRef: params.get("lineRef") || "",
+            source: params.get("source") || "line_invite"
+          })
+        }).then(r => r.json());
+        if (!res.ok) throw new Error(res.message || "推薦登記失敗");
+        statusEl.textContent = "推薦人登記完成，正在開啟 LINE 聊天室。";
+        const target = res.oaUrl || OA_URL;
+        if (target) setTimeout(() => { location.href = target; }, 800);
+      } catch (error) {
+        statusEl.textContent = error.message || "推薦登記失敗，請回 LINE 聊天室聯繫客服。";
+      }
+    }
+    run();
+  </script>
+</body>
+</html>`;
 }
 
 function envValue(env, names) {
@@ -3757,6 +3887,14 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if (url.pathname === "/referral" && request.method === "GET") {
+      return new Response(await renderReferralHtml(env, request.url), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+    if (url.pathname === "/api/referral/register" && request.method === "POST") {
+      return handleReferralRegister(request, env, ctx);
+    }
     if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop" || url.pathname.startsWith("/api/huaxu/")) {
       const huaxuResponse = await handleHuaxuShopRoute(request, env, ctx, this);
       if (huaxuResponse) return huaxuResponse;
@@ -5496,7 +5634,7 @@ export default {
           const uid = String(event?.source?.userId || "").trim();
           if (isReferralInviteKeyword(text)) {
             const params = new URLSearchParams({ ref: uid, lineRef: uid, source: "line_invite", liffId: "2007674851-lQljb6Cm" });
-            const inviteUrl = `https://hooktea.fangwl591021.workers.dev/huaxu-shop.html?${params.toString()}`;
+            const inviteUrl = `https://hooktea.fangwl591021.workers.dev/referral?${params.toString()}`;
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
             const replyToken = event?.replyToken || "";
             await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, inviteUrl, qrUrl, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
