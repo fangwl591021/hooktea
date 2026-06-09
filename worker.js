@@ -1749,6 +1749,21 @@ function imageLineMessage(url) {
   return { type: "image", originalContentUrl: imageUrl, previewImageUrl: imageUrl };
 }
 
+function referralShareButtonMessage(inviteUrl) {
+  return {
+    type: "template",
+    altText: "HookTea 推薦好友",
+    template: {
+      type: "buttons",
+      title: "HookTea 推薦好友",
+      text: "點下方按鈕分享邀請連結，或請好友掃描 QR Code。",
+      actions: [
+        { type: "uri", label: "分享邀請", uri: String(inviteUrl || "https://hooktea.fangwl591021.workers.dev/referral").slice(0, 1000) }
+      ]
+    }
+  };
+}
+
 async function buildHookTeaInvite(env, lineUid) {
   const uid = String(lineUid || "").trim();
   const memberUid = uid;
@@ -1801,14 +1816,18 @@ async function handleLineReferralInviteText(env, ctx, event) {
       updatedAt: new Date().toISOString(),
     }, { expirationTtl: 86400 * 30 }).catch(() => {});
     await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, keyword: text, step: "generated", updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
-    const displayName = invite.memberName ? `${invite.memberName} 的` : "";
-    reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${displayName}HookTea 推薦好友邀請連結：\n${invite.inviteUrl}\n\nQR Code 圖片網址：\n${invite.qrUrl}\n\n若 LINE 登入頁顯示 400，請確認 LIFF Endpoint URL 設為 https://hooktea.fangwl591021.workers.dev/referral`));
-    imagePush = await pushLineMessage(env, uid, imageLineMessage(invite.qrUrl)).catch(error => ({ ok: false, error: error.message || String(error) }));
+    reply = await deliverLineMessage(env, uid, replyToken, [
+      imageLineMessage(invite.qrUrl),
+      referralShareButtonMessage(invite.inviteUrl)
+    ]);
   } catch (error) {
     const fallbackUrl = `https://hooktea.fangwl591021.workers.dev/referral?ref=${encodeURIComponent(uid)}&lineRef=${encodeURIComponent(uid)}&source=line_invite`;
     const fallbackQr = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(fallbackUrl)}`;
     invite = { lineUid: uid, memberUid: uid, inviteUrl: fallbackUrl, qrUrl: fallbackQr, error: error.message || String(error) };
-    reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${fallbackUrl}\n\nQR Code 圖片網址：\n${fallbackQr}`)).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
+    reply = await deliverLineMessage(env, uid, replyToken, [
+      imageLineMessage(fallbackQr),
+      referralShareButtonMessage(fallbackUrl)
+    ]).catch(replyError => ({ ok: false, error: replyError.message || String(replyError) }));
   }
   await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { ...invite, keyword: text, reply, imagePush, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
   return true;
@@ -2474,8 +2493,6 @@ async function renderReferralHtml(env, requestUrl) {
     <h1>HookTea 推薦好友</h1>
     <p class="muted">正在完成推薦人登記，完成後會帶您進入 LINE 官方帳號聊天室。</p>
     <div class="status" id="status">身分確認中...</div>
-    <a class="btn" id="oaButton" href="${htmlEscape(oaUrl || "#")}">開啟 LINE 聊天室</a>
-    <a class="btn ghost" href="/huaxu-shop.html">先逛 HookTea 商城</a>
   </main>
   <script>
     const LIFF_ID = ${JSON.stringify(liffId)};
@@ -2508,9 +2525,9 @@ async function renderReferralHtml(env, requestUrl) {
           })
         }).then(r => r.json());
         if (!res.ok) throw new Error(res.message || "推薦登記失敗");
-        statusEl.textContent = "推薦人登記完成，正在開啟 LINE 聊天室。";
+        statusEl.textContent = "推薦人登記完成，正在開啟 LINE 官方帳號。";
         const target = res.oaUrl || OA_URL;
-        if (target) setTimeout(() => { location.href = target; }, 800);
+        if (target) location.replace(target);
       } catch (error) {
         statusEl.textContent = error.message || "推薦登記失敗，請回 LINE 聊天室聯繫客服。";
       }
@@ -5706,7 +5723,7 @@ export default {
           unhandledCount: motherKeywordEvents.length,
           texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
         }, { expirationTtl: 86400 }).catch(() => {});
-        try {
+        const forwardTask = (async () => {
           await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
             url: forwardWebhook,
             route: "mother_keyword_direct",
@@ -5724,16 +5741,7 @@ export default {
             redirect: "follow",
             signal: AbortSignal.timeout(8000)
           });
-          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-            url: forwardWebhook,
-            route: "mother_keyword_direct",
-            status: response.status,
-            ok: response.ok,
-            eventCount: motherKeywordEvents.length,
-            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-            forwardedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
-          const responseText = await response.text().catch(() => "");
+          const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook,
             route: "mother_keyword_direct",
@@ -5744,7 +5752,7 @@ export default {
             response: responseText.slice(0, 300),
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
-        } catch (error) {
+        })().catch(async error => {
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook,
             route: "mother_keyword_direct",
@@ -5753,7 +5761,9 @@ export default {
             eventCount: motherKeywordEvents.length,
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
-        }
+        });
+        if (ctx) ctx.waitUntil(forwardTask);
+        else await forwardTask;
         return new Response("OK", { status: 200 });
       }
 
@@ -5768,9 +5778,11 @@ export default {
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
             const replyToken = event?.replyToken || "";
             await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, inviteUrl, qrUrl, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
-            const reply = await replyLineMessage(env, replyToken, textLineMessage(`HookTea 推薦好友邀請連結：\n${inviteUrl}\n\nQR Code：\n${qrUrl}`)).catch(e => ({ ok: false, error: e.message || String(e) }));
-            const imagePush = await pushLineMessage(env, uid, imageLineMessage(qrUrl)).catch(e => ({ ok: false, error: e.message || String(e) }));
-            await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { lineUid: uid, memberUid: uid, inviteUrl, qrUrl, reply, imagePush, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            const reply = await replyLineMessage(env, replyToken, [
+              imageLineMessage(qrUrl),
+              referralShareButtonMessage(inviteUrl)
+            ]).catch(e => ({ ok: false, error: e.message || String(e) }));
+            await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { lineUid: uid, memberUid: uid, inviteUrl, qrUrl, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
             handled = true;
           }
         }
