@@ -1751,12 +1751,12 @@ function imageLineMessage(url) {
 
 function buildReferralShareUrl(liffId, refUid, lineUid, baseUrl = "https://hooktea.fangwl591021.workers.dev") {
   const params = new URLSearchParams();
-  params.set("mode", "share");
   if (refUid) params.set("ref", refUid);
   if (lineUid) params.set("lineRef", lineUid);
   params.set("source", "line_invite");
-  params.set("liffId", liffId || "2007674851-lQljb6Cm");
-  return `${String(baseUrl || "https://hooktea.fangwl591021.workers.dev").replace(/\/+$/, "")}/referral?${params.toString()}`;
+  const inviteUrl = `${String(baseUrl || "https://hooktea.fangwl591021.workers.dev").replace(/\/+$/, "")}/referral?${params.toString()}`;
+  const text = `邀請你加入 HookTea 會員：\n${inviteUrl}`;
+  return `https://line.me/R/share?text=${encodeURIComponent(text)}`;
 }
 
 function referralShareFlexMessage(invite) {
