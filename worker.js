@@ -2266,6 +2266,55 @@ async function fillMissingLineProfile(env, user) {
   };
 }
 
+function normalizeRichMenuAliasId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+async function upsertRichMenuAlias(lineToken, richMenuAliasId, richMenuId) {
+  const aliasId = normalizeRichMenuAliasId(richMenuAliasId);
+  if (!aliasId || !richMenuId) return null;
+  const payload = JSON.stringify({ richMenuAliasId: aliasId, richMenuId });
+  const createRes = await fetch("https://api.line.me/v2/bot/richmenu/alias", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${lineToken}`, "Content-Type": "application/json" },
+    body: payload,
+  });
+  if (createRes.ok) return aliasId;
+  const createText = await createRes.text();
+  const updateRes = await fetch(`https://api.line.me/v2/bot/richmenu/alias/${encodeURIComponent(aliasId)}`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${lineToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ richMenuId }),
+  });
+  if (!updateRes.ok) throw new Error(`建立/更新 LINE 選單別名失敗 (${aliasId}): create=${createText}; update=${await updateRes.text()}`);
+  return aliasId;
+}
+
+function normalizeRichMenuSwitchActions(richMenuConfig) {
+  if (!richMenuConfig || !Array.isArray(richMenuConfig.areas)) return richMenuConfig;
+  richMenuConfig.areas = richMenuConfig.areas.map(area => {
+    const action = area?.action || {};
+    if (action.type !== "richmenuswitch") return area;
+    const aliasId = normalizeRichMenuAliasId(action.richMenuAliasId);
+    if (!aliasId) throw new Error("切換選單區域缺少可用的 Alias ID，請填 menu1/menu2 這類英文別名。");
+    const data = String(action.data || `switch:${aliasId}`).trim();
+    return {
+      ...area,
+      action: {
+        type: "richmenuswitch",
+        richMenuAliasId: aliasId,
+        data,
+      },
+    };
+  });
+  return richMenuConfig;
+}
+
 async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const adminPassword = envValue(env, [
@@ -6049,6 +6098,7 @@ export default {
           if (!richMenuConfig?.size || !Array.isArray(richMenuConfig?.areas)) {
             throw new Error("圖文選單 JSON 格式有誤：缺少 size 或 areas。");
           }
+          normalizeRichMenuSwitchActions(richMenuConfig);
           
           const createRes = await fetch("https://api.line.me/v2/bot/richmenu", {
               method: "POST",
@@ -6082,7 +6132,9 @@ export default {
           });
           if (!defaultRes.ok) throw new Error("設定 LINE 預設選單失敗: " + await defaultRes.text());
 
-          result.data = { success: true, richMenuId };
+          const deployedAliasId = await upsertRichMenuAlias(lineToken, payload.aliasId || richMenuConfig.aliasId || richMenuConfig.name, richMenuId);
+
+          result.data = { success: true, richMenuId, richMenuAliasId: deployedAliasId };
           break;
 
         case "GET_PAYMENT_PAYLOAD":

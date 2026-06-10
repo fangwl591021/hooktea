@@ -446,6 +446,10 @@
                         if (action.type === 'message' && !action.text) return showError(`區域 #${i+1} 尚未填寫「傳送文字」內容！`);
                         if (action.type === 'uri' && !action.uri) return showError(`區域 #${i+1} 尚未填寫「開啟網址」連結！`);
                         if (action.type === 'postback' && !action.data) return showError(`區域 #${i+1} 尚未填寫「回傳 Data」！這是觸發後台功能的必填參數。`);
+                        if (action.type === 'richmenuswitch') {
+                            if (!action.richMenuAliasId) return showError(`區域 #${i+1} 尚未填寫「別名 Alias ID」！例如：menu1 或 menu2。`);
+                            if (!action.data) return showError(`區域 #${i+1} 尚未填寫「參數 data」！LINE 切換選單必須帶 data。`);
+                        }
                         
                         const pureAction = { type: action.type };
                         if (action.type === 'uri') pureAction.uri = action.uri;
@@ -483,6 +487,7 @@
                             areas: menuObj.areas,
                             size: menuObj.size,
                             name: menuObj.name,
+                            aliasId: menuObj.name,
                             chatBarText: menuObj.chatBarText
                         }); 
                         if(data) {
