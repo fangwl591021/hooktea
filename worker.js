@@ -34,6 +34,7 @@ const PASSWORD_ADMIN_USER = {
   displayName: "Tonyfang",
   role: "admin",
 };
+const DEFAULT_CRM_LIFF_ID = "2007674851-OSa5v7cU";
 async function aesEncrypt(text, key, iv) {
   const cryptoKey = await crypto.subtle.importKey('raw', utils.prepareKey(key, 32), { name: 'AES-CBC' }, false, ['encrypt']);
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: utils.prepareIV(iv) }, cryptoKey, utils.stringToBytes(text));
@@ -2169,9 +2170,31 @@ function deriveLineClientId(env, settings) {
   ];
   const configured = candidates.map(v => String(v || "").trim()).find(Boolean);
   if (configured) return configured;
-  const liffId = String(settings?.liff_id || "").trim();
+  const liffId = String(settings?.crm_liff_id || settings?.admin_liff_id || settings?.crm_login_liff_id || settings?.liff_id || DEFAULT_CRM_LIFF_ID).trim();
   const match = liffId.match(/^(\d+)-/);
   return match ? match[1] : "";
+}
+
+function getCrmLiffId(env, settings = {}) {
+  return String(
+    settings.crm_liff_id ||
+    settings.admin_liff_id ||
+    settings.crm_login_liff_id ||
+    env.CRM_LIFF_ID ||
+    env.ADMIN_LIFF_ID ||
+    env.CRM_LOGIN_LIFF_ID ||
+    DEFAULT_CRM_LIFF_ID
+  ).trim();
+}
+
+function isCrmLineLoginEnabled(env, settings = {}) {
+  if (Object.prototype.hasOwnProperty.call(settings, "crm_line_login_enabled")) {
+    return String(settings.crm_line_login_enabled).toLowerCase() === "true";
+  }
+  if (Object.prototype.hasOwnProperty.call(env, "CRM_LINE_LOGIN_ENABLED")) {
+    return String(env.CRM_LINE_LOGIN_ENABLED).toLowerCase() === "true";
+  }
+  return !!getCrmLiffId(env, settings);
 }
 
 async function verifyLineIdToken(env, idToken, settings) {
@@ -2307,7 +2330,7 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
     await safePutKV(env, `USER_${userId}`, userData);
   }
   const hasVerifiedLineUser = !!verifiedUserId;
-  const crmLineLoginEnabled = String(settings.crm_line_login_enabled || "false").toLowerCase() === "true";
+  const crmLineLoginEnabled = isCrmLineLoginEnabled(env, settings);
   const isAdminByUser = crmLineLoginEnabled && hasVerifiedLineUser && (adminUidSet.has(verifiedUserId) || adminUidSet.has(userId) || crmLoginUidSet.has(verifiedUserId) || crmLoginUidSet.has(userId) || userData?.isAdmin === true || userData?.role === "admin" || userData?.crmRole === "admin");
   const isAdmin = isAdminByUser;
   const isHeadquarterByUser = crmLineLoginEnabled && hasVerifiedLineUser && !isAdmin && (crmLoginUidSet.has(verifiedUserId) || crmLoginUidSet.has(userId));
@@ -4640,7 +4663,12 @@ export default {
           break;
 
         case "GET_SETTINGS":
-          const publicSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+          const storedSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+          const publicSettings = {
+            ...storedSettings,
+            crm_liff_id: getCrmLiffId(env, storedSettings),
+            crm_line_login_enabled: isCrmLineLoginEnabled(env, storedSettings) ? "true" : "false",
+          };
           if (access.isAdmin) {
             result.data = publicSettings;
           } else {
@@ -5361,7 +5389,8 @@ export default {
               result.data.orders = [];
               result.data.paymentLogs = [];
               result.data.settings = {
-                crm_line_login_enabled: adminSettings.crm_line_login_enabled || "false",
+                crm_line_login_enabled: isCrmLineLoginEnabled(env, adminSettings) ? "true" : "false",
+                crm_liff_id: getCrmLiffId(env, adminSettings),
                 liff_id: adminSettings.liff_id || "",
               };
           }

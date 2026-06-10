@@ -1554,6 +1554,7 @@
             const WORKER_URL = 'https://hooktea.fangwl591021.workers.dev/';
             const CACHE_VERSION = 'v258';
             const CACHE_KEY = `act_admin_cache_${CACHE_VERSION}`;
+            const DEFAULT_CRM_LIFF_ID = '2007674851-OSa5v7cU';
 
             createApp({
                 setup() {
@@ -1598,6 +1599,8 @@
                     const wasabiDailyCheckResult = ref(null);
                     const normalizeSystemSettings = (settings = {}) => ({
                         ...settings,
+                        crm_liff_id: String(settings.crm_liff_id || settings.admin_liff_id || settings.crm_login_liff_id || DEFAULT_CRM_LIFF_ID),
+                        crm_line_login_enabled: Object.prototype.hasOwnProperty.call(settings, 'crm_line_login_enabled') ? String(settings.crm_line_login_enabled) : 'true',
                         low_risk_wasabi_read_enabled: String(settings.low_risk_wasabi_read_enabled || 'false'),
                         high_risk_wasabi_read_enabled: String(settings.high_risk_wasabi_read_enabled || 'false'),
                         linepay_env: String(settings.linepay_env || 'sandbox'),
@@ -1764,7 +1767,7 @@
                         window.location.href = './consult_admin.html';
                     };
                     const resolveCrmLiffId = (settings = {}) => {
-                        let finalLiffId = String(settings.crm_liff_id || settings.admin_liff_id || settings.crm_login_liff_id || '').trim();
+                        let finalLiffId = String(settings.crm_liff_id || settings.admin_liff_id || settings.crm_login_liff_id || DEFAULT_CRM_LIFF_ID).trim();
                         if (finalLiffId.includes('liff.line.me/')) {
                             finalLiffId = finalLiffId.split('liff.line.me/')[1].split('?')[0].replace(/\//g, '');
                         }
