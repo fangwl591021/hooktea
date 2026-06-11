@@ -3997,7 +3997,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     </header>
     <section class="tabs">
       <div class="category-head">
-        <button class="category-trigger" id="productTitle" onclick="toggleCategoryMenu()">虎克茶商品全品項</button>
+        <button class="category-trigger" id="productTitle" onclick="toggleCategoryMenu()">全品項</button>
         <div class="category-menu" id="tabs"></div>
       </div>
     </section>
@@ -4009,7 +4009,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       </div>
     </section>
     <section class="section">
-      <h2 id="listTitle">虎克茶商品全品項</h2>
+      <h2 id="listTitle">全品項</h2>
       <div class="section-tabs" id="sectionTabs"></div>
       <div class="products" id="products"></div>
     </section>
@@ -4023,7 +4023,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
   <div class="drawer" id="drawer" onclick="toggleDrawer(false)">
     <div class="panel" onclick="event.stopPropagation()">
       <div class="menu-logo">HookTea 購物商城</div>
-      <div class="menu-item" onclick="setCategory('虎克茶商品全品項');toggleDrawer(false)">虎克茶商品全品項</div>
+      <div class="menu-item" onclick="setCategory('虎克茶商品全品項');toggleDrawer(false)">全品項</div>
       <div class="menu-item" onclick="setCategory('虎克茶系列');toggleDrawer(false)">虎克茶系列</div>
       <div class="menu-item" onclick="setCategory('女王饗樂系列');toggleDrawer(false)">女王饗樂系列</div>
       <div class="menu-item" onclick="setCategory('禮盒開運茶系列');toggleDrawer(false)">禮盒開運茶系列</div>
@@ -4156,22 +4156,25 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const oldWash = ["熱門商品","線上購物商品","虎克茶","新會員優惠","本月活動"];
       return configured.some(cat => oldWash.includes(cat)) ? hookTeaCategories : configured;
     }
+    function categoryLabel(category){
+      return category === "虎克茶商品全品項" ? "全品項" : category;
+    }
     function renderTabs(){
       const categoryItems = categories();
       document.getElementById("tabs").innerHTML = categoryItems.map(cat =>
-        '<button class="'+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(cat)+'</button>'
+        '<button class="'+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(categoryLabel(cat))+'</button>'
       ).join("");
       const sectionTabs = document.getElementById("sectionTabs");
       if (sectionTabs) {
         sectionTabs.innerHTML = categoryItems.map(cat =>
-          '<button class="section-tab '+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(cat)+'</button>'
+          '<button class="section-tab '+(cat===activeCategory?'active':'')+'" onclick="setCategory(\\''+escapeAttr(cat)+'\\')">'+escapeHtml(categoryLabel(cat))+'</button>'
         ).join("");
       }
     }
     function setCategory(category){
       activeCategory = category;
-      document.getElementById("productTitle").textContent = category;
-      document.getElementById("listTitle").textContent = category;
+      document.getElementById("productTitle").textContent = categoryLabel(category);
+      document.getElementById("listTitle").textContent = categoryLabel(category);
       document.getElementById("tabs").classList.remove("open");
       renderTabs(); renderProducts();
     }
@@ -4323,7 +4326,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (button) button.classList.toggle("ready", ready && !!lineProfile.pictureUrl);
       if (avatar && lineProfile.pictureUrl) avatar.src = lineProfile.pictureUrl;
       if (fallback) fallback.textContent = lineProfile.displayName ? lineProfile.displayName.trim().slice(0,1).toUpperCase() : "👤";
-      if (navIcon) navIcon.textContent = ready ? "✓" : "👤";
+      if (navIcon) navIcon.textContent = "👤";
       if (navText) navText.textContent = "我的";
       renderMemberPanel();
     }
