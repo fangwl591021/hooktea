@@ -2470,13 +2470,15 @@ async function serveStaticHtml(request, env, corsHeaders) {
   let fileName = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
   if (!fileName) fileName = "index.html";
   if (!STATIC_HTML_FILES.has(fileName)) return null;
-  const rawUrl = `https://raw.githubusercontent.com/fangwl591021/hooktea/main/${fileName}`;
+  const rawVersion = url.searchParams.get("v") || Date.now().toString();
+  const rawUrl = `https://api.github.com/repos/fangwl591021/hooktea/contents/${encodeURIComponent(fileName)}?ref=main&v=${encodeURIComponent(rawVersion)}`;
   try {
-    const rawRes = await fetch(rawUrl, { headers: { "User-Agent": "hooktea-worker" } });
+    const rawRes = await fetch(rawUrl, { headers: { "User-Agent": "hooktea-worker", "Accept": "application/vnd.github.raw" }, cache: "no-store", cf: { cacheTtl: 0 } });
     if (rawRes.ok) {
       const headers = new Headers(corsHeaders);
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.set("Cache-Control", "no-cache");
+      headers.set("X-HookTea-Static-Source", "github-contents-api");
       return new Response(request.method === "HEAD" ? null : await rawRes.text(), { headers });
     }
   } catch (e) {
@@ -2488,6 +2490,7 @@ async function serveStaticHtml(request, env, corsHeaders) {
   object.writeHttpMetadata(headers);
   headers.set("Content-Type", "text/html; charset=utf-8");
   headers.set("Cache-Control", "no-cache");
+  headers.set("X-HookTea-Static-Source", "r2-fallback");
   return new Response(request.method === "HEAD" ? null : object.body, { headers });
 }
 
