@@ -167,7 +167,7 @@ function normalizeHuaxuProduct(raw, fallbackIndex = 0) {
     id: source.id || source.product_id || source.productId || source.sku || source.code || `huaxu-${fallbackIndex + 1}`,
     code: source.code || source.sku || source.product_code || source.productNo || source.product_no,
     name: source.name || source.title || source.product_name || source.productName,
-    storeName: source.storeName || source.store_name || source.vendor || source.brand || "華旭商城",
+    storeName: source.storeName || source.store_name || source.vendor || source.brand || "HookTea 商城",
     status,
     price: source.price || source.sale_price || source.salePrice || source.amount || source.points_price,
     pointsPrice: source.pointsPrice || source.points_price || source.point_price || source.max_points || source.price,
@@ -194,7 +194,7 @@ async function fetchHuaxuProducts(env, settings = {}) {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) {}
-  if (!res.ok) throw new Error(`華旭商品 API ${res.status}: ${data?.message || text.slice(0, 120)}`);
+  if (!res.ok) throw new Error(`外部商品 API ${res.status}: ${data?.message || text.slice(0, 120)}`);
   const list = Array.isArray(data)
     ? data
     : Array.isArray(data?.products)
@@ -3552,7 +3552,7 @@ async function getHuaxuShopConfig(env) {
   return {
     heroTitle: String(settings.shop_hero_title || "HookTea 精選 LINE 限定商城"),
     heroBadge: String(settings.shop_hero_badge || "新會員限定"),
-    heroSubtitle: String(settings.shop_hero_subtitle || "延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。"),
+    heroSubtitle: String(settings.shop_hero_subtitle || "HookTea LINE 限定商城，訂單送出後會進入 HookTea 後台訂單維護。"),
     shopLiffId: String(settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8"),
     categories,
     memberTitle: String(settings.shop_member_title || "會員專區"),
@@ -4005,7 +4005,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       <div class="hero-content">
         <span class="hero-kicker" id="heroBadge">新會員限定</span>
         <h1 id="heroTitle">HookTea 精選<br>LINE 限定商城</h1>
-        <p id="heroSubtitle">延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。</p>
+        <p id="heroSubtitle">HookTea LINE 限定商城，訂單送出後會進入 HookTea 後台訂單維護。</p>
       </div>
     </section>
     <section class="section">
@@ -4153,8 +4153,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     function categories(){
       const configured = Array.isArray(shopConfig.categories) && shopConfig.categories.length ? shopConfig.categories : hookTeaCategories;
-      const oldWash = ["熱門商品","線上購物商品","虎克茶","新會員優惠","本月活動"];
-      return configured.some(cat => oldWash.includes(cat)) ? hookTeaCategories : configured;
+      const legacyCategories = ["熱門商品","線上購物商品","虎克茶","新會員優惠","本月活動"];
+      return configured.some(cat => legacyCategories.includes(cat)) ? hookTeaCategories : configured;
     }
     function categoryLabel(category){
       return category === "虎克茶商品全品項" ? "全品項" : category;

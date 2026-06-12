@@ -677,8 +677,8 @@
                         <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
                             <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-5">
                                 <div>
-                                    <h3 class="text-xl font-black text-slate-800 flex items-center gap-2"><i class="fas fa-th-large text-sky-600"></i> 華旭商城模組</h3>
-                                    <p class="text-sm text-slate-500 font-bold mt-1">參照 wash 後台模組區，集中管理前台商城模組，不再放在系統設定頁。</p>
+                                    <h3 class="text-xl font-black text-slate-800 flex items-center gap-2"><i class="fas fa-th-large text-sky-600"></i> HookTea 商城模組</h3>
+                                    <p class="text-sm text-slate-500 font-bold mt-1">集中管理 HookTea 前台商城模組，不再放在系統設定頁。</p>
                                 </div>
                                 <div class="flex gap-2">
                                     <button @click="saveSettings" :disabled="isLoading" class="btn-green-main !py-3 px-5"><i v-if="isLoading" class="fas fa-spinner fa-spin mr-2"></i><i v-else class="fas fa-save mr-2"></i>儲存模組設定</button>
@@ -701,7 +701,7 @@
                                             <label class="input-label">商城模式</label>
                                             <select v-model="sysSettings.shop_module" class="input-field font-black bg-white">
                                                 <option value="hooktea">HookTea 本地商品</option>
-                                                <option value="huaxu">華旭商城 API</option>
+                                                <option value="huaxu">外部商品 API</option>
                                             </select>
                                         </div>
                                         <div>
@@ -709,11 +709,11 @@
                                             <input type="text" v-model="sysSettings.liff_id" class="input-field font-mono" placeholder="2007674851-lQljb6Cm">
                                         </div>
                                         <div class="md:col-span-2">
-                                            <label class="input-label">華旭商品 API URL</label>
-                                            <input type="url" v-model="sysSettings.huaxu_products_url" class="input-field font-mono text-sm" placeholder="https://.../products.json 或華旭商品 API">
+                                            <label class="input-label">外部商品 API URL</label>
+                                            <input type="url" v-model="sysSettings.huaxu_products_url" class="input-field font-mono text-sm" placeholder="https://.../products.json 或外部商品 API">
                                         </div>
                                         <div class="md:col-span-2">
-                                            <label class="input-label">華旭 API Key</label>
+                                            <label class="input-label">外部 API Key</label>
                                             <input type="password" v-model="sysSettings.huaxu_api_key" class="input-field font-mono text-sm" placeholder="可留空；正式建議放 Cloudflare Worker Secret">
                                         </div>
                                     </div>
@@ -724,7 +724,7 @@
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div><label class="input-label">主標題</label><input v-model="sysSettings.shop_hero_title" class="input-field" placeholder="HookTea 精選 LINE 限定商城"></div>
                                         <div><label class="input-label">標籤文字</label><input v-model="sysSettings.shop_hero_badge" class="input-field" placeholder="新會員限定"></div>
-                                        <div class="md:col-span-2"><label class="input-label">副標文字</label><textarea v-model="sysSettings.shop_hero_subtitle" class="input-field h-24 resize-none" placeholder="延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。"></textarea></div>
+                                        <div class="md:col-span-2"><label class="input-label">副標文字</label><textarea v-model="sysSettings.shop_hero_subtitle" class="input-field h-24 resize-none" placeholder="HookTea LINE 限定商城，訂單送出後會進入 HookTea 後台訂單維護。"></textarea></div>
                                         <div class="md:col-span-2"><label class="input-label">分類列</label><input v-model="sysSettings.shop_categories" class="input-field" placeholder="熱門商品,線上購物商品,虎克茶,新會員優惠,本月活動"></div>
                                     </div>
                                 </div>
@@ -1612,7 +1612,7 @@
                         huaxu_api_key: String(settings.huaxu_api_key || ''),
                         shop_hero_title: String(settings.shop_hero_title || 'HookTea 精選 LINE 限定商城'),
                         shop_hero_badge: String(settings.shop_hero_badge || '新會員限定'),
-                        shop_hero_subtitle: String(settings.shop_hero_subtitle || '延用 wash 商城購物車模組，訂單送出後會進入 HookTea 後台訂單維護。'),
+                        shop_hero_subtitle: String(settings.shop_hero_subtitle || 'HookTea LINE 限定商城，訂單送出後會進入 HookTea 後台訂單維護。'),
                         shop_categories: String(settings.shop_categories || '熱門商品,線上購物商品,虎克茶,新會員優惠,本月活動'),
                         shop_member_title: String(settings.shop_member_title || '會員專區'),
                         shop_checkin_label: String(settings.shop_checkin_label || '每日簽到領點'),
