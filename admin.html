@@ -84,7 +84,7 @@
                         <div v-show="groups.groupA" class="animate-fade-in">
                             <div v-if="canViewFinance" @click="switchView('dashboard')" class="nav-item" :class="{'nav-active': view === 'dashboard'}"><i class="fas fa-chart-pie w-6 text-center"></i>營運統計</div>
                             <div @click="switchView('calendar')" class="nav-item" :class="{'nav-active': view === 'calendar'}"><i class="far fa-calendar-alt w-6 text-center"></i>日曆檢視</div>
-                            <div @click="switchView('members')" class="nav-item" :class="{'nav-active': view === 'members' || view === 'member_detail'}"><i class="fas fa-users w-6 text-center"></i>學員 CRM</div>
+                            <div @click="switchView('members')" class="nav-item" :class="{'nav-active': view === 'members' || view === 'member_detail'}"><i class="fas fa-users w-6 text-center"></i>客戶 CRM</div>
                             <div @click="switchView('courses')" class="nav-item" :class="{'nav-active': view === 'courses' || view === 'course_edit' || view === 'course_enrollments'}"><i class="fas fa-book w-6 text-center"></i>課程 / 預約服務</div>
                             <div @click="switchView('products')" class="nav-item" :class="{'nav-active': view === 'products'}"><i class="fas fa-store w-6 text-center"></i>商城商品</div>
                             <div @click="switchView('consultation')" class="nav-item" :class="{'nav-active': view === 'consultation' || view === 'sys_config'}"><i class="fas fa-calendar-check w-6 text-center"></i>預約設定</div>
@@ -2036,7 +2036,7 @@
                         if (view.value === 'audit_logs') return '操作紀錄';
                         if (view.value === 'paid_broadcast') return '付費推播';
                         const map = {
-                            dashboard: '營運統計中心', calendar: '日曆檢視', members: '學員 CRM', courses: '課程 / 預約服務', products: '商城商品',
+                            dashboard: '營運統計中心', calendar: '日曆檢視', members: '客戶 CRM', courses: '課程 / 預約服務', products: '商城商品',
                             consultation: '預約設定', orders: '訂單維護', booking_report: '預約報表', points_ledger: '點數進出總表', payment_logs: '刷卡紀錄', richmenu: '圖文選單管理', settings: '系統參數設定', flex_rules: '機器人與專區卡片', shop_modules: '商城模組', wasabi_migration: 'Wasabi 遷移檢查'
                         };
                         return map[view.value] || '管理站';
