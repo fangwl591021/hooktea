@@ -2099,7 +2099,7 @@ function buildPointDataFromWetw(sharedPointData, limit = 50) {
       ? sharedPointData.list.slice(0, limit).map(item => ({
         logId: item.id || "",
         amount: Math.abs(Number(item.get_point) || 0),
-        reason: item.event_content || item.event_name || "母站點數異動",
+        reason: cleanPointReason(item.event_content || item.event_name || "母站點數異動", "母站點數異動"),
         createdAt: item.created_at || "",
         type: Number(item.get_point) >= 0 ? "EARN" : "SPEND",
       }))
@@ -2108,10 +2108,27 @@ function buildPointDataFromWetw(sharedPointData, limit = 50) {
   };
 }
 
+function cleanPointReason(reason, fallback = "點數異動") {
+  const text = String(reason || "").trim();
+  if (!text) return fallback;
+  if (/^\?{4,}(\s*\d+)?$/.test(text) || /^\?{4,}\s*\d+/.test(text)) {
+    const balance = text.match(/\d+/)?.[0] || "";
+    return balance ? `校正手機母站顯示餘額 ${balance}` : "校正手機母站顯示餘額";
+  }
+  return text;
+}
+
+function cleanPointLogs(logs = [], limit = 50) {
+  return (Array.isArray(logs) ? logs : []).slice(0, limit).map(log => ({
+    ...log,
+    reason: cleanPointReason(log?.reason, "點數異動"),
+  }));
+}
+
 function resolveDisplayPointData(localPointData, sharedPointData, limit = 50) {
   const localData = {
     balance: Number(localPointData?.balance || 0),
-    logs: Array.isArray(localPointData?.logs) ? localPointData.logs.slice(0, limit) : [],
+    logs: cleanPointLogs(localPointData?.logs, limit),
     source: "local",
   };
   if (!sharedPointData?.ok) {
@@ -4544,7 +4561,15 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const raw = Number(log.amount || log.points || 0);
       const isSpend = String(log.type || "").toUpperCase() === "SPEND" || raw < 0;
       const amount = Math.abs(raw);
-      return '<div class="point-log"><div><div class="point-log-title">'+escapeHtml(log.reason || "點數異動")+'</div><div class="point-log-date">'+escapeHtml(formatDate(log.createdAt || log.date || ""))+'</div></div><div class="point-log-amount '+(isSpend ? "spend" : "")+'">'+(isSpend ? "-" : "+")+money(amount)+'</div></div>';
+      return '<div class="point-log"><div><div class="point-log-title">'+escapeHtml(cleanPointLogReason(log.reason || "點數異動"))+'</div><div class="point-log-date">'+escapeHtml(formatDate(log.createdAt || log.date || ""))+'</div></div><div class="point-log-amount '+(isSpend ? "spend" : "")+'">'+(isSpend ? "-" : "+")+money(amount)+'</div></div>';
+    }
+    function cleanPointLogReason(reason){
+      const text = String(reason || "").trim();
+      if (/^\?{4,}(\s*\d+)?$/.test(text) || /^\?{4,}\s*\d+/.test(text)) {
+        const balance = (text.match(/\d+/) || [""])[0];
+        return balance ? "校正手機母站顯示餘額 " + balance : "校正手機母站顯示餘額";
+      }
+      return text || "點數異動";
     }
     function renderReferralDetail(){
       const count = Number(memberData.referrals?.count || 0);
