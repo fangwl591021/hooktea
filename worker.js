@@ -1580,7 +1580,7 @@ function shouldAuditAction(action, access) {
   if (action.startsWith("TEACHER_")) return true;
   if (action === "UPLOAD_IMAGE" || action === "DEPLOY_RICH_MENU") return true;
   if (!action.startsWith("ADMIN_")) return false;
-  return /_(UPDATE|DELETE|SAVE|MANAGE|IMPORT|SYNC|BATCH|APPROVE|REMOVE|TRANSFER|WASABI|DAILY|SEND|TAG|GET_POINTS_LEDGER)/.test(action);
+  return /_(UPDATE|DELETE|SAVE|MANAGE|IMPORT|SYNC|BATCH|APPROVE|REMOVE|TRANSFER|WASABI|DAILY|SEND|TAG|RECONCILE|GET_POINTS_LEDGER)/.test(action);
 }
 
 function summarizeAuditPayload(action, payload = {}) {
@@ -1597,6 +1597,7 @@ function summarizeAuditPayload(action, payload = {}) {
   if (action === "ADMIN_DELETE_RICH_MENU_SAVE") return `刪除圖文選單 ${p.id || ""}`.trim();
   if (action === "ADMIN_UPDATE_ORDER") return `更新訂單 ${p.orderId || ""}`.trim();
   if (action === "ADMIN_MANAGE_POINTS") return `調整點數 ${p.uid || ""} ${p.type || ""} ${p.amount || ""}`.trim();
+  if (action === "ADMIN_RECONCILE_LOCAL_POINTS") return `校正本地點數 ${p.targetUid || p.uid || ""} -> ${p.targetBalance || ""}`.trim();
   if (action === "ADMIN_TAG_MEMBER") return `會員標籤 ${p.tagName || ""} ${p.userId || ""}`.trim();
   if (action === "ADMIN_SEND_PAID_BROADCAST") return `付費推播 ${p.title || ""}`.trim();
   if (action === "TEACHER_DEDUCT_POINTS") return `講師扣點 ${p.targetUid || p.studentName || ""} ${p.amount || ""}`.trim();
@@ -2089,6 +2090,48 @@ async function queryWetwPointList(settings, member, env = {}) {
     ? Number(latestWithBalance.point_balance)
     : list.reduce((sum, item) => sum + (Number(item?.get_point) || 0), 0);
   return { ok: true, balance: Number.isFinite(balance) ? balance : 0, list, raw: data };
+}
+
+function buildPointDataFromWetw(sharedPointData, limit = 50) {
+  return {
+    balance: Number(sharedPointData?.balance || 0),
+    logs: Array.isArray(sharedPointData?.list)
+      ? sharedPointData.list.slice(0, limit).map(item => ({
+        logId: item.id || "",
+        amount: Math.abs(Number(item.get_point) || 0),
+        reason: item.event_content || item.event_name || "母站點數異動",
+        createdAt: item.created_at || "",
+        type: Number(item.get_point) >= 0 ? "EARN" : "SPEND",
+      }))
+      : [],
+    source: "wetw",
+  };
+}
+
+function resolveDisplayPointData(localPointData, sharedPointData, limit = 50) {
+  const localData = {
+    balance: Number(localPointData?.balance || 0),
+    logs: Array.isArray(localPointData?.logs) ? localPointData.logs.slice(0, limit) : [],
+    source: "local",
+  };
+  if (!sharedPointData?.ok) {
+    return {
+      ...localData,
+      shared: { ok: false, reason: sharedPointData?.reason || "unavailable" },
+    };
+  }
+  const wetwData = buildPointDataFromWetw(sharedPointData, limit);
+  if (localData.balance > wetwData.balance) {
+    return {
+      ...localData,
+      source: "local_ahead",
+      shared: { ok: true, balance: wetwData.balance, count: Array.isArray(sharedPointData.list) ? sharedPointData.list.length : 0 },
+    };
+  }
+  return {
+    ...wetwData,
+    shared: { ok: true, count: Array.isArray(sharedPointData.list) ? sharedPointData.list.length : 0 },
+  };
 }
 
 async function insertWetwPoint(settings, uid, amount, reason, env = {}, member = null) {
@@ -3636,7 +3679,7 @@ async function handleHuaxuMemberProfile(request, env) {
     reason: "wp_query_exception",
     message: error?.message || String(error),
   }));
-  const pointBalance = sharedPoints?.ok ? Number(sharedPoints.balance || 0) : Number(localPoints?.balance || 0);
+  const displayPoints = resolveDisplayPointData(localPoints, sharedPoints, 10);
   return json({
     ok: true,
     bound: !!member,
@@ -3644,18 +3687,10 @@ async function handleHuaxuMemberProfile(request, env) {
     memberUid,
     member: safeMember,
     points: {
-      balance: pointBalance,
-      source: sharedPoints?.ok ? "wetw" : "local",
-      shared: sharedPoints?.ok ? { ok: true, count: Array.isArray(sharedPoints.list) ? sharedPoints.list.length : 0 } : { ok: false, reason: sharedPoints?.reason || "unavailable" },
-      logs: sharedPoints?.ok && Array.isArray(sharedPoints.list)
-        ? sharedPoints.list.slice(0, 10).map(item => ({
-          logId: item.id || "",
-          amount: Math.abs(Number(item.get_point) || 0),
-          reason: item.event_content || item.event_name || "母站點數異動",
-          createdAt: item.created_at || "",
-          type: Number(item.get_point) >= 0 ? "EARN" : "SPEND",
-        }))
-        : (Array.isArray(localPoints?.logs) ? localPoints.logs.slice(0, 10) : []),
+      balance: displayPoints.balance,
+      source: displayPoints.source,
+      shared: displayPoints.shared,
+      logs: displayPoints.logs,
     },
     orders: {
       count: memberOrders.length,
@@ -4836,21 +4871,7 @@ export default {
               reason: "wp_query_exception",
               message: error?.message || String(error),
             }));
-            result.data = sharedPointData?.ok
-              ? {
-                balance: Number(sharedPointData.balance || 0),
-                logs: Array.isArray(sharedPointData.list)
-                  ? sharedPointData.list.slice(0, 50).map(item => ({
-                    logId: item.id || "",
-                    amount: Math.abs(Number(item.get_point) || 0),
-                    reason: item.event_content || item.event_name || "母站點數異動",
-                    createdAt: item.created_at || "",
-                    type: Number(item.get_point) >= 0 ? "EARN" : "SPEND",
-                  }))
-                  : [],
-                source: "wetw",
-              }
-              : { ...localPointData, source: "local", shared: { ok: false, reason: sharedPointData?.reason || "unavailable" } };
+            result.data = resolveDisplayPointData(localPointData, sharedPointData, 50);
           }
           break;
           
@@ -5926,6 +5947,59 @@ export default {
           result.data = { success: true };
           break;
 
+        case "ADMIN_RECONCILE_LOCAL_POINTS": {
+          if (!access.isAdmin) throw new Error("Admin authorization required");
+          const targetUid = String(payload?.targetUid || payload?.uid || "").trim();
+          const targetBalance = Number(payload?.targetBalance);
+          if (!targetUid) throw new Error("缺少會員 UID");
+          if (!Number.isFinite(targetBalance) || targetBalance < 0) throw new Error("校正餘額格式錯誤");
+          const currentPointData = await safeGetKV(env, `POINTS_${targetUid}`, { balance: 0, logs: [] });
+          const currentBalance = Number(currentPointData.balance || 0);
+          const delta = targetBalance - currentBalance;
+          if (delta !== 0) {
+            const logId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
+            const createdTs = Date.now();
+            const createdAt = new Date(createdTs).toLocaleString();
+            const reason = payload?.reason || "校正手機母站顯示餘額";
+            const nextPointData = {
+              ...currentPointData,
+              balance: targetBalance,
+              logs: [
+                {
+                  logId,
+                  amount: Math.abs(delta),
+                  reason,
+                  createdAt,
+                  type: delta >= 0 ? "EARN" : "SPEND",
+                  source: "local_reconcile",
+                },
+                ...(Array.isArray(currentPointData.logs) ? currentPointData.logs : []),
+              ].slice(0, 50),
+              reconciledAt: new Date().toISOString(),
+              reconciledBy: userId,
+            };
+            await putPointKV(env, ctx, targetUid, nextPointData);
+            await appendPointsLedger(env, {
+              logId,
+              uid: targetUid,
+              type: delta >= 0 ? "EARN" : "SPEND",
+              amount: delta,
+              points: Math.abs(delta),
+              reason,
+              balanceAfter: targetBalance,
+              createdAt,
+              createdTs,
+              source: "local_reconcile",
+              operatorUid: userId,
+              operatorName: access.userData?.name || access.lineProfile?.name || "",
+            });
+            if (ctx) observeHighRiskDualWrite(env, ctx, ["points", "point-ledger"]);
+            else await observeHighRiskDualWrite(env, null, ["points", "point-ledger"]);
+          }
+          result.data = { success: true, uid: targetUid, oldBalance: currentBalance, balance: targetBalance, delta };
+          break;
+        }
+
         case "SYSTEM_HEALTH_CHECK":
           if (!access.isAdmin) throw new Error("Admin authorization required");
           const healthCfg = getWetwConfig(access.settings, env);
@@ -6372,6 +6446,7 @@ export default {
       if (motherKeywordEvents.length) {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
+        const api = this;
         await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
           receivedAt: new Date().toISOString(),
           route: "mother_keyword_direct",
@@ -6398,6 +6473,29 @@ export default {
             signal: AbortSignal.timeout(8000)
           });
           const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
+          if (response.ok) {
+            for (const event of motherKeywordEvents) {
+              const text = String(event?.message?.text || "").trim();
+              if (text !== "會員打卡") continue;
+              const lineUid = String(event?.source?.userId || "").trim();
+              if (!lineUid) continue;
+              const dateKey = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+              const checkinKey = `CHECKIN_${lineUid}_${dateKey}`;
+              const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
+              if (existingCheckin?.localMirrored) continue;
+              const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid }));
+              const memberUid = resolved?.memberUid || lineUid;
+              await api.updatePoints(env, null, memberUid, 1, "會員打卡母站鏡像", { skipWpSync: true, source: "mother_keyword_mirror" });
+              await safePutKV(env, checkinKey, {
+                lineUserId: lineUid,
+                memberUid,
+                keyword: text,
+                localMirrored: true,
+                mirroredAt: new Date().toISOString(),
+                source: "mother_keyword_direct",
+              }, { expirationTtl: 86400 * 45 }).catch(() => {});
+            }
+          }
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook,
             route: "mother_keyword_direct",
