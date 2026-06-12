@@ -862,6 +862,99 @@ async function findLegacyMemberByPhone(env, rawPhone, rawName = "") {
   return { found: false, reason: matches.length > 1 ? "duplicate_phone" : "not_found", matches: matches.length };
 }
 
+function normalizeBindName(value) {
+  return String(value || "")
+    .replace(/^(姓名|名字|我是|我叫|會員姓名|舊會員姓名)\s*[:：]?\s*/i, "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+async function findLegacyMemberCandidates(env, query = {}) {
+  const name = normalizeBindName(query.name || query.keyword || "");
+  const phone = normalizeMemberPhone(query.phone || "");
+  const lineName = normalizeBindName(query.lineName || "");
+  const users = await listUserRecords(env);
+  const candidates = [];
+  for (const user of users) {
+    if (!user || !user.userId || !user.legacyMemberId) continue;
+    const displayName = normalizeBindName(user.name || user.displayName || "");
+    const phones = memberPhoneValues(user);
+    let score = 0;
+    const reasons = [];
+    if (phone && phones.includes(phone)) {
+      score += 100;
+      reasons.push("手機一致");
+    }
+    if (name && displayName) {
+      if (displayName === name) {
+        score += 80;
+        reasons.push("姓名完全一致");
+      } else if (displayName.includes(name) || name.includes(displayName)) {
+        score += 45;
+        reasons.push("姓名相近");
+      }
+    }
+    if (lineName && displayName) {
+      if (displayName === lineName) {
+        score += 35;
+        reasons.push("LINE 名稱一致");
+      } else if (displayName.includes(lineName) || lineName.includes(displayName)) {
+        score += 18;
+        reasons.push("LINE 名稱相近");
+      }
+    }
+    if (score <= 0) continue;
+    candidates.push({
+      userId: user.userId,
+      legacyMemberId: user.legacyMemberId || user.userId,
+      name: user.name || user.displayName || "",
+      phone: phones[0] || "",
+      birthday: user.birthday || "",
+      address: user.address || user.fullAddress || "",
+      memberTier: user.memberTier || "",
+      score,
+      reasons,
+    });
+  }
+  return candidates.sort((a, b) => b.score - a.score).slice(0, 8);
+}
+
+async function createLineBindReviewCase(env, ctx, data = {}) {
+  const now = new Date();
+  const lineUid = String(data.lineUserId || "").trim();
+  if (!lineUid) return null;
+  const id = `BIND_${now.getTime()}_${crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10)}`;
+  const record = {
+    id,
+    status: "PENDING",
+    lineUserId: lineUid,
+    lineDisplayName: String(data.lineDisplayName || "").trim(),
+    linePictureUrl: String(data.linePictureUrl || "").trim(),
+    providedName: normalizeBindName(data.providedName || ""),
+    providedPhone: normalizeMemberPhone(data.providedPhone || ""),
+    reason: String(data.reason || "needs_review").trim(),
+    candidates: Array.isArray(data.candidates) ? data.candidates.slice(0, 8) : [],
+    createdAt: now.toISOString(),
+    createdTs: now.getTime(),
+    updatedAt: now.toISOString(),
+  };
+  await safePutKV(env, `LINE_BIND_REVIEW_${id}`, record);
+  const index = await safeGetKV(env, "LINE_BIND_REVIEW_INDEX", [], { preferWasabi: false });
+  const nextIndex = [id, ...(Array.isArray(index) ? index.filter(item => item !== id) : [])].slice(0, 300);
+  await safePutKV(env, "LINE_BIND_REVIEW_INDEX", nextIndex);
+  const pendingForLine = await safeGetKV(env, `LINE_BIND_REVIEW_FOR_${lineUid}`, [], { preferWasabi: false });
+  await safePutKV(env, `LINE_BIND_REVIEW_FOR_${lineUid}`, [id, ...(Array.isArray(pendingForLine) ? pendingForLine.filter(item => item !== id) : [])].slice(0, 20), { expirationTtl: 86400 * 30 });
+  if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}));
+  return record;
+}
+
+async function listLineBindReviewCases(env) {
+  const index = await safeGetKV(env, "LINE_BIND_REVIEW_INDEX", [], { preferWasabi: false });
+  const ids = Array.isArray(index) ? index.slice(0, 120) : [];
+  const records = await Promise.all(ids.map(id => safeGetKV(env, `LINE_BIND_REVIEW_${id}`, null, { preferWasabi: false }).catch(() => null)));
+  return records.filter(Boolean).sort((a, b) => Number(b.createdTs || 0) - Number(a.createdTs || 0));
+}
+
 async function mergePointDataForLineBind(env, ctx, legacyUid, lineUid) {
   if (!legacyUid || !lineUid || legacyUid === lineUid) return null;
   const linePoints = await safeGetKV(env, `POINTS_${lineUid}`, null);
@@ -1880,6 +1973,14 @@ function extractTaiwanPhone(text) {
   return /^09\d{8}$/.test(digits) ? digits : "";
 }
 
+function extractBindNameText(text) {
+  const value = normalizeBindName(text);
+  if (!value || extractTaiwanPhone(value)) return "";
+  if (/^(綁定會員|會員綁定|綁定點數|我的點數|推薦好友|會員打卡)$/i.test(value)) return "";
+  if (value.length < 2 || value.length > 30) return "";
+  return value;
+}
+
 async function handleLineMemberBindText(env, ctx, event) {
   const uid = String(event?.source?.userId || "").trim();
   const replyToken = event?.replyToken || "";
@@ -1901,19 +2002,40 @@ async function handleLineMemberBindText(env, ctx, event) {
   const pending = await safeGetKV(env, pendingKey, null, { preferWasabi: false });
   const directPhone = directMatch ? extractTaiwanPhone(directMatch[2]) : "";
   const pendingPhone = pending ? extractTaiwanPhone(text) : "";
+  const directName = directMatch && !directPhone ? extractBindNameText(directMatch[2]) : "";
+  const pendingName = pending && !pendingPhone ? extractBindNameText(text) : "";
   if (/^(綁定會員|會員綁定|綁定點數)$/.test(text)) {
-    await safePutKV(env, pendingKey, { startedAt: new Date().toISOString() }, { expirationTtl: 600 });
-    const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage("請回覆您的手機號碼，例如：0912345678\n我會用這支手機幫您綁定舊會員資料與點數。"));
-    await safePutKV(env, debugKey, { step: "prompt_phone", text, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
+    await safePutKV(env, pendingKey, { step: "ask_identity", startedAt: new Date().toISOString() }, { expirationTtl: 1800 });
+    const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage("我來協助您找回舊會員資料。\n\n請先回覆手機號碼，例如：0912345678。\n如果舊會員沒有留電話，請回覆：姓名 王小明。\n\n我會先整理候選資料，資料不夠明確時會送後台人工確認。"));
+    await safePutKV(env, debugKey, { step: "prompt_identity", text, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
     return true;
   }
   const phone = directPhone || pendingPhone;
-  if (!phone) return false;
+  const providedName = directName || pendingName;
+  if (!phone && !providedName) return false;
 
   let profile = null;
   let result = null;
   try {
     profile = await fetchLineBotProfile(env, uid);
+    if (!phone && providedName) {
+      const candidates = await findLegacyMemberCandidates(env, { name: providedName, lineName: profile?.displayName || "" });
+      const review = await createLineBindReviewCase(env, ctx, {
+        lineUserId: uid,
+        lineDisplayName: profile?.displayName || "",
+        linePictureUrl: profile?.pictureUrl || "",
+        providedName,
+        reason: candidates.length ? "name_candidates" : "name_no_match",
+        candidates,
+      });
+      await safePutKV(env, pendingKey, { step: "review_created", reviewId: review?.id || "", providedName, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
+      const candidateText = candidates.length
+        ? `我找到 ${candidates.length} 筆可能的舊會員資料，已送後台人工確認。`
+        : "目前沒有找到明確舊會員資料，已送後台人工確認。";
+      const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage(`${candidateText}\n\n請稍候店家確認後，系統會把您的 LINE 身分與舊會員資料綁定。`));
+      await safePutKV(env, debugKey, { step: "bind_review_by_name", text, providedName, reviewId: review?.id || "", candidates: candidates.length, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
+      return true;
+    }
     result = await bindLegacyMemberToLine(env, ctx, uid, { phone, name: profile?.displayName || "" }, { name: profile?.displayName || "", picture: profile?.pictureUrl || "" });
   } catch (err) {
     const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage("綁定時發生錯誤，請稍後再試或洽店家協助。"));
@@ -1921,6 +2043,23 @@ async function handleLineMemberBindText(env, ctx, event) {
     return true;
   }
   if (!result.bound) {
+    if (result.reason === "not_found" || result.reason === "missing_phone") {
+      await safePutKV(env, pendingKey, { step: "ask_name", phone, updatedAt: new Date().toISOString() }, { expirationTtl: 1800 });
+      const candidates = await findLegacyMemberCandidates(env, { phone, lineName: profile?.displayName || "" }).catch(() => []);
+      if (candidates.length) {
+        await createLineBindReviewCase(env, ctx, {
+          lineUserId: uid,
+          lineDisplayName: profile?.displayName || "",
+          linePictureUrl: profile?.pictureUrl || "",
+          providedPhone: phone,
+          reason: "phone_review_candidates",
+          candidates,
+        });
+      }
+      const reply = await deliverLineMessage(env, uid, replyToken, textLineMessage("這支手機沒有直接命中舊會員資料。\n\n如果您是舊會員但當時沒有留電話，請回覆：姓名 您的舊會員姓名。\n例如：姓名 王小明\n\n我會幫您整理候選資料給後台確認。"));
+      await safePutKV(env, debugKey, { step: "ask_name_after_phone_failed", text, phone, reason: result.reason, candidates: candidates.length, reply, tokenConfigured: !!getLineChannelAccessToken(env), updatedAt: new Date().toISOString() }, { expirationTtl: 86400 });
+      return true;
+    }
     const reasonText = result.reason === "not_found"
       ? "找不到這支手機的舊會員資料。"
       : result.reason === "duplicate_phone"
@@ -5480,6 +5619,7 @@ export default {
               orders: adminOrders,
               products: await safeGetProducts(env),
               paymentLogs: await safeGetKV(env, "PAYMENT_LOGS", [], { preferWasabi: false }),
+              lineBindReviews: await listLineBindReviewCases(env),
               teachers: localUsers.filter(u => u.memberTier && ['專業導師', '導師'].some(t => u.memberTier.includes(t))),
               settings: adminSettings
           };
