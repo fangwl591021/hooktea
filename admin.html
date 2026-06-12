@@ -1017,9 +1017,9 @@
                             </select>
                         </div>
                         <div class="mb-8">
-                            <label class="input-label">總部管理（輸入 UID）</label>
+                            <label class="input-label">總部管理（輸入 LINE UID）</label>
                             <textarea v-model="sysSettings.crm_login_uids" class="input-field h-24 resize-none font-mono text-sm" placeholder="每行或逗號分隔 LINE UID。此名單可登入總部管理後台，並取得完整管理權限。"></textarea>
-                            <div class="text-xs text-slate-400 mt-2 font-bold">總部管理白名單等同完整後台管理權限；所有操作會以實際 LINE UID 記錄。</div>
+                            <div class="text-xs text-slate-400 mt-2 font-bold">請填 LINE 回傳的 U 開頭 UID；舊站會員編號不能直接用於 LINE 登入。總部管理白名單等同完整後台管理權限。</div>
                         </div>
                         <div class="mb-8 flex items-center justify-between bg-indigo-50 p-4 rounded-xl border border-indigo-100">
                             <div>
@@ -1460,7 +1460,7 @@
 
         <div v-if="activeMember" class="modal-mask" @click.self="activeMember = null" style="z-index: 1000;">
             <div class="modal-body modal-body-lg p-0 animate-fade-in !max-w-[1000px] !rounded-xl bg-white shadow-2xl">
-                <div class="px-6 py-5 flex justify-between items-center bg-white border-b border-slate-100 shadow-sm z-10 relative"><h3 class="text-[19px] font-black text-slate-800 flex items-center gap-3"><img v-if="memberAvatarUrl(activeMember)" :src="memberAvatarUrl(activeMember)" class="w-10 h-10 rounded-full object-cover border border-slate-200 bg-slate-100" referrerpolicy="no-referrer"><span v-else class="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 text-sm font-black">{{ memberInitial(activeMember) }}</span><i class="fas fa-address-card text-[#06C755]"></i> 會員檔案：{{ displayMemberName(activeMember) }} <span class="text-[13px] font-mono font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-lg border border-slate-200 ml-3">UID: {{ activeMember?.userId }}</span></h3><button @click="activeMember = null" class="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"><i class="fas fa-times text-xl"></i></button></div>
+                <div class="px-6 py-5 flex justify-between items-center bg-white border-b border-slate-100 shadow-sm z-10 relative"><h3 class="text-[19px] font-black text-slate-800 flex items-center gap-3 flex-wrap"><img v-if="memberAvatarUrl(activeMember)" :src="memberAvatarUrl(activeMember)" class="w-10 h-10 rounded-full object-cover border border-slate-200 bg-slate-100" referrerpolicy="no-referrer"><span v-else class="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 text-sm font-black">{{ memberInitial(activeMember) }}</span><i class="fas fa-address-card text-[#06C755]"></i> 會員檔案：{{ displayMemberName(activeMember) }} <span class="text-[13px] font-mono font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-lg border border-slate-200 ml-3">舊站會員編號: {{ activeMember?.legacyMemberId || activeMember?.userId }}</span><span v-if="memberLineUid(activeMember)" class="text-[13px] font-mono font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-100">LINE UID: {{ memberLineUid(activeMember) }}</span></h3><button @click="activeMember = null" class="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"><i class="fas fa-times text-xl"></i></button></div>
                 <div class="p-8 overflow-y-auto max-h-[75vh] bg-slate-50 custom-scrollbar grid grid-cols-1 md:grid-cols-12 gap-8">
                     <div class="md:col-span-7 space-y-6">
                         <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm"><h4 class="font-bold text-slate-700 mb-5 border-b pb-3 flex items-center gap-2"><i class="fas fa-user-edit text-indigo-500"></i> 基本資料</h4>
@@ -1681,6 +1681,17 @@
                         if (name) return name;
                         const uid = String(member?.userId || '').trim();
                         return uid ? `未填姓名 (${uid.slice(0, 8)}...)` : '未填姓名';
+                    };
+                    const memberLineUid = (member) => {
+                        const candidates = [
+                            member?.lineUserId,
+                            member?.linkedLineUid,
+                            member?.lineUid,
+                            member?.line_user_id,
+                            member?.profile?.userId,
+                            member?.lineProfile?.userId
+                        ];
+                        return String(candidates.find(uid => String(uid || '').trim().startsWith('U')) || '').trim();
                     };
                     const memberAvatarUrl = (member) => String(member?.pictureUrl || member?.avatar || member?.linePictureUrl || member?.profile?.pictureUrl || '').trim();
                     const memberInitial = (member) => displayMemberName(member).trim().slice(0, 1).toUpperCase();
@@ -3732,7 +3743,7 @@
                         showReservationCourseModal, selectedTeacherForReservation, teacherReservationCourses, isTeacherCourse,
                         activeMember, activeMemberPoints, editingPointAction,
                         lineLogin, handleLogin, toggleGroup, switchView, logout, fetchData, manualRefreshData,
-                        triggerBackup, runHealthCheck, openMemberDetail, displayMemberName, memberAvatarUrl, memberInitial, ledgerMemberName, copyText, openLedgerMember, memberRoleTags, toggleMemberSystem, toggleMemberOperator, toggleMemberTeacher, saveMemberDetail, deleteMember, restoreMember, openPointActionModal, submitPointAction,
+                        triggerBackup, runHealthCheck, openMemberDetail, displayMemberName, memberLineUid, memberAvatarUrl, memberInitial, ledgerMemberName, copyText, openLedgerMember, memberRoleTags, toggleMemberSystem, toggleMemberOperator, toggleMemberTeacher, saveMemberDetail, deleteMember, restoreMember, openPointActionModal, submitPointAction,
                         openNewCourseModal, openEditModal, saveCourse, deleteCourse, copyCourse, openNewProductModal, openEditProductModal, saveProduct, deleteProduct, importWpProducts, syncToCalendar,
                         handleBannerUpload, handleProductImageUpload, handleCourseImageUpload, saveSettings, addCourseLocation, openEnrollments, openCourseOrdersModal,
                         openTeacherReservationCourses, editReservationCourseFromTeacher,
