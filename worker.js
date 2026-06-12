@@ -4565,8 +4565,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     function cleanPointLogReason(reason){
       const text = String(reason || "").trim();
-      if (/^\?{4,}(\s*\d+)?$/.test(text) || /^\?{4,}\s*\d+/.test(text)) {
-        const balance = (text.match(/\d+/) || [""])[0];
+      if (text.indexOf("????") === 0) {
+        const balance = text.split("").filter(ch => ch >= "0" && ch <= "9").join("");
         return balance ? "校正手機母站顯示餘額 " + balance : "校正手機母站顯示餘額";
       }
       return text || "點數異動";
