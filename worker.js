@@ -1924,7 +1924,16 @@ function isReferralInviteKeyword(text) {
 
 function isMotherSiteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
-  return /^(會員分享|會員打卡)$/i.test(normalized);
+  return /^(會員專區|會員中心|會員註冊|註冊|注册|加入會員|會員分享|分享好友|推薦好友|邀請好友|會員打卡|打卡)$/i.test(normalized);
+}
+
+function motherSiteKeywordType(text) {
+  const normalized = String(text || "").replace(/\s+/g, "").trim();
+  if (/^(會員打卡|打卡)$/i.test(normalized)) return "checkin";
+  if (/^(會員分享|分享好友|推薦好友|邀請好友)$/i.test(normalized)) return "share";
+  if (/^(會員註冊|註冊|注册|加入會員)$/i.test(normalized)) return "register";
+  if (/^(會員專區|會員中心)$/i.test(normalized)) return "member_area";
+  return "other";
 }
 
 function getMotherWebhookUrl(env, settings = {}) {
@@ -6651,12 +6660,20 @@ export default {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         const api = this;
+        for (const event of motherKeywordEvents) {
+          const lineUid = String(event?.source?.userId || "").trim();
+          const keyword = String(event?.message?.text || "").trim();
+          if (!lineUid) continue;
+          await ensureLineOnlyCrmMember(env, ctx, lineUid, null, `mother_keyword_${motherSiteKeywordType(keyword)}`).catch(() => {});
+          await appendLineMonitorEvent(env, ctx, event).catch(e => console.error("LINE Monitor Append Error:", e));
+        }
         await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
           receivedAt: new Date().toISOString(),
           route: "mother_keyword_direct",
           totalEvents: events.length,
           unhandledCount: motherKeywordEvents.length,
           texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+          keywordTypes: motherKeywordEvents.map(event => motherSiteKeywordType(event?.message?.text || "")),
         }, { expirationTtl: 86400 }).catch(() => {});
         const forwardTask = (async () => {
           await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
@@ -6680,9 +6697,20 @@ export default {
           if (response.ok) {
             for (const event of motherKeywordEvents) {
               const text = String(event?.message?.text || "").trim();
-              if (text !== "會員打卡") continue;
+              const keywordType = motherSiteKeywordType(text);
               const lineUid = String(event?.source?.userId || "").trim();
               if (!lineUid) continue;
+              if (keywordType !== "checkin") {
+                await safePutKV(env, `MOTHER_KEYWORD_LAST_${lineUid}`, {
+                  lineUserId: lineUid,
+                  keyword: text,
+                  keywordType,
+                  forwarded: true,
+                  forwardedAt: new Date().toISOString(),
+                  responseStatus: response.status,
+                }, { expirationTtl: 86400 * 30 }).catch(() => {});
+                continue;
+              }
               const dateKey = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
               const checkinKey = `CHECKIN_${lineUid}_${dateKey}`;
               const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
