@@ -182,7 +182,7 @@
       audience: null,
       active: null,
       learningCases: [],
-      filter: "all",
+      filter: "todo",
       riskExpanded: false,
     };
 
@@ -257,6 +257,8 @@
     function currentRows() {
       const q = $("search").value.trim().toLowerCase();
       return state.threads.filter(thread => {
+        if (state.filter === "todo" && thread.status === "closed") return false;
+        if (state.filter === "done" && thread.status !== "closed") return false;
         if (state.filter === "open" && thread.status === "closed") return false;
         if (state.filter === "high" && thread.riskLevel !== "high") return false;
         const haystack = [thread.name, thread.id, thread.summary, thread.lastMessageText, thread.tags.join(",")].join(" ").toLowerCase();
@@ -567,6 +569,29 @@
       $("broadcast-result").textContent = `已建立草稿 ${res.data?.id || ""}，對象 ${res.data?.recipientCount || 0} 人`;
     }
 
+    function setupProcessingToolbar() {
+      const buttons = Array.from(document.querySelectorAll(".filter"));
+      if (buttons[0]) {
+        buttons[0].dataset.filter = "todo";
+        buttons[0].innerHTML = '<i class="fas fa-comment-dots mr-1.5"></i>待處理';
+        buttons[0].classList.add("active");
+      }
+      if (buttons[1]) {
+        buttons[1].dataset.filter = "done";
+        buttons[1].innerHTML = '<i class="fas fa-check-circle mr-1.5"></i>處理完畢';
+      }
+      if (buttons[2]) {
+        buttons[2].className = "filter-action";
+        buttons[2].removeAttribute("data-filter");
+        buttons[2].innerHTML = '<i class="fas fa-search mr-1.5"></i>搜尋';
+        buttons[2].addEventListener("click", () => $("search").focus());
+      }
+      if ($("search")) $("search").placeholder = "搜尋姓名、ID、訊息或標籤";
+      if ($("refresh")) $("refresh").textContent = "同步";
+    }
+
+    setupProcessingToolbar();
+
     document.querySelectorAll(".filter").forEach(btn => btn.addEventListener("click", () => {
       document.querySelectorAll(".filter").forEach(item => item.classList.remove("active"));
       btn.classList.add("active");
@@ -601,6 +626,8 @@
       .feature { min-height: 42px; border-radius: 14px; display: grid; place-items: center; font-size: 14px; font-weight: 900; }
       .filter { border-radius: 999px; padding: 7px 13px; font-size: 13px; font-weight: 900; color: #334155; background: #f1f5f9; }
       .filter.active { color: white; background: #020617; }
+      .filter-action { border: 1px solid #94a3b8; border-radius: 4px; padding: 8px 13px; font-size: 13px; font-weight: 900; color: #334155; background: white; }
+      .filter-action:hover { border-color: #64748b; background: #f8fafc; }
       .status-btn { border: 1px solid #cbd5e1; border-radius: 14px; padding: 9px 16px; font-size: 14px; font-weight: 900; background: white; color: #020617; }
       .metric { border-radius: 16px; padding: 13px; min-height: 74px; }
       .metric span { display: block; color: #64748b; font-size: 12px; font-weight: 800; }
