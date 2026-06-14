@@ -1038,6 +1038,7 @@ async function appendLineMonitorEvent(env, ctx, event) {
   if (!lineUid) return;
   const text = lineEventMessageText(event);
   if (!text) return;
+  await ensureLineOnlyCrmMember(env, ctx, lineUid, null, "line_monitor_event").catch(() => {});
   const threadId = await resolveMonitorThreadIdForLine(env, lineUid);
   if (!threadId) return;
   await appendLineMonitorD1Event(env, event, threadId, text);
@@ -3782,6 +3783,41 @@ async function findHuaxuMemberByLineUid(env, lineUid) {
   });
   if (!found?.data) return { memberUid: uid, member: null, binding };
   return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data, binding };
+}
+
+async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source = "line_interaction") {
+  const uid = String(lineUid || "").trim();
+  if (!uid || !uid.startsWith("U")) return null;
+  const resolved = await findHuaxuMemberByLineUid(env, uid).catch(() => ({ memberUid: uid, member: null }));
+  if (resolved?.member) return resolved.member;
+  let lineProfile = profile;
+  if (!lineProfile || (!lineProfile.displayName && !lineProfile.name && !lineProfile.pictureUrl && !lineProfile.picture)) {
+    lineProfile = await fetchLineBotProfile(env, uid).catch(() => profile || {});
+  }
+  const displayName = String(lineProfile?.displayName || lineProfile?.name || uid).trim();
+  const pictureUrl = String(lineProfile?.pictureUrl || lineProfile?.picture || "").trim();
+  const now = new Date();
+  const member = {
+    userId: uid,
+    legacyMemberId: "",
+    lineUserId: uid,
+    linkedLineUid: uid,
+    lineDisplayName: displayName,
+    name: displayName,
+    displayName,
+    pictureUrl,
+    phone: "",
+    mobile: "",
+    tel: "",
+    memberTier: "一般會員",
+    crmBindingStatus: "LINE_ONLY_PENDING_LEGACY",
+    bindingStatus: "LINE 待綁定",
+    source,
+    createdAt: now.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" }),
+    updatedAt: now.toISOString(),
+  };
+  await putUserKV(env, ctx, uid, member);
+  return member;
 }
 
 async function handleHuaxuMemberProfile(request, env) {
@@ -6652,6 +6688,7 @@ export default {
               const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
               if (existingCheckin?.localMirrored) continue;
               const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid }));
+              if (!resolved?.member) await ensureLineOnlyCrmMember(env, ctx, lineUid, null, "mother_keyword_checkin");
               const memberUid = resolved?.memberUid || lineUid;
               await api.updatePoints(env, null, memberUid, 1, "會員打卡母站鏡像", { skipWpSync: true, source: "mother_keyword_mirror" });
               await safePutKV(env, checkinKey, {

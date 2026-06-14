@@ -2195,7 +2195,12 @@
                         const visibleUsers = users.value.filter(u => u && (showDeletedMembers.value ? u.isDeleted === true : u.isDeleted !== true));
                         if (!memberSearch.value) return visibleUsers;
                         const q = memberSearch.value.toLowerCase();
-                        return visibleUsers.filter(u => ((u.name && u.name.toLowerCase().includes(q)) || (u.phone && u.phone.includes(q)) || (u.userId && u.userId.toLowerCase().includes(q))));
+                        return visibleUsers.filter(u => {
+                            const haystack = [u.name, u.displayName, u.lineDisplayName, u.phone, u.mobile, u.tel, u.userId, u.legacyMemberId, u.lineUserId, u.linkedLineUid, u.bindingStatus, u.crmBindingStatus]
+                                .map(v => String(v || '').toLowerCase())
+                                .join(' ');
+                            return haystack.includes(q);
+                        });
                     });
 
                     const filteredAdminCourses = computed(() => {
