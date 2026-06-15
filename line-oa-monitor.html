@@ -235,6 +235,8 @@
         ...row,
         id: String(row.id || row.userId || ""),
         userId: String(row.userId || row.id || ""),
+        lineSourceUserId: String(row.lineSourceUserId || row.sourceUserId || row.lineUserId || ""),
+        memberUid: String(row.memberUid || row.crmUid || row.legacyUserId || row.userId || row.id || ""),
         name: row.name || row.displayName || row.lineName || row.id || "未命名會員",
         pictureUrl: row.pictureUrl || row.avatar || "",
         status: row.status || "open",
@@ -243,6 +245,36 @@
         unread: Number(row.unread || row.unreadCount || 0),
         tags,
       };
+    }
+
+    function threadUidRows(thread) {
+      const candidates = [
+        ["聊天室ID", thread.id],
+        ["會員UID", thread.memberUid || thread.userId],
+        ["LINE UID", thread.lineSourceUserId],
+      ];
+      const seen = new Set();
+      return candidates
+        .map(([label, value]) => [label, String(value || "").trim()])
+        .filter(([, value]) => value)
+        .filter(([, value]) => {
+          if (seen.has(value)) return false;
+          seen.add(value);
+          return true;
+        });
+    }
+
+    function uidSummary(thread) {
+      return threadUidRows(thread).map(([label, value]) => `${label}: ${value}`).join(" · ");
+    }
+
+    function uidBadges(thread) {
+      return threadUidRows(thread).map(([label, value]) => `
+        <span class="inline-flex max-w-full items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-black text-slate-600">
+          <span class="shrink-0 text-slate-400">${esc(label)}</span>
+          <span class="truncate font-mono">${esc(value)}</span>
+        </span>
+      `).join("");
     }
 
     function normalizeAudience(data) {
@@ -261,7 +293,7 @@
         if (state.filter === "done" && thread.status !== "closed") return false;
         if (state.filter === "open" && thread.status === "closed") return false;
         if (state.filter === "high" && thread.riskLevel !== "high") return false;
-        const haystack = [thread.name, thread.id, thread.summary, thread.lastMessageText, thread.tags.join(",")].join(" ").toLowerCase();
+        const haystack = [thread.name, thread.id, thread.userId, thread.memberUid, thread.lineSourceUserId, uidSummary(thread), thread.summary, thread.lastMessageText, thread.tags.join(",")].join(" ").toLowerCase();
         return !q || haystack.includes(q);
       });
     }
@@ -277,7 +309,7 @@
                 <h3 class="truncate text-base font-black">${esc(thread.name)}</h3>
                 <span class="text-xs text-slate-400">${esc(dateText(thread.lastMessageAt))}</span>
               </div>
-              <p class="mt-1 truncate text-xs text-slate-400">${esc(thread.id)}</p>
+              <p class="mt-1 truncate text-xs text-slate-400">${esc(uidSummary(thread) || thread.id)}</p>
               <p class="mt-1.5 line-clamp-2 text-sm text-slate-700">${esc(thread.summary || thread.lastMessageText || "尚無明顯互動紀錄")}</p>
               <div class="mt-2 flex flex-wrap gap-1.5">
                 <span class="rounded-full px-2.5 py-1 text-xs font-black ${statusClass(thread.status)}">${esc(statusLabel(thread.status))}</span>
@@ -350,7 +382,8 @@
         <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-14 w-14 rounded-full object-cover bg-slate-100" alt="">
         <div class="min-w-0">
           <h2 class="truncate text-xl font-black">${esc(thread.name)}</h2>
-          <p class="mt-1 text-sm text-slate-500">${esc(thread.unread || 0)} 則訊息 · ${esc(thread.id)}</p>
+          <p class="mt-1 text-sm text-slate-500">${esc(thread.unread || 0)} 則訊息</p>
+          <div class="mt-2 flex max-w-full flex-wrap gap-1.5">${uidBadges(thread)}</div>
           <div class="mt-2 flex flex-wrap gap-2">
             <span class="rounded-full px-3 py-1.5 text-xs font-black ${statusClass(thread.status)}">${esc(statusLabel(thread.status))}</span>
             ${thread.tags.slice(0, 5).map(tag => `<span class="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-black text-sky-700">${esc(tag)}</span>`).join("")}
