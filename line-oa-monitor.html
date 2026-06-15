@@ -492,9 +492,10 @@
     }
 
     async function loadAll(keepActive = true) {
+      const stamp = Date.now();
       const [audienceRes, threadsRes] = await Promise.all([
-        fetchJson(`${WORKER_URL}/api/line-oa/audience?lineOnly=1`),
-        fetchJson(`${WORKER_URL}/api/line-oa/threads?lineOnly=1`),
+        fetchJson(`${WORKER_URL}/api/line-oa/audience?lineOnly=1&_=${stamp}`),
+        fetchJson(`${WORKER_URL}/api/line-oa/threads?lineOnly=1&_=${stamp}`),
       ]);
       state.audience = normalizeAudience(audienceRes);
       state.threads = (threadsRes.data || []).map(normalizeThread);
@@ -507,6 +508,32 @@
         await loadThread(state.threads[0].id, false);
       } else {
         renderActive();
+      }
+    }
+
+    async function refreshNow() {
+      const btn = $("refresh");
+      if (!btn || btn.disabled) return;
+      const original = btn.textContent || "同步";
+      btn.disabled = true;
+      btn.textContent = "同步中...";
+      btn.classList.add("opacity-70", "cursor-not-allowed");
+      try {
+        await loadAll(true);
+        const time = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        btn.textContent = `已更新 ${time}`;
+        setTimeout(() => {
+          if (!btn.disabled) btn.textContent = "同步";
+        }, 2400);
+      } catch (err) {
+        btn.textContent = "同步失敗";
+        alert(err.message || "同步失敗");
+        setTimeout(() => {
+          if (!btn.disabled) btn.textContent = original;
+        }, 2400);
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove("opacity-70", "cursor-not-allowed");
       }
     }
 
@@ -600,7 +627,7 @@
     }));
     document.querySelectorAll(".status-btn").forEach(btn => btn.addEventListener("click", () => saveThread(btn.dataset.status).catch(err => alert(err.message))));
     $("search").addEventListener("input", renderThreads);
-    $("refresh").addEventListener("click", () => loadAll(true).catch(err => alert(err.message)));
+    $("refresh").addEventListener("click", () => refreshNow());
     $("analyze-top").addEventListener("click", () => backfillSignals().catch(err => alert(err.message)));
     $("import-members").addEventListener("click", () => alert("會員資料已由 Worker/D1 讀取；若要重新匯入 Excel，請回管理站執行匯入。"));
     $("show-risk").addEventListener("click", () => {
