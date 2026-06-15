@@ -337,12 +337,16 @@
                     </div>
                     <div class="admin-table-container !mt-0 !mx-0 !border-x-0 !border-t-0 shadow-none">
                         <table class="admin-table">
-                            <thead><tr><th>單號 / 日期</th><th>{{ orderTypeFilter === 'PRODUCT' ? '商品' : '課程' }}</th><th>{{ orderTypeFilter === 'PRODUCT' ? '購買人' : '學員' }}</th><th>金額</th><th>付款 / 回報</th><th>狀態</th><th class="text-right">操作</th></tr></thead>
+                            <thead><tr><th>單號 / 日期</th><th>{{ orderTypeFilter === 'PRODUCT' ? '商品' : '課程' }}</th><th>{{ orderTypeFilter === 'PRODUCT' ? '購買 / 收件資料' : '學員' }}</th><th>金額</th><th>付款 / 回報</th><th>狀態</th><th class="text-right">操作</th></tr></thead>
                             <tbody>
                                 <tr v-for="o in filteredOrders" :key="o.orderId">
                                     <td><div class="font-mono font-bold text-[13px] text-slate-500">{{o.orderId}}</div><div class="text-[11px] text-slate-400 mt-0.5">{{o.createdAt}}</div></td>
                                     <td class="font-bold text-slate-700">{{ String(orderCourseName(o) || '').split('\n')[0] }}</td>
-                                    <td class="font-bold">{{o.name}}</td>
+                                    <td>
+                                        <div class="font-bold text-slate-800">{{ o.name || '-' }}</div>
+                                        <div class="text-[12px] font-mono text-slate-500 mt-1">{{ o.phone || '-' }}</div>
+                                        <div v-if="o.type === 'PRODUCT'" class="text-[12px] text-slate-500 mt-1 leading-relaxed max-w-[260px]">{{ shippingAddressText(o) || '未填寫寄送地址' }}</div>
+                                    </td>
                                     <td class="font-bold text-[#06C755] text-lg">{{ adminOrderAmountText(o) }}</td>
                                     <td>
                                         <div class="text-[12px] font-black" :class="o.remittance ? 'text-orange-600' : 'text-slate-500'">{{ adminOrderPaymentText(o) }}</div>
@@ -1463,6 +1467,18 @@
                     </div>
                     <div><label class="input-label">付款狀態</label><select v-model="editingOrder.status" class="input-field font-bold"><option value="PENDING">⏳ 待付款</option><option value="PAID">✅ 已完款</option><option value="CANCELLED">❌ 已取消</option><option value="TRANSFERRED" disabled>↪ 已轉課</option></select></div>
                     <div><label class="input-label">實付金額</label><input type="number" v-model.number="editingOrder.amount" class="input-field font-black text-[#06C755]"></div>
+                    <div v-if="editingOrder.type === 'PRODUCT'" class="bg-white rounded-xl border border-slate-200 p-4">
+                        <div class="text-[15px] font-black text-slate-800 mb-3 flex items-center gap-2"><i class="fas fa-truck text-[#06C755]"></i>寄送 / 收件資料</div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div><label class="input-label">收件姓名</label><input type="text" v-model="editingOrder.name" class="input-field font-bold"></div>
+                            <div><label class="input-label">收件手機</label><input type="tel" v-model="editingOrder.phone" class="input-field font-mono font-bold"></div>
+                            <div><label class="input-label">Email</label><input type="email" v-model="editingOrder.email" class="input-field font-mono"></div>
+                            <div><label class="input-label">郵遞區號</label><input type="text" v-model="editingOrder.shippingPostalCode" class="input-field font-mono"></div>
+                            <div><label class="input-label">縣市</label><input type="text" v-model="editingOrder.shippingCity" class="input-field font-bold"></div>
+                            <div><label class="input-label">區域 / 鄉鎮市</label><input type="text" v-model="editingOrder.shippingDistrict" class="input-field font-bold"></div>
+                            <div class="col-span-2"><label class="input-label">完整寄送地址</label><input type="text" v-model="editingOrder.shippingAddress" class="input-field font-bold"></div>
+                        </div>
+                    </div>
                     <div><label class="input-label">訂單備註</label><textarea v-model="editingOrder.note" class="input-field h-24 resize-none leading-relaxed text-[15px]"></textarea></div>
                     <div v-if="canTransferEditingOrder" class="border-t border-slate-200 pt-5">
                         <div class="text-[15px] font-black text-slate-800 mb-3 flex items-center gap-2"><i class="fas fa-random text-indigo-500"></i>轉課處理</div>
@@ -2264,6 +2280,8 @@
                                     (o.orderId && o.orderId.toLowerCase().includes(q)) ||
                                     (o.name && o.name.toLowerCase().includes(q)) ||
                                     (o.phone && o.phone.includes(q)) ||
+                                    (o.email && String(o.email).toLowerCase().includes(q)) ||
+                                    (shippingAddressText(o).toLowerCase().includes(q)) ||
                                     (o.remittance && String(o.remittance).includes(q)) ||
                                     (o.remittanceReportedAt && String(o.remittanceReportedAt).toLowerCase().includes(q)) ||
                                     (adminOrderPaymentText(o).toLowerCase().includes(q)) ||
@@ -2632,6 +2650,16 @@
                         return '未指定';
                     };
                     const statusText = (status, order = null) => order ? adminOrderStatusText(order) : ({ PAID: '已完款', PENDING: '待付款', BOOKED: '已預約', COMPLETED: '已完成', CANCELLED: '已取消', TRANSFERRED: '已轉課' }[status] || status || '');
+                    const shippingAddressText = (order) => {
+                        const shipping = order?.shipping || {};
+                        return String(
+                            order?.shippingAddress ||
+                            shipping.fullAddress ||
+                            [order?.shippingPostalCode || shipping.postalCode, order?.shippingCity || shipping.city, order?.shippingDistrict || shipping.district, shipping.address || order?.address]
+                                .filter(Boolean)
+                                .join(' ')
+                        ).trim();
+                    };
                     const orderCourseName = (order) => order?.type === 'PRODUCT' ? (order.productName || '商城商品') : getCourseName(order.courseId);
                     const orderMatchesReportCourses = (order) => {
                         if (selectedReportCourseId.value === 'ALL') return true;
@@ -2745,7 +2773,7 @@
                             if (order?.status === 'PENDING') return '待付款';
                             return '';
                         };
-                        const rows = [["訂單編號", "建立時間", "學員姓名", "聯絡電話", "課程與服務名稱", "系統代收", "講師應收", "點數折抵", "狀態", "學員備註", "付款來源"]];
+                        const rows = [["訂單編號", "建立時間", "學員姓名", "聯絡電話", "Email", "寄送地址", "課程與服務名稱", "系統代收", "講師應收", "點數折抵", "狀態", "學員備註", "付款來源"]];
                         sourceOrders.forEach(o => {
                             const amount = Number(String(o.amount).replace(/[^0-9.]/g, '')) || 0;
                             const teacherAmount = o.type === 'BOOKING' ? Number(o.teacherCollectAmount || 0) : 0;
@@ -2754,6 +2782,8 @@
                                 o.createdAt,
                                 o.name,
                                 o.phone,
+                                o.email || o.recipientEmail || "",
+                                shippingAddressText(o),
                                 orderCourseName(o),
                                 amount,
                                 teacherAmount,
@@ -3316,14 +3346,41 @@
                     const saveOrderUpdate = async () => {
                         isLoading.value = true;
                         try {
-                            const res = await callApi('ADMIN_UPDATE_ORDER', { orderId: editingOrder.value.orderId, status: editingOrder.value.status, amount: editingOrder.value.amount, note: editingOrder.value.note });
+                            const payload = {
+                                orderId: editingOrder.value.orderId,
+                                status: editingOrder.value.status,
+                                amount: editingOrder.value.amount,
+                                note: editingOrder.value.note
+                            };
+                            if (editingOrder.value.type === 'PRODUCT') {
+                                Object.assign(payload, {
+                                    name: editingOrder.value.name,
+                                    phone: editingOrder.value.phone,
+                                    email: editingOrder.value.email,
+                                    shippingPostalCode: editingOrder.value.shippingPostalCode,
+                                    shippingCity: editingOrder.value.shippingCity,
+                                    shippingDistrict: editingOrder.value.shippingDistrict,
+                                    shippingAddress: editingOrder.value.shippingAddress,
+                                    address: editingOrder.value.shippingAddress,
+                                    shipping: {
+                                        ...(editingOrder.value.shipping || {}),
+                                        recipientName: editingOrder.value.name,
+                                        recipientPhone: editingOrder.value.phone,
+                                        recipientEmail: editingOrder.value.email,
+                                        postalCode: editingOrder.value.shippingPostalCode,
+                                        city: editingOrder.value.shippingCity,
+                                        district: editingOrder.value.shippingDistrict,
+                                        fullAddress: editingOrder.value.shippingAddress,
+                                        note: editingOrder.value.note
+                                    }
+                                });
+                            }
+                            const res = await callApi('ADMIN_UPDATE_ORDER', payload);
                             if(res) {
                                 alert('✅ 訂單更新成功');
                                 const idx = orders.value.findIndex(o => o && o.orderId === editingOrder.value.orderId);
                                 if (idx > -1) {
-                                    orders.value[idx].status = editingOrder.value.status;
-                                    orders.value[idx].amount = editingOrder.value.amount;
-                                    orders.value[idx].note = editingOrder.value.note;
+                                    orders.value[idx] = { ...orders.value[idx], ...payload };
                                 }
                                 editingOrder.value = null;
                             }
@@ -3761,7 +3818,7 @@
                         isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
                         users, teachers, courses, products, orders, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
-                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, orderCourseName,
+                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
