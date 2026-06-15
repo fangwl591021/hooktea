@@ -1628,7 +1628,12 @@
                     const currentAccess = ref({ isAdmin: false, canCrmLogin: false, isTeacher: false, canSystemTools: false });
                     
                     const memberTiers = ['一般會員','喚醒階段會員','蛻變階段會員','完整階段會員','專業導師'];
-                    const defaultMemberTags = ['一般會員','VIP','團購主','企業客戶','經銷夥伴','LINE 會員','購物會員','點數轉入','高風險','黑名單'];
+                    const defaultMemberTags = [
+                        '一般會員','VIP','團購主','企業客戶','經銷夥伴','LINE 會員','購物會員','點數轉入','高風險','黑名單',
+                        '1月壽星','2月壽星','3月壽星','4月壽星','5月壽星','6月壽星','7月壽星','8月壽星','9月壽星','10月壽星','11月壽星','12月壽星',
+                        '合作廠商','A-首購客','B-回購客','C-潛在顧客','美安店主','永慶房屋','明新學生'
+                    ];
+                    const excludedMemberTagOptions = new Set(['喚醒階段會員','蛻變階段會員','完整階段會員']);
                     const courseStageOptions = ['一般', '喚醒', '蛻變', '完整'];
                     const productStatusOptions = ['販賣中', '暫停販售', '已售完'];
                     
@@ -2611,11 +2616,9 @@
                     const memberTagOptions = computed(() => [
                         ...new Set([
                             ...defaultMemberTags,
-                            ...memberTiers,
-                            ...users.value.flatMap(u => normalizedMemberTags(u)),
-                            ...users.value.map(u => String(u?.memberTier || '').trim()).filter(Boolean)
+                            ...users.value.flatMap(u => normalizedMemberTags(u))
                         ])
-                    ].filter(Boolean));
+                    ].filter(tag => tag && !excludedMemberTagOptions.has(tag)));
                     const activeMemberHasTag = (tag) => activeMember.value ? normalizedMemberTags(activeMember.value).includes(tag) : false;
                     const setActiveMemberTags = (tags) => {
                         if (!activeMember.value) return;
