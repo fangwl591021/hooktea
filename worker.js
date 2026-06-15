@@ -4159,6 +4159,36 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     : {};
   const requestedMethod = String(payload.paymentMethod || "LINEPAY").toUpperCase();
   const paymentMethod = ["LINEPAY", "REMITTANCE"].includes(requestedMethod) ? requestedMethod : "LINEPAY";
+  const itemFingerprint = items
+    .map(item => `${item.id}:${item.quantity}:${item.price}`)
+    .sort()
+    .join("|");
+  const providedClientOrderKey = String(payload.clientOrderKey || "").trim().slice(0, 120);
+  const fallbackClientOrderKey = await sha256HexBody(JSON.stringify({
+    items: itemFingerprint,
+    customer,
+    lineUserId: lineProfile.userId || "",
+    paymentMethod,
+  }));
+  const clientOrderKey = providedClientOrderKey || fallbackClientOrderKey;
+  const pendingKey = `HUAXU_ORDER_PENDING_${clientOrderKey}`;
+  const existingPending = await safeGetKV(env, pendingKey, null).catch(() => null);
+  if (existingPending?.status === "CREATING") {
+    return json({ ok: false, processing: true, message: "訂單處理中，請勿重複送出" }, 409);
+  }
+  if (existingPending?.order) {
+    return json({
+      ok: true,
+      duplicate: true,
+      order: existingPending.order,
+      payment: existingPending.payment || null,
+      remittanceInfo: existingPending.remittanceInfo || "",
+    });
+  }
+  await safePutKV(env, pendingKey, {
+    status: "CREATING",
+    createdAt: new Date().toISOString(),
+  }, { expirationTtl: 120 }).catch(() => {});
   const order = {
     orderId: `HX${Date.now()}`,
     type: "PRODUCT",
@@ -4201,6 +4231,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     status: total > 0 ? "PENDING" : "PAID",
     entryUrl: String(payload.entryUrl || "").slice(0, 1000),
     entryParams,
+    clientOrderKey,
     items: items.map(item => ({
       id: item.id,
       name: item.name,
@@ -4248,6 +4279,13 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       return json({ ok: false, message: error?.message || "付款建立失敗，請稍後再試。", order }, 502);
     }
   }
+  await safePutKV(env, pendingKey, {
+    status: "CREATED",
+    order,
+    payment,
+    remittanceInfo,
+    createdAt: new Date().toISOString(),
+  }, { expirationTtl: 120 }).catch(() => {});
   return json({ ok: true, order, payment, remittanceInfo });
 }
 
@@ -4368,7 +4406,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       <textarea class="field" id="note" placeholder="配送備註（例如：管理室代收、可收貨時段）"></textarea>
       <div class="pay-title">付款方式</div>
       <div class="pay-options" id="payOptions"></div>
-      <button class="checkout" onclick="checkout()">送出訂單</button>
+      <button class="checkout" id="checkoutButton" onclick="checkout()">送出訂單</button>
     </div>
   </div>
   <div class="detail" id="detail" onclick="closeProduct()">
@@ -4408,6 +4446,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     let memberLoading = false;
     let activeMemberSection = "";
     let memberEditMode = false;
+    let isCheckingOut = false;
     let entryContext = { url: location.href.split("#")[0], params: {} };
     const SHOP_LIFF_ID = ${JSON.stringify(String(shopLiffId || "2007674851-ijenzSk8"))};
     init();
@@ -4575,24 +4614,53 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       document.getElementById("cartItems").innerHTML = rows || '<div class="empty">購物車目前是空的</div>';
     }
     function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); }
+    function buildClientOrderKey(customer){
+      const cartKey = cart.map(item => String(item.id || "") + ":" + Number(item.quantity || 1)).sort().join("|");
+      return [lineProfile.userId || "guest", paymentMethod, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
+    }
+    function setCheckoutBusy(busy){
+      isCheckingOut = !!busy;
+      const button = document.getElementById("checkoutButton");
+      if (!button) return;
+      button.disabled = isCheckingOut;
+      button.textContent = isCheckingOut ? "處理中..." : "送出訂單";
+      button.style.opacity = isCheckingOut ? ".65" : "1";
+      button.style.cursor = isCheckingOut ? "not-allowed" : "pointer";
+    }
     async function checkout(){
+      if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
       const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), note: val("note") };
       if (!customer.name || !customer.phone || !customer.city || !customer.district || !customer.address) return toast("請填寫完整收件資料");
       entryContext = restoreEntryContext();
-      const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: cart, customer, lineProfile, paymentMethod, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
-      if (!res.ok) return toast(res.message || "訂單送出失敗");
-      if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
-        location.href = res.payment.redirectUrl;
-        return;
-      }
-      if (res.payment && res.payment.GatewayUrl) {
-        submitPaymentForm(res.payment);
-        return;
-      }
-      cart = []; saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
-      if (paymentMethod === "REMITTANCE") {
-        alert("訂單已成立：" + res.order.orderId + "\\n\\n匯款資訊：\\n" + (res.remittanceInfo || "尚未設定匯款帳號，請等候客服提供匯款資訊。"));
+      setCheckoutBusy(true);
+      let keepBusy = false;
+      try {
+        const clientOrderKey = buildClientOrderKey(customer);
+        const currentCart = cart.map(item => ({ id: item.id, quantity: item.quantity }));
+        const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
+        if (!res.ok) {
+          toast(res.message || "訂單送出失敗");
+          return;
+        }
+        if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
+          keepBusy = true;
+          location.href = res.payment.redirectUrl;
+          return;
+        }
+        if (res.payment && res.payment.GatewayUrl) {
+          keepBusy = true;
+          submitPaymentForm(res.payment);
+          return;
+        }
+        cart = []; saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
+        if (paymentMethod === "REMITTANCE") {
+          alert("訂單已成立：" + res.order.orderId + "\\n\\n匯款資訊：\\n" + (res.remittanceInfo || "尚未設定匯款帳號，請等候客服提供匯款資訊。"));
+        }
+      } catch (error) {
+        toast("訂單送出失敗，請稍後再試");
+      } finally {
+        if (!keepBusy) setCheckoutBusy(false);
       }
     }
     function submitPaymentForm(payRes){
