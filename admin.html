@@ -544,10 +544,10 @@
                                                 <label class="input-label">推播標籤（可複選）</label>
                                                 <div class="rounded-xl border border-slate-200 bg-white p-3">
                                                     <div class="flex flex-wrap gap-2">
-                                                        <button type="button" v-for="tag in broadcastTags" :key="tag.id" @click="toggleBroadcastAudienceTag(tag.name)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="broadcastAudienceHasTag(tag.name) ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-[#06C755]'">
-                                                            {{ tag.name }}
+                                                        <button type="button" v-for="tag in audienceTagOptions" :key="tag" @click="toggleBroadcastAudienceTag(tag)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="broadcastAudienceHasTag(tag) ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-[#06C755]'">
+                                                            {{ tag }}
                                                         </button>
-                                                        <span v-if="!broadcastTags.length" class="text-sm font-bold text-slate-400">尚未建立推播標籤</span>
+                                                        <span v-if="!audienceTagOptions.length" class="text-sm font-bold text-slate-400">尚未建立可用標籤</span>
                                                     </div>
                                                     <div class="mt-2 text-xs font-bold text-slate-400">未選擇代表全部標籤；選多個時，符合任一標籤即納入。</div>
                                                 </div>
@@ -1584,11 +1584,11 @@
                                 <div><label class="input-label">手機</label><input type="tel" v-model="activeMember.phone" class="input-field font-mono font-bold"></div>
                                 <div class="col-span-2"><label class="input-label">業種</label><input type="text" v-model="activeMember.industry" class="input-field"></div>
                                 <div class="col-span-2">
-                                    <label class="input-label">推播標籤（可複選）</label>
+                                    <label class="input-label">會員標籤（可複選）</label>
                                     <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                         <div class="flex flex-wrap gap-2 mb-3">
-                                            <button type="button" v-for="tag in broadcastTags" :key="tag.id" @click="toggleActiveMemberBroadcastTag(tag.name)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="activeMemberHasBroadcastTag(tag.name) ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-[#06C755]'">{{ tag.name }}</button>
-                                            <span v-if="!broadcastTags.length" class="text-sm font-bold text-slate-400">尚未建立推播標籤，請先到付費推播建立標籤。</span>
+                                            <button type="button" v-for="tag in audienceTagOptions" :key="tag" @click="toggleActiveMemberBroadcastTag(tag)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="activeMemberHasBroadcastTag(tag) ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-[#06C755]'">{{ tag }}</button>
+                                            <span v-if="!audienceTagOptions.length" class="text-sm font-bold text-slate-400">尚未建立會員標籤。</span>
                                         </div>
                                         <div class="flex flex-wrap gap-2" v-if="memberBroadcastTags(activeMember).length">
                                             <span v-for="tag in memberBroadcastTags(activeMember)" :key="tag" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-green-50 text-green-700 border border-green-100 text-xs font-black">{{ tag }} <button type="button" @click="toggleActiveMemberBroadcastTag(tag)" class="text-green-400 hover:text-green-700">×</button></span>
@@ -2813,19 +2813,38 @@
                         return filteredFlexRules.value.slice(start, start + flexRulePageSize);
                     });
 
+                    const splitTagList = (raw) => {
+                        if (Array.isArray(raw)) return raw.flatMap(item => splitTagList(item));
+                        return String(raw || '').split(/[\n,，、;；]/).map(v => v.trim()).filter(Boolean);
+                    };
                     const memberBroadcastTags = (member) => {
-                        const raw = member?.broadcastTags || member?.tags || member?.audienceTags || [];
-                        if (Array.isArray(raw)) return raw.map(v => String(v || '').trim()).filter(Boolean);
-                        return String(raw || '').split(/[\n,，、]/).map(v => v.trim()).filter(Boolean);
+                        if (!member) return [];
+                        return [...new Set([
+                            ...splitTagList(member.broadcastTags),
+                            ...splitTagList(member.tags),
+                            ...splitTagList(member.audienceTags),
+                            ...splitTagList(member.memberTags),
+                            ...splitTagList(member.crmTags)
+                        ])];
                     };
                     const normalizedMemberTags = (member) => {
-                        const raw = member?.memberTags || member?.crmTags || [];
-                        const source = Array.isArray(raw) ? raw : String(raw || '').split(/[\n,，、;；]/);
-                        return [...new Set(source.map(v => String(v || '').trim()).filter(Boolean))];
+                        if (!member) return [];
+                        return [...new Set([
+                            ...splitTagList(member.memberTags),
+                            ...splitTagList(member.crmTags)
+                        ])];
                     };
                     const memberTagOptions = computed(() => [
                         ...new Set([
                             ...defaultMemberTags,
+                            ...users.value.flatMap(u => normalizedMemberTags(u))
+                        ])
+                    ].filter(tag => tag && !excludedMemberTagOptions.has(tag)));
+                    const audienceTagOptions = computed(() => [
+                        ...new Set([
+                            ...defaultMemberTags,
+                            ...broadcastTags.value.map(tag => String(tag?.name || tag?.label || tag || '').trim()).filter(Boolean),
+                            ...users.value.flatMap(u => memberBroadcastTags(u)),
                             ...users.value.flatMap(u => normalizedMemberTags(u))
                         ])
                     ].filter(tag => tag && !excludedMemberTagOptions.has(tag)));
@@ -4362,7 +4381,7 @@
                         memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
                         orderSearch, orderTypeFilter, filteredOrders, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
                         flexRuleSearch, flexRuleTypeFilter, flexRuleStatusFilter, flexRulePage, flexRuleTotalPages, filteredFlexRules, pagedFlexRules,
-                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount,
+                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, audienceTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount,
                         approveForm, teacherApprovalCandidates, wpImportForm, isImageUploading, editingCourse, editingProduct,
                         activeEnrollmentCourse, courseOrders, editingOrder, editingSysConfig, editingFlexRule, mylittlesysFlexFrame, mylittlesysFlexUrl,
                         showOrdersModal, selectedCourseForOrders, selectedCourseOrders, currentCourseOrders,

@@ -1820,10 +1820,20 @@ function missingShippingFields(customer) {
   return fields.filter(([key]) => !String(customer?.[key] || "").trim()).map(([, label]) => label);
 }
 
+function splitBroadcastTagList(raw) {
+  if (Array.isArray(raw)) return raw.flatMap(item => splitBroadcastTagList(item));
+  return String(raw || "").split(/[\n,，、;；]/).map(v => v.trim()).filter(Boolean);
+}
+
 function getUserBroadcastTags(user) {
-  const raw = user?.broadcastTags || user?.tags || user?.audienceTags || [];
-  if (Array.isArray(raw)) return raw.map(v => String(v || "").trim()).filter(Boolean);
-  return String(raw || "").split(/[\n,，、]/).map(v => v.trim()).filter(Boolean);
+  if (!user) return [];
+  return [...new Set([
+    ...splitBroadcastTagList(user.broadcastTags),
+    ...splitBroadcastTagList(user.tags),
+    ...splitBroadcastTagList(user.audienceTags),
+    ...splitBroadcastTagList(user.memberTags),
+    ...splitBroadcastTagList(user.crmTags),
+  ])];
 }
 
 function audienceMatchesUser(user, audience = {}) {
