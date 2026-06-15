@@ -346,6 +346,10 @@
                                         <div class="font-bold text-slate-800">{{ o.name || '-' }}</div>
                                         <div class="text-[12px] font-mono text-slate-500 mt-1">{{ o.phone || '-' }}</div>
                                         <div v-if="o.type === 'PRODUCT'" class="text-[12px] text-slate-500 mt-1 leading-relaxed max-w-[260px]">{{ shippingAddressText(o) || '未填寫寄送地址' }}</div>
+                                        <div v-if="o.type === 'PRODUCT'" class="text-[12px] font-bold text-slate-600 mt-1">
+                                            物流：{{ shippingCarrierText(o) }}
+                                            <a v-if="trackingLookupUrl(o)" :href="trackingLookupUrl(o)" target="_blank" class="text-blue-600 ml-2 hover:underline">查詢</a>
+                                        </div>
                                     </td>
                                     <td class="font-bold text-[#06C755] text-lg">{{ adminOrderAmountText(o) }}</td>
                                     <td>
@@ -1477,6 +1481,9 @@
                             <div><label class="input-label">縣市</label><input type="text" v-model="editingOrder.shippingCity" class="input-field font-bold"></div>
                             <div><label class="input-label">區域 / 鄉鎮市</label><input type="text" v-model="editingOrder.shippingDistrict" class="input-field font-bold"></div>
                             <div class="col-span-2"><label class="input-label">完整寄送地址</label><input type="text" v-model="editingOrder.shippingAddress" class="input-field font-bold"></div>
+                            <div><label class="input-label">物流方式</label><select v-model="editingOrder.shippingCarrier" class="input-field font-bold"><option value="FAMILY">全家</option><option value="SEVEN">7-11</option><option value="POST">中華郵政</option></select></div>
+                            <div><label class="input-label">物流 / 訂單查詢編號</label><input type="text" v-model="editingOrder.trackingNumber" class="input-field font-mono font-bold" placeholder="出貨後填入"></div>
+                            <div class="col-span-2" v-if="trackingLookupUrl(editingOrder)"><a :href="trackingLookupUrl(editingOrder)" target="_blank" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-50 text-blue-600 font-bold border border-blue-100 hover:bg-blue-100"><i class="fas fa-external-link-alt"></i>開啟物流查詢</a></div>
                         </div>
                     </div>
                     <div><label class="input-label">訂單備註</label><textarea v-model="editingOrder.note" class="input-field h-24 resize-none leading-relaxed text-[15px]"></textarea></div>
@@ -2282,6 +2289,8 @@
                                     (o.phone && o.phone.includes(q)) ||
                                     (o.email && String(o.email).toLowerCase().includes(q)) ||
                                     (shippingAddressText(o).toLowerCase().includes(q)) ||
+                                    (shippingCarrierText(o).toLowerCase().includes(q)) ||
+                                    (o.trackingNumber && String(o.trackingNumber).toLowerCase().includes(q)) ||
                                     (o.remittance && String(o.remittance).includes(q)) ||
                                     (o.remittanceReportedAt && String(o.remittanceReportedAt).toLowerCase().includes(q)) ||
                                     (adminOrderPaymentText(o).toLowerCase().includes(q)) ||
@@ -2660,6 +2669,21 @@
                                 .join(' ')
                         ).trim();
                     };
+                    const shippingCarrierText = (order) => {
+                        const carrier = String(order?.shippingCarrier || order?.shipping?.carrier || '').toUpperCase();
+                        if (carrier === 'FAMILY') return '全家';
+                        if (carrier === 'SEVEN') return '7-11';
+                        if (carrier === 'POST') return '中華郵政';
+                        return order?.shippingCarrierName || '全家';
+                    };
+                    const trackingLookupUrl = (order) => {
+                        const trackingNumber = String(order?.trackingNumber || order?.shipping?.trackingNumber || '').trim();
+                        if (!trackingNumber) return '';
+                        const carrier = String(order?.shippingCarrier || order?.shipping?.carrier || '').toUpperCase();
+                        if (carrier === 'SEVEN') return 'https://eservice.7-11.com.tw/e-tracking/search.aspx';
+                        if (carrier === 'POST') return 'https://postserv.post.gov.tw/pstmail/main_mail.html?targetTxn=EB500201';
+                        return 'https://ecfme.famiport.com.tw/fmedcfpweb/index.aspx';
+                    };
                     const orderCourseName = (order) => order?.type === 'PRODUCT' ? (order.productName || '商城商品') : getCourseName(order.courseId);
                     const orderMatchesReportCourses = (order) => {
                         if (selectedReportCourseId.value === 'ALL') return true;
@@ -2773,7 +2797,7 @@
                             if (order?.status === 'PENDING') return '待付款';
                             return '';
                         };
-                        const rows = [["訂單編號", "建立時間", "學員姓名", "聯絡電話", "Email", "寄送地址", "課程與服務名稱", "系統代收", "講師應收", "點數折抵", "狀態", "學員備註", "付款來源"]];
+                        const rows = [["訂單編號", "建立時間", "學員姓名", "聯絡電話", "Email", "寄送地址", "物流方式", "物流查詢編號", "物流查詢網址", "課程與服務名稱", "系統代收", "講師應收", "點數折抵", "狀態", "學員備註", "付款來源"]];
                         sourceOrders.forEach(o => {
                             const amount = Number(String(o.amount).replace(/[^0-9.]/g, '')) || 0;
                             const teacherAmount = o.type === 'BOOKING' ? Number(o.teacherCollectAmount || 0) : 0;
@@ -2784,6 +2808,9 @@
                                 o.phone,
                                 o.email || o.recipientEmail || "",
                                 shippingAddressText(o),
+                                shippingCarrierText(o),
+                                o.trackingNumber || "",
+                                trackingLookupUrl(o),
                                 orderCourseName(o),
                                 amount,
                                 teacherAmount,
@@ -3337,6 +3364,10 @@
 
                     const openOrderEditModal = (o) => {
                         editingOrder.value = JSON.parse(JSON.stringify(o));
+                        if (editingOrder.value.type === 'PRODUCT') {
+                            editingOrder.value.shippingCarrier = editingOrder.value.shippingCarrier || editingOrder.value.shipping?.carrier || 'FAMILY';
+                            editingOrder.value.trackingNumber = editingOrder.value.trackingNumber || editingOrder.value.shipping?.trackingNumber || '';
+                        }
                         if (isPaidOrder(editingOrder.value)) editingOrder.value.status = 'PAID';
                         transferTargetCourseId.value = '';
                         transferReason.value = '';
@@ -3361,6 +3392,10 @@
                                     shippingCity: editingOrder.value.shippingCity,
                                     shippingDistrict: editingOrder.value.shippingDistrict,
                                     shippingAddress: editingOrder.value.shippingAddress,
+                                    shippingCarrier: editingOrder.value.shippingCarrier || 'FAMILY',
+                                    shippingCarrierName: shippingCarrierText(editingOrder.value),
+                                    trackingNumber: editingOrder.value.trackingNumber || '',
+                                    trackingUrl: trackingLookupUrl(editingOrder.value),
                                     address: editingOrder.value.shippingAddress,
                                     shipping: {
                                         ...(editingOrder.value.shipping || {}),
@@ -3371,6 +3406,10 @@
                                         city: editingOrder.value.shippingCity,
                                         district: editingOrder.value.shippingDistrict,
                                         fullAddress: editingOrder.value.shippingAddress,
+                                        carrier: editingOrder.value.shippingCarrier || 'FAMILY',
+                                        carrierName: shippingCarrierText(editingOrder.value),
+                                        trackingNumber: editingOrder.value.trackingNumber || '',
+                                        trackingUrl: trackingLookupUrl(editingOrder.value),
                                         note: editingOrder.value.note
                                     }
                                 });
@@ -3818,7 +3857,7 @@
                         isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
                         users, teachers, courses, products, orders, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
-                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, orderCourseName,
+                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, trackingLookupUrl, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,

@@ -4159,6 +4159,13 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     : {};
   const requestedMethod = String(payload.paymentMethod || "LINEPAY").toUpperCase();
   const paymentMethod = ["LINEPAY", "REMITTANCE"].includes(requestedMethod) ? requestedMethod : "LINEPAY";
+  const requestedShippingCarrier = String(payload.shippingCarrier || payload.customer?.shippingCarrier || "").toUpperCase();
+  const shippingCarrier = ["FAMILY", "SEVEN", "POST"].includes(requestedShippingCarrier) ? requestedShippingCarrier : "FAMILY";
+  const shippingCarrierName = {
+    FAMILY: "全家",
+    SEVEN: "7-11",
+    POST: "中華郵政",
+  }[shippingCarrier] || "全家";
   const itemFingerprint = items
     .map(item => `${item.id}:${item.quantity}:${item.price}`)
     .sort()
@@ -4210,6 +4217,10 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       district: customer.district,
       address: customer.address,
       fullAddress: shippingAddress,
+      carrier: shippingCarrier,
+      carrierName: shippingCarrierName,
+      trackingNumber: "",
+      trackingUrl: "",
       note: customer.note,
     },
     recipientName: customer.name,
@@ -4228,6 +4239,10 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     amount: total,
     pointsUsed: 0,
     paymentMethod,
+    shippingCarrier,
+    shippingCarrierName,
+    trackingNumber: "",
+    trackingUrl: "",
     status: total > 0 ? "PENDING" : "PAID",
     entryUrl: String(payload.entryUrl || "").slice(0, 1000),
     entryParams,
@@ -4403,6 +4418,12 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       </div>
       <input class="field" id="district" autocomplete="address-level2" placeholder="區域 / 鄉鎮市 *">
       <input class="field" id="address" autocomplete="street-address" placeholder="路名、巷弄、門牌、樓層 *">
+      <div class="form-title">物流方式</div>
+      <select class="field" id="shippingCarrier">
+        <option value="FAMILY">全家</option>
+        <option value="SEVEN">7-11</option>
+        <option value="POST">中華郵政</option>
+      </select>
       <textarea class="field" id="note" placeholder="配送備註（例如：管理室代收、可收貨時段）"></textarea>
       <div class="pay-title">付款方式</div>
       <div class="pay-options" id="payOptions"></div>
@@ -4616,7 +4637,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); }
     function buildClientOrderKey(customer){
       const cartKey = cart.map(item => String(item.id || "") + ":" + Number(item.quantity || 1)).sort().join("|");
-      return [lineProfile.userId || "guest", paymentMethod, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
+      return [lineProfile.userId || "guest", paymentMethod, customer.shippingCarrier, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
     }
     function setCheckoutBusy(busy){
       isCheckingOut = !!busy;
@@ -4630,7 +4651,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     async function checkout(){
       if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
-      const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), note: val("note") };
+      const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), shippingCarrier: val("shippingCarrier"), note: val("note") };
       if (!customer.name || !customer.phone || !customer.city || !customer.district || !customer.address) return toast("請填寫完整收件資料");
       entryContext = restoreEntryContext();
       setCheckoutBusy(true);
@@ -4638,7 +4659,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       try {
         const clientOrderKey = buildClientOrderKey(customer);
         const currentCart = cart.map(item => ({ id: item.id, quantity: item.quantity }));
-        const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
+        const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, shippingCarrier: customer.shippingCarrier, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
         if (!res.ok) {
           toast(res.message || "訂單送出失敗");
           return;
