@@ -1742,6 +1742,11 @@ function normalizeAudienceTags(tags) {
   }).filter(Boolean);
 }
 
+function normalizeMemberTagList(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(/[\n,，、;；]/);
+  return [...new Set(source.map(tag => String(tag || "").trim()).filter(Boolean))];
+}
+
 function getUserBroadcastTags(user) {
   const raw = user?.broadcastTags || user?.tags || user?.audienceTags || [];
   if (Array.isArray(raw)) return raw.map(v => String(v || "").trim()).filter(Boolean);
@@ -6223,6 +6228,8 @@ export default {
               if (savedMember.isTeacher === true) {
                 if (!String(savedMember.memberTier || "").includes("導師")) savedMember.memberTier = "專業導師";
               }
+              savedMember.memberTags = normalizeMemberTagList(savedMember.memberTags || savedMember.crmTags || []);
+              delete savedMember.crmTags;
               await putUserKV(env, ctx, memberUid, savedMember);
               result.data = { success: true, memberData: savedMember };
           } else {

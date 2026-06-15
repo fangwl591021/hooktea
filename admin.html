@@ -1515,6 +1515,21 @@
                                 <div><label class="input-label">手機</label><input type="tel" v-model="activeMember.phone" class="input-field font-mono font-bold"></div>
                                 <div><label class="input-label">等級</label><select v-model="activeMember.memberTier" class="input-field font-bold text-[#06C755]"><option v-for="t in memberTiers" :key="t" :value="t">{{t}}</option></select></div>
                                 <div><label class="input-label">業種</label><input type="text" v-model="activeMember.industry" class="input-field"></div>
+                                <div class="col-span-2">
+                                    <label class="input-label">會員標籤（可複選）</label>
+                                    <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                        <div class="flex flex-wrap gap-2 mb-3">
+                                            <button type="button" v-for="tag in memberTagOptions" :key="tag" @click="toggleActiveMemberTag(tag)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="activeMemberHasTag(tag) ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-blue-200'">{{ tag }}</button>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <input type="text" v-model="newMemberTag" @keydown.enter.prevent="addActiveMemberTag" class="input-field !py-2 !text-sm flex-1" placeholder="新增自訂標籤，例如：VIP、團購主、企業客戶">
+                                            <button type="button" @click="addActiveMemberTag" class="px-4 rounded-lg bg-slate-900 text-white text-sm font-black">新增</button>
+                                        </div>
+                                        <div class="flex flex-wrap gap-2 mt-3" v-if="normalizedMemberTags(activeMember).length">
+                                            <span v-for="tag in normalizedMemberTags(activeMember)" :key="tag" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100 text-xs font-black">{{ tag }} <button type="button" @click="removeActiveMemberTag(tag)" class="text-blue-400 hover:text-blue-700">×</button></span>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div><label class="input-label">性別</label><select v-model="activeMember.gender" class="input-field"><option value="男">男</option><option value="女">女</option></select></div>
                                 <div><label class="input-label">生日</label><input type="date" v-model="activeMember.birthday" class="input-field font-mono text-sm"></div>
                                 <div class="col-span-2"><label class="input-label">聯絡地址</label><input type="text" v-model="activeMember.address" class="input-field"></div>
@@ -1613,6 +1628,7 @@
                     const currentAccess = ref({ isAdmin: false, canCrmLogin: false, isTeacher: false, canSystemTools: false });
                     
                     const memberTiers = ['一般會員','喚醒階段會員','蛻變階段會員','完整階段會員','專業導師'];
+                    const defaultMemberTags = ['一般會員','VIP','團購主','企業客戶','經銷夥伴','LINE 會員','購物會員','點數轉入','高風險','黑名單'];
                     const courseStageOptions = ['一般', '喚醒', '蛻變', '完整'];
                     const productStatusOptions = ['販賣中', '暫停販售', '已售完'];
                     
@@ -1692,6 +1708,7 @@
                     const activeEnrollmentCourse = ref(null);
                     const courseOrders = ref([]);
                     const editingOrder = ref(null);
+                    const newMemberTag = ref('');
                     const transferTargetCourseId = ref('');
                     const transferReason = ref('');
                     const transferConfirmed = ref(false);
@@ -1795,6 +1812,11 @@
                             else if (tier.includes('完整')) className = 'bg-indigo-100 text-indigo-700 border border-indigo-200';
                             else if (tier.includes('一般')) className = 'bg-orange-100 text-orange-700 border border-orange-200';
                             if (!tags.some(tag => tag.label === tier)) tags.push({ label: tier, className });
+                        }
+                        for (const tag of normalizedMemberTags(member)) {
+                            if (!tags.some(item => item.label === tag)) {
+                                tags.push({ label: tag, className: 'bg-blue-50 text-blue-700 border border-blue-100' });
+                            }
                         }
                         return tags.length ? tags : [{ label: '未分級', className: 'bg-slate-100 text-slate-500' }];
                     };
@@ -2219,7 +2241,7 @@
                         if (!memberSearch.value) return visibleUsers;
                         const q = memberSearch.value.toLowerCase();
                         return visibleUsers.filter(u => {
-                            const haystack = [u.name, u.displayName, u.lineDisplayName, u.phone, u.mobile, u.tel, u.userId, u.legacyMemberId, u.lineUserId, u.linkedLineUid, u.bindingStatus, u.crmBindingStatus]
+                            const haystack = [u.name, u.displayName, u.lineDisplayName, u.phone, u.mobile, u.tel, u.userId, u.legacyMemberId, u.lineUserId, u.linkedLineUid, u.bindingStatus, u.crmBindingStatus, u.memberTier, u.industry, normalizedMemberTags(u).join(' ')]
                                 .map(v => String(v || '').toLowerCase())
                                 .join(' ');
                             return haystack.includes(q);
@@ -2581,6 +2603,41 @@
                         if (Array.isArray(raw)) return raw.map(v => String(v || '').trim()).filter(Boolean);
                         return String(raw || '').split(/[\n,，、]/).map(v => v.trim()).filter(Boolean);
                     };
+                    const normalizedMemberTags = (member) => {
+                        const raw = member?.memberTags || member?.crmTags || [];
+                        const source = Array.isArray(raw) ? raw : String(raw || '').split(/[\n,，、;；]/);
+                        return [...new Set(source.map(v => String(v || '').trim()).filter(Boolean))];
+                    };
+                    const memberTagOptions = computed(() => [
+                        ...new Set([
+                            ...defaultMemberTags,
+                            ...memberTiers,
+                            ...users.value.flatMap(u => normalizedMemberTags(u)),
+                            ...users.value.map(u => String(u?.memberTier || '').trim()).filter(Boolean)
+                        ])
+                    ].filter(Boolean));
+                    const activeMemberHasTag = (tag) => activeMember.value ? normalizedMemberTags(activeMember.value).includes(tag) : false;
+                    const setActiveMemberTags = (tags) => {
+                        if (!activeMember.value) return;
+                        activeMember.value.memberTags = [...new Set((Array.isArray(tags) ? tags : []).map(v => String(v || '').trim()).filter(Boolean))];
+                    };
+                    const toggleActiveMemberTag = (tag) => {
+                        if (!activeMember.value || !tag) return;
+                        const tags = normalizedMemberTags(activeMember.value);
+                        if (tags.includes(tag)) setActiveMemberTags(tags.filter(item => item !== tag));
+                        else setActiveMemberTags([...tags, tag]);
+                    };
+                    const addActiveMemberTag = () => {
+                        const tag = String(newMemberTag.value || '').trim();
+                        if (!tag) return;
+                        const tags = normalizedMemberTags(activeMember.value);
+                        if (!tags.includes(tag)) setActiveMemberTags([...tags, tag]);
+                        newMemberTag.value = '';
+                    };
+                    const removeActiveMemberTag = (tag) => {
+                        if (!activeMember.value) return;
+                        setActiveMemberTags(normalizedMemberTags(activeMember.value).filter(item => item !== tag));
+                    };
                     const memberHasBroadcastTag = (member, tagName) => !!tagName && memberBroadcastTags(member).includes(tagName);
                     const memberTierOptions = computed(() => [
                         ...new Set([
@@ -2852,7 +2909,7 @@
 
                     const buildMemberReportRows = (sourceMembers) => {
                         const memberNameByUid = new Map((users.value || []).map(user => [String(user?.userId || '').trim(), displayMemberName(user)]));
-                        const rows = [["姓名", "手機", "等級", "業種", "性別", "生日", "聯絡地址", "推薦人 UID / 姓名", "註冊時間"]];
+                        const rows = [["姓名", "手機", "等級", "會員標籤", "業種", "性別", "生日", "聯絡地址", "推薦人 UID / 姓名", "註冊時間"]];
                         sourceMembers.forEach(member => {
                             const referrerUid = String(member.referrerUid || member.referrerUID || "").trim();
                             const referrerName = referrerUid ? (memberNameByUid.get(referrerUid) || "") : "";
@@ -2860,6 +2917,7 @@
                                 displayMemberName(member),
                                 member.phone || "",
                                 member.memberTier || "",
+                                normalizedMemberTags(member).join("、"),
                                 member.industry || "",
                                 member.gender || "",
                                 member.birthday || "",
@@ -2876,8 +2934,8 @@
                         if (!rows.length) return alert('目前沒有符合條件的會員資料可以匯出。');
                         const suffix = showDeletedMembers.value ? '隱藏名單' : '一般名單';
                         downloadExcel(`HookTea_會員CRM_${suffix}_${reportDate()}.xls`, buildMemberReportRows(rows), {
-                            widths: [150, 150, 140, 160, 90, 130, 260, 360, 180],
-                            textColumns: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+                            widths: [150, 150, 140, 220, 160, 90, 130, 260, 360, 180],
+                            textColumns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
                         });
                         alert(`會員 Excel 下載成功。\n共匯出 ${rows.length} 筆會員資料。`);
                     };
@@ -2954,6 +3012,8 @@
                         activeMember.value.crmSystem = !activeMember.value.isAdmin && (activeMember.value.crmSystem === true || activeMember.value.role === 'system' || activeMember.value.crmRole === 'system');
                         activeMember.value.crmOperator = !activeMember.value.isAdmin && !activeMember.value.crmSystem && (activeMember.value.crmOperator === true || activeMember.value.role === 'operator' || activeMember.value.crmRole === 'operator');
                         activeMember.value.isTeacher = activeMember.value.isTeacher === true || activeMember.value.role === 'teacher' || activeMember.value.crmRole === 'teacher';
+                        activeMember.value.memberTags = normalizedMemberTags(activeMember.value);
+                        newMemberTag.value = '';
                         activeMemberPermissionSnapshot.value = {
                             isAdmin: !!activeMember.value.isAdmin,
                             crmSystem: !!activeMember.value.crmSystem,
@@ -3011,6 +3071,7 @@
                         if (!activeMember.value || !activeMember.value.userId) return;
                         isLoading.value = true;
                         try {
+                            activeMember.value.memberTags = normalizedMemberTags(activeMember.value);
                             const payload = { memberData: activeMember.value };
                             const res = await callApi('ADMIN_UPDATE_MEMBER', payload);
                             if(res) {
@@ -3863,7 +3924,7 @@
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
                         memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
                         orderSearch, orderTypeFilter, filteredOrders, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
-                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastTagCount,
+                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastTagCount,
                         approveForm, teacherApprovalCandidates, wpImportForm, isImageUploading, editingCourse, editingProduct,
                         activeEnrollmentCourse, courseOrders, editingOrder, editingSysConfig, editingFlexRule,
                         showOrdersModal, selectedCourseForOrders, selectedCourseOrders, currentCourseOrders,
