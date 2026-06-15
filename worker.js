@@ -1828,11 +1828,11 @@ function getUserBroadcastTags(user) {
 
 function audienceMatchesUser(user, audience = {}) {
   if (!user || user.isDeleted === true || !user.userId) return false;
-  const tag = String(audience.tag || "").trim();
+  const selectedTags = Array.isArray(audience.tags)
+    ? audience.tags.map(v => String(v || "").trim()).filter(Boolean)
+    : String(audience.tag || "").trim() ? [String(audience.tag || "").trim()] : [];
   const tags = getUserBroadcastTags(user);
-  if (tag && !tags.includes(tag)) return false;
-  const tier = String(audience.memberTier || "").trim();
-  if (tier && String(user.memberTier || "") !== tier) return false;
+  if (selectedTags.length && !selectedTags.some(tag => tags.includes(tag))) return false;
   const gender = String(audience.gender || "").trim();
   if (gender && String(user.gender || "") !== gender) return false;
   const keyword = String(audience.keyword || "").trim().toLowerCase();

@@ -540,19 +540,17 @@
                                             <button @click="resetBroadcastAudience" class="text-xs font-black text-slate-400 hover:text-slate-700">清除條件</button>
                                         </div>
                                         <div class="grid grid-cols-2 gap-4">
-                                            <div>
-                                                <label class="input-label">標籤</label>
-                                                <select v-model="broadcastForm.audience.tag" class="input-field font-bold">
-                                                    <option value="">全部標籤</option>
-                                                    <option v-for="tag in broadcastTags" :key="tag.id" :value="tag.name">{{ tag.name }}</option>
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label class="input-label">會員等級</label>
-                                                <select v-model="broadcastForm.audience.memberTier" class="input-field font-bold">
-                                                    <option value="">全部等級</option>
-                                                    <option v-for="tier in memberTierOptions" :key="tier" :value="tier">{{ tier }}</option>
-                                                </select>
+                                            <div class="col-span-2">
+                                                <label class="input-label">推播標籤（可複選）</label>
+                                                <div class="rounded-xl border border-slate-200 bg-white p-3">
+                                                    <div class="flex flex-wrap gap-2">
+                                                        <button type="button" v-for="tag in broadcastTags" :key="tag.id" @click="toggleBroadcastAudienceTag(tag.name)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="broadcastAudienceHasTag(tag.name) ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-[#06C755]'">
+                                                            {{ tag.name }}
+                                                        </button>
+                                                        <span v-if="!broadcastTags.length" class="text-sm font-bold text-slate-400">尚未建立推播標籤</span>
+                                                    </div>
+                                                    <div class="mt-2 text-xs font-bold text-slate-400">未選擇代表全部標籤；選多個時，符合任一標籤即納入。</div>
+                                                </div>
                                             </div>
                                             <div>
                                                 <label class="input-label">性別</label>
@@ -600,7 +598,7 @@
                                             <div class="text-xs font-mono text-slate-400 mt-1">{{ member.userId }}</div>
                                         </div>
                                         <div class="text-right">
-                                            <div class="text-xs font-bold text-slate-500">{{ member.memberTier || '未分級' }}</div>
+                                            <div class="text-xs font-bold text-slate-500">{{ memberBroadcastTags(member).length ? '已標籤' : '未標籤' }}</div>
                                             <div class="flex flex-wrap justify-end gap-1 mt-2 max-w-[260px]"><span v-for="tag in memberBroadcastTags(member)" :key="tag" class="text-[11px] font-black px-2 py-0.5 rounded bg-green-50 text-green-700 border border-green-100">{{ tag }}</span></div>
                                         </div>
                                     </div>
@@ -1584,20 +1582,16 @@
                             <div class="grid grid-cols-2 gap-5">
                                 <div><label class="input-label">姓名</label><input type="text" v-model="activeMember.name" class="input-field font-bold"></div>
                                 <div><label class="input-label">手機</label><input type="tel" v-model="activeMember.phone" class="input-field font-mono font-bold"></div>
-                                <div><label class="input-label">等級</label><select v-model="activeMember.memberTier" class="input-field font-bold text-[#06C755]"><option v-for="t in memberTiers" :key="t" :value="t">{{t}}</option></select></div>
-                                <div><label class="input-label">業種</label><input type="text" v-model="activeMember.industry" class="input-field"></div>
+                                <div class="col-span-2"><label class="input-label">業種</label><input type="text" v-model="activeMember.industry" class="input-field"></div>
                                 <div class="col-span-2">
-                                    <label class="input-label">會員標籤（可複選）</label>
+                                    <label class="input-label">推播標籤（可複選）</label>
                                     <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                         <div class="flex flex-wrap gap-2 mb-3">
-                                            <button type="button" v-for="tag in memberTagOptions" :key="tag" @click="toggleActiveMemberTag(tag)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="activeMemberHasTag(tag) ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-blue-200'">{{ tag }}</button>
+                                            <button type="button" v-for="tag in broadcastTags" :key="tag.id" @click="toggleActiveMemberBroadcastTag(tag.name)" class="px-3 py-1.5 rounded-full text-xs font-black border transition" :class="activeMemberHasBroadcastTag(tag.name) ? 'bg-[#06C755] text-white border-[#06C755] shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:border-[#06C755]'">{{ tag.name }}</button>
+                                            <span v-if="!broadcastTags.length" class="text-sm font-bold text-slate-400">尚未建立推播標籤，請先到付費推播建立標籤。</span>
                                         </div>
-                                        <div class="flex gap-2">
-                                            <input type="text" v-model="newMemberTag" @keydown.enter.prevent="addActiveMemberTag" class="input-field !py-2 !text-sm flex-1" placeholder="新增自訂標籤，例如：VIP、團購主、企業客戶">
-                                            <button type="button" @click="addActiveMemberTag" class="px-4 rounded-lg bg-slate-900 text-white text-sm font-black">新增</button>
-                                        </div>
-                                        <div class="flex flex-wrap gap-2 mt-3" v-if="normalizedMemberTags(activeMember).length">
-                                            <span v-for="tag in normalizedMemberTags(activeMember)" :key="tag" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100 text-xs font-black">{{ tag }} <button type="button" @click="removeActiveMemberTag(tag)" class="text-blue-400 hover:text-blue-700">×</button></span>
+                                        <div class="flex flex-wrap gap-2" v-if="memberBroadcastTags(activeMember).length">
+                                            <span v-for="tag in memberBroadcastTags(activeMember)" :key="tag" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-green-50 text-green-700 border border-green-100 text-xs font-black">{{ tag }} <button type="button" @click="toggleActiveMemberBroadcastTag(tag)" class="text-green-400 hover:text-green-700">×</button></span>
                                         </div>
                                     </div>
                                 </div>
@@ -1781,7 +1775,7 @@
                     const newBroadcastTag = ref({ name: '', color: '#06C755', description: '' });
                     const selectedBroadcastTag = ref('');
                     const broadcastMemberSearch = ref('');
-                    const broadcastForm = ref({ title: '', message: '', audience: { tag: '', memberTier: '', gender: '', keyword: '' } });
+                    const broadcastForm = ref({ title: '', message: '', audience: { tags: [], tag: '', gender: '', keyword: '' } });
                     
                     const isImageUploading = ref(false);
                     const editingCourse = ref(null);
@@ -2555,7 +2549,7 @@
                     };
 
                     const resetBroadcastAudience = () => {
-                        broadcastForm.value.audience = { tag: '', memberTier: '', gender: '', keyword: '' };
+                        broadcastForm.value.audience = { tags: [], tag: '', gender: '', keyword: '' };
                     };
 
                     const broadcastUri = (value, fallback = 'https://line.me') => {
@@ -2858,6 +2852,24 @@
                         setActiveMemberTags(normalizedMemberTags(activeMember.value).filter(item => item !== tag));
                     };
                     const memberHasBroadcastTag = (member, tagName) => !!tagName && memberBroadcastTags(member).includes(tagName);
+                    const broadcastAudienceTags = () => {
+                        const audience = broadcastForm.value.audience || {};
+                        const raw = Array.isArray(audience.tags) ? audience.tags : (audience.tag ? [audience.tag] : []);
+                        return [...new Set(raw.map(v => String(v || '').trim()).filter(Boolean))];
+                    };
+                    const broadcastAudienceHasTag = (tagName) => !!tagName && broadcastAudienceTags().includes(tagName);
+                    const toggleBroadcastAudienceTag = (tagName) => {
+                        const tag = String(tagName || '').trim();
+                        if (!tag) return;
+                        const tags = broadcastAudienceTags();
+                        broadcastForm.value.audience.tags = tags.includes(tag) ? tags.filter(item => item !== tag) : [...tags, tag];
+                        broadcastForm.value.audience.tag = '';
+                    };
+                    const activeMemberHasBroadcastTag = (tagName) => activeMember.value ? memberHasBroadcastTag(activeMember.value, tagName) : false;
+                    const toggleActiveMemberBroadcastTag = async (tagName) => {
+                        if (!activeMember.value || !tagName) return;
+                        await toggleBroadcastMemberTag(activeMember.value, tagName, !activeMemberHasBroadcastTag(tagName));
+                    };
                     const memberTierOptions = computed(() => [
                         ...new Set([
                             ...memberTiers,
@@ -2868,8 +2880,8 @@
                     const broadcastAudienceMatches = (member) => {
                         if (!member || member.isDeleted === true || !member.userId) return false;
                         const audience = broadcastForm.value.audience || {};
-                        if (audience.tag && !memberHasBroadcastTag(member, audience.tag)) return false;
-                        if (audience.memberTier && String(member.memberTier || '') !== audience.memberTier) return false;
+                        const selectedTags = broadcastAudienceTags();
+                        if (selectedTags.length && !selectedTags.some(tag => memberHasBroadcastTag(member, tag))) return false;
                         if (audience.gender && String(member.gender || '') !== audience.gender) return false;
                         const keyword = String(audience.keyword || '').trim().toLowerCase();
                         if (keyword) {
@@ -4350,7 +4362,7 @@
                         memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
                         orderSearch, orderTypeFilter, filteredOrders, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
                         flexRuleSearch, flexRuleTypeFilter, flexRuleStatusFilter, flexRulePage, flexRuleTotalPages, filteredFlexRules, pagedFlexRules,
-                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastTagCount,
+                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount,
                         approveForm, teacherApprovalCandidates, wpImportForm, isImageUploading, editingCourse, editingProduct,
                         activeEnrollmentCourse, courseOrders, editingOrder, editingSysConfig, editingFlexRule, mylittlesysFlexFrame, mylittlesysFlexUrl,
                         showOrdersModal, selectedCourseForOrders, selectedCourseOrders, currentCourseOrders,
