@@ -1747,6 +1747,63 @@ function normalizeMemberTagList(value) {
   return [...new Set(source.map(tag => String(tag || "").trim()).filter(Boolean))];
 }
 
+function parseTaiwanShippingAddress(value) {
+  let text = String(value || "").trim().replace(/\s+/g, "");
+  const result = { postalCode: "", city: "", district: "", address: text };
+  const postalMatch = text.match(/^(\d{3,6})/);
+  if (postalMatch) {
+    result.postalCode = postalMatch[1];
+    text = text.slice(postalMatch[1].length);
+  }
+  const cities = [
+    "臺北市", "台北市", "新北市", "桃園市", "臺中市", "台中市", "臺南市", "台南市", "高雄市",
+    "基隆市", "新竹市", "嘉義市", "新竹縣", "苗栗縣", "彰化縣", "南投縣", "雲林縣",
+    "嘉義縣", "屏東縣", "宜蘭縣", "花蓮縣", "臺東縣", "台東縣", "澎湖縣", "金門縣", "連江縣"
+  ];
+  const city = cities.find(name => text.startsWith(name));
+  if (city) {
+    result.city = city;
+    text = text.slice(city.length);
+  }
+  const districtMatch = text.match(/^(.{1,8}?(?:區|鄉|鎮|市))/);
+  if (districtMatch) {
+    result.district = districtMatch[1];
+    text = text.slice(districtMatch[1].length);
+  }
+  result.address = text || result.address;
+  return result;
+}
+
+function registeredShippingFromMember(member) {
+  const parsed = parseTaiwanShippingAddress(member?.shippingAddress || member?.address || "");
+  const postalCode = String(member?.shippingPostalCode || member?.postalCode || member?.zip || parsed.postalCode || "").trim();
+  const city = String(member?.shippingCity || member?.city || parsed.city || "").trim();
+  const district = String(member?.shippingDistrict || member?.district || parsed.district || "").trim();
+  const fullAddress = String(member?.shippingAddress || member?.address || "").trim();
+  const address = String(member?.shippingStreet || member?.addressDetail || parsed.address || fullAddress || "").trim();
+  return {
+    name: String(member?.name || member?.displayName || member?.lineDisplayName || "").trim(),
+    phone: normalizeMemberPhone(member?.phone || member?.mobile || member?.tel || member?.memberPhone || ""),
+    email: String(member?.email || "").trim(),
+    postalCode,
+    city,
+    district,
+    address,
+    missing: [],
+  };
+}
+
+function missingShippingFields(customer) {
+  const fields = [
+    ["name", "姓名"],
+    ["phone", "手機"],
+    ["city", "縣市"],
+    ["district", "區域 / 鄉鎮市"],
+    ["address", "路名、巷弄、門牌、樓層"],
+  ];
+  return fields.filter(([key]) => !String(customer?.[key] || "").trim()).map(([, label]) => label);
+}
+
 function getUserBroadcastTags(user) {
   const raw = user?.broadcastTags || user?.tags || user?.audienceTags || [];
   if (Array.isArray(raw)) return raw.map(v => String(v || "").trim()).filter(Boolean);
@@ -3899,6 +3956,7 @@ async function handleHuaxuMemberProfile(request, env) {
   const resolved = await findHuaxuMemberByLineUid(env, lineUid);
   const memberUid = resolved.memberUid || lineUid;
   const member = resolved.member || null;
+  const registeredShipping = registeredShippingFromMember(member || {});
   const localPoints = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] });
   const orders = await getHuaxuShopOrders(env);
   const memberOrders = orders.filter(order => {
@@ -3915,6 +3973,10 @@ async function handleHuaxuMemberProfile(request, env) {
     birthday: member.birthday || "",
     email: member.email || "",
     address: member.address || "",
+    postalCode: registeredShipping.postalCode,
+    city: registeredShipping.city,
+    district: registeredShipping.district,
+    shippingAddress: registeredShipping.address,
     industry: member.industry || "",
     memberTier: member.memberTier || "一般會員",
     pictureUrl: member.pictureUrl || member.avatar || verifiedProfile?.picture || "",
@@ -3930,6 +3992,10 @@ async function handleHuaxuMemberProfile(request, env) {
     birthday: "",
     email: "",
     address: "",
+    postalCode: "",
+    city: "",
+    district: "",
+    shippingAddress: "",
     industry: "",
     memberTier: "一般會員",
     pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
@@ -4140,7 +4206,13 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   if (!items.length) return json({ ok: false, message: "找不到有效商品" }, 400);
 
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
-  const customer = {
+  const lineProfile = {
+    userId: String(payload.lineProfile?.userId || "").slice(0, 80),
+    displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
+    pictureUrl: String(payload.lineProfile?.pictureUrl || "").slice(0, 300),
+  };
+  const sameAsRegistered = payload.sameAsRegistered === true || payload.customer?.sameAsRegistered === true;
+  let customer = {
     name: String(payload.customer?.name || "").trim().slice(0, 80),
     phone: String(payload.customer?.phone || "").trim().slice(0, 40),
     email: String(payload.customer?.email || "").trim().slice(0, 120),
@@ -4150,15 +4222,26 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     address: String(payload.customer?.address || "").trim().slice(0, 160),
     note: String(payload.customer?.note || "").trim().slice(0, 300),
   };
-  if (!customer.name || !customer.phone || !customer.city || !customer.district || !customer.address) {
-    return json({ ok: false, message: "請填寫完整收件資料：姓名、手機、縣市、區域、地址" }, 400);
+  if (sameAsRegistered) {
+    if (!lineProfile.userId) return json({ ok: false, message: "尚未取得 LINE 身分，無法套用註冊人資料" }, 401);
+    const resolvedMember = await findHuaxuMemberByLineUid(env, lineProfile.userId);
+    if (!resolvedMember.member) return json({ ok: false, message: "尚未找到註冊會員資料，請改用手填收件資料" }, 400);
+    const registeredCustomer = registeredShippingFromMember(resolvedMember.member);
+    customer = {
+      ...customer,
+      ...registeredCustomer,
+      note: customer.note,
+    };
+    const missingRegistered = missingShippingFields(customer);
+    if (missingRegistered.length) {
+      return json({ ok: false, message: `註冊資料不完整，缺少：${missingRegistered.join("、")}。請先補齊會員資料或改用手填收件資料。` }, 400);
+    }
+  }
+  const missingCustomer = missingShippingFields(customer);
+  if (missingCustomer.length) {
+    return json({ ok: false, message: `請填寫完整收件資料：${missingCustomer.join("、")}` }, 400);
   }
   const shippingAddress = [customer.postalCode, customer.city, customer.district, customer.address].filter(Boolean).join(" ");
-  const lineProfile = {
-    userId: String(payload.lineProfile?.userId || "").slice(0, 80),
-    displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
-    pictureUrl: String(payload.lineProfile?.pictureUrl || "").slice(0, 300),
-  };
   const entryParams = payload.entryParams && typeof payload.entryParams === "object" && !Array.isArray(payload.entryParams)
     ? Object.fromEntries(Object.entries(payload.entryParams).map(([key, value]) => [String(key).slice(0, 80), String(value ?? "").slice(0, 500)]))
     : {};
@@ -4227,6 +4310,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       trackingNumber: "",
       trackingUrl: "",
       note: customer.note,
+      sameAsRegistered,
     },
     recipientName: customer.name,
     recipientPhone: customer.phone,
@@ -4248,6 +4332,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     shippingCarrierName,
     trackingNumber: "",
     trackingUrl: "",
+    sameAsRegistered,
     status: total > 0 ? "PENDING" : "PAID",
     entryUrl: String(payload.entryUrl || "").slice(0, 1000),
     entryParams,
@@ -4358,7 +4443,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:480px;min-height:100vh;margin:0 auto;background:#050505;padding-bottom:88px}.top{position:sticky;top:0;z-index:20;background:#050505;padding:18px 18px 14px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #161616}.icon{width:38px;height:38px;border:0;background:transparent;color:#fff;font-size:28px}.brand{flex:1;font-weight:900;letter-spacing:.02em}.brand small{display:block;color:#8d8d8d;font-size:12px;margin-top:2px}.tabs{padding:22px 18px 12px}.tabs h2{margin:0 0 14px;font-size:20px}.tabrow{display:flex;gap:10px;overflow:auto;padding-bottom:4px}.pill{white-space:nowrap;border:1px solid #1b1b1b;background:#111;color:#fff;border-radius:8px;padding:10px 14px;font-weight:800}.pill.active{background:#09251f;border-color:#16c7a2;color:#7fffe2}.hero{position:relative;min-height:310px;background:linear-gradient(135deg,#083172,#07142f 55%,#000);overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 75% 20%,rgba(255,210,92,.32),transparent 28%)}.hero-content{position:relative;padding:26px 22px}.hero-kicker{display:inline-block;background:#d7ae4f;color:#101010;border-radius:7px;padding:7px 11px;font-weight:900}.hero h1{font-size:38px;line-height:1.05;margin:18px 0 10px;color:#ffe28d;text-shadow:0 3px 0 #1a1a1a}.hero p{font-size:15px;line-height:1.5;max-width:300px;color:#f3f3f3}.section{padding:22px 16px}.section h2{margin:0 0 14px;font-size:22px}.products{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:#111;border:1px solid #202020;border-radius:10px;overflow:hidden}.product-link,.product-title{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;text-decoration:none}.card img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}.card-body{padding:12px}.badge{display:inline-block;background:#062a22;color:#78ffde;border:1px solid #0b6f5a;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900}.card h3{font-size:16px;line-height:1.25;margin:10px 0 4px}.card p{color:#aaa;font-size:12px;line-height:1.45;margin:0 0 10px;min-height:32px;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.price{font-weight:900;color:#ffe28d;font-size:20px}.original{font-size:12px;color:#777;text-decoration:line-through;margin-left:4px}.buy{width:100%;margin-top:10px;border:0;border-radius:7px;background:#13b99a;color:#04100d;font-weight:900;padding:10px}.source-link{display:block;width:100%;border:0;background:transparent;text-align:center;color:#8d8d8d;text-decoration:none;font-size:12px;font-weight:800;margin-top:8px;padding:4px}.source-link:hover{color:#fff}.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;background:#050505;border-top:1px solid #151515;display:grid;grid-template-columns:repeat(4,1fr);padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:25}.nav button{background:transparent;border:0;color:#fff;font-size:25px;position:relative}.nav small{display:block;font-size:11px;margin-top:2px}.count{position:absolute;top:-2px;right:28%;background:#13b99a;color:#00110d;border-radius:999px;font-size:12px;min-width:20px;padding:2px 5px}.drawer,.cart,.detail{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45);display:none}.panel{width:82%;max-width:370px;height:100%;background:#050505;padding:24px 18px;overflow:auto}.panel.right{margin-left:auto}.drawer.open,.cart.open,.detail.open{display:block}.menu-logo{font-weight:900;margin-bottom:32px}.menu-item{border-bottom:1px solid #333;padding:16px 0;font-size:20px;font-weight:800}.cart-item{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #222;padding:14px 0}.cart-item button{background:#222;color:#fff;border:0;border-radius:6px;padding:7px 10px}.field{width:100%;background:#111;border:1px solid #2a2a2a;color:#fff;border-radius:7px;padding:12px;margin:8px 0;font-size:16px}.form-title{margin:18px 0 8px;color:#f7d979;font-size:14px;font-weight:900}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.required-hint{color:#8d8d8d;font-size:12px;line-height:1.5;margin:4px 0 8px}.checkout{width:100%;border:0;border-radius:8px;background:#13b99a;color:#04100d;font-weight:900;padding:14px;font-size:16px;margin-top:12px}.detail-card img{width:100%;border-radius:10px;aspect-ratio:1/1;object-fit:cover}.detail-card h2{font-size:24px;line-height:1.2;margin:16px 0 8px}.detail-desc{white-space:pre-wrap;color:#d7d7d7;font-size:14px;line-height:1.7;margin-top:14px}.detail-close{border:0;background:#151515;color:#fff;border-radius:8px;padding:10px 12px;font-weight:900}.empty{color:#888;padding:24px 0}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#13b99a;color:#04100d;border-radius:999px;padding:12px 18px;font-weight:900;display:none;z-index:60}.toast.show{display:block}
-    .profile-button{width:42px;height:42px;border:1px solid #242424;border-radius:999px;background:#111;color:#fff;display:grid;place-items:center;overflow:hidden}.profile-button.ready{border-color:#13b99a}.profile-button img{width:100%;height:100%;object-fit:cover;display:none}.profile-button.ready img{display:block}.profile-button.ready span{display:none}.profile-button span{font-size:18px;font-weight:900}.category-head{position:relative;display:inline-block}.category-trigger{border:0;background:transparent;color:#fff;font-size:20px;font-weight:900;padding:0 24px 0 0}.category-trigger:after{content:"";position:absolute;right:0;top:50%;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #fff;transform:translateY(-25%)}.category-menu{position:absolute;left:0;top:30px;z-index:30;min-width:178px;background:#fff;color:#111;border-radius:2px;box-shadow:0 8px 18px rgba(0,0,0,.28);padding:8px 0;display:none}.category-menu.open{display:block}.category-menu button{display:block;width:100%;border:0;background:#fff;color:#111;text-align:left;font-size:16px;font-weight:900;padding:12px 20px}.category-menu button.active,.category-menu button:hover{background:#f1f5f9}.pay-title{color:#aaa;font-size:12px;font-weight:900;margin:12px 0 8px}.pay-options{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.pay-option{border:1px solid #2a2a2a;border-radius:7px;background:#111;color:#fff;font-weight:900;padding:10px 6px}.pay-option.active{background:#13b99a;color:#04100d;border-color:#13b99a}
+    .profile-button{width:42px;height:42px;border:1px solid #242424;border-radius:999px;background:#111;color:#fff;display:grid;place-items:center;overflow:hidden}.profile-button.ready{border-color:#13b99a}.profile-button img{width:100%;height:100%;object-fit:cover;display:none}.profile-button.ready img{display:block}.profile-button.ready span{display:none}.profile-button span{font-size:18px;font-weight:900}.category-head{position:relative;display:inline-block}.category-trigger{border:0;background:transparent;color:#fff;font-size:20px;font-weight:900;padding:0 24px 0 0}.category-trigger:after{content:"";position:absolute;right:0;top:50%;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #fff;transform:translateY(-25%)}.category-menu{position:absolute;left:0;top:30px;z-index:30;min-width:178px;background:#fff;color:#111;border-radius:2px;box-shadow:0 8px 18px rgba(0,0,0,.28);padding:8px 0;display:none}.category-menu.open{display:block}.category-menu button{display:block;width:100%;border:0;background:#fff;color:#111;text-align:left;font-size:16px;font-weight:900;padding:12px 20px}.category-menu button.active,.category-menu button:hover{background:#f1f5f9}.same-member{display:flex;align-items:center;gap:9px;border:1px solid #2a2a2a;background:#101010;border-radius:8px;padding:10px 12px;margin:10px 0 8px;color:#fff;font-weight:900}.same-member input{width:18px;height:18px;accent-color:#13b99a}.same-member-hint{display:none;color:#9ca3af;font-size:12px;line-height:1.45;margin:-2px 0 8px}.same-member-hint.warn{display:block;color:#fbbf24}.same-member-hint.ok{display:block;color:#5eead4}.pay-title{color:#aaa;font-size:12px;font-weight:900;margin:12px 0 8px}.pay-options{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.pay-option{border:1px solid #2a2a2a;border-radius:7px;background:#111;color:#fff;font-weight:900;padding:10px 6px}.pay-option.active{background:#13b99a;color:#04100d;border-color:#13b99a}
     .section-tabs{display:flex;gap:6px;overflow-x:auto;overflow-y:hidden;margin:-2px -10px 14px;padding:0 10px 5px;scroll-snap-type:x proximity}.section-tabs::-webkit-scrollbar{height:0}.section-tab{flex:0 1 auto;min-width:0;max-width:108px;scroll-snap-align:start;border:1px solid #242424;background:#111;color:#fff;border-radius:7px;padding:8px 9px;font-size:12px;font-weight:900;line-height:1.15;white-space:normal;word-break:keep-all;text-align:center}.section-tab.active{background:#08271f;border-color:#15c6a3;color:#80ffe2;box-shadow:inset 0 0 0 1px rgba(19,185,154,.28)}@media(max-width:390px){.section-tabs{gap:5px;margin-left:-8px;margin-right:-8px;padding-left:8px;padding-right:8px}.section-tab{max-width:96px;padding:7px 7px;font-size:11px}}
     .member{position:fixed;inset:0;z-index:50;background:#f4f6f8;color:#020b1c;display:none;overflow:auto}.member.open{display:block}.member-sheet{max-width:480px;min-height:100%;margin:0 auto;padding:20px 18px 96px}.member-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.member-top h2{margin:0;font-size:24px}.member-close{width:42px;height:42px;border:1px solid #d5dde8;border-radius:10px;background:#fff;color:#020b1c;font-size:24px;font-weight:900}.member-profile{position:relative;background:#fff;border:1px solid #d5dde8;border-radius:18px;text-align:center;overflow:hidden;margin-bottom:18px;box-shadow:0 8px 24px rgba(15,23,42,.06)}.member-cover{height:112px;background:#0d1728;background-image:radial-gradient(#24344e 1px,transparent 1px);background-size:18px 18px}.member-avatar{width:96px;height:96px;border-radius:999px;border:5px solid #fff;object-fit:cover;background:#e6f7ff;margin:-48px auto 8px;display:block}.member-name{font-size:24px;font-weight:900;line-height:1.2;padding:0 14px}.member-tier{display:inline-block;margin:10px 0 20px;border:1px solid #9fe9ca;background:#dcffef;color:#00925f;border-radius:7px;padding:6px 14px;font-size:13px;font-weight:900}.member-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.member-action{border:0;border-radius:14px;background:#fff;color:#020b1c;padding:18px 8px;box-shadow:0 10px 24px rgba(15,23,42,.07);font-weight:900}.member-action b{display:block;color:#14b99a;font-size:32px;line-height:1}.member-action span{display:block;margin-top:8px;font-size:13px}.checkin-button{width:78%;margin:6px auto 18px;display:block;border:1px solid #d5dde8;border-radius:999px;background:#fff;color:#14213d;padding:14px;font-weight:900;font-size:15px}.member-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:12px;background:#fff;border:1px solid #d5dde8;border-radius:12px;padding:14px 16px;margin:10px 0;font-weight:900}.member-row small{color:#13b99a;margin-right:6px}.member-row button{border:0;border-radius:999px;background:#e5e7eb;color:#020b1c;font-weight:900;padding:7px 12px}.member-detail{background:#fff;border:1px solid #d5dde8;border-radius:16px;margin:12px 0 16px;padding:16px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.member-detail-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.member-detail-title{font-size:17px;font-weight:900}.member-edit{border:0;border-radius:999px;background:#2563eb;color:#fff;font-weight:900;padding:8px 12px}.member-save{width:100%;border:0;border-radius:12px;background:#06c755;color:#fff;font-weight:900;padding:14px;margin-top:12px;font-size:15px}.member-grid{display:grid;gap:10px}.member-field label{display:block;color:#64748b;font-size:12px;font-weight:900;margin:0 0 5px}.member-field input,.member-field select{width:100%;border:1px solid #d8e0ec;background:#f8fafc;border-radius:10px;padding:12px;color:#020b1c;font-weight:800;font-size:15px}.member-info-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #eef2f7;padding:10px 0;font-weight:900}.member-info-row span:first-child{color:#64748b}.points-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}.points-card{background:#f8fafc;border:1px solid #edf2f7;border-radius:14px;padding:14px}.points-card small{display:block;color:#64748b;font-weight:900;margin-bottom:6px}.points-card b{font-size:24px}.point-log{display:grid;grid-template-columns:1fr auto;gap:10px;background:#f8fafc;border:1px solid #edf2f7;border-radius:12px;padding:12px;margin:8px 0}.point-log-title{font-weight:900}.point-log-date{color:#94a3b8;font-size:12px;margin-top:4px}.point-log-amount{font-weight:900;font-size:18px;color:#06a657}.point-log-amount.spend{color:#dc2626}.member-empty{color:#64748b;background:#f8fafc;border-radius:12px;padding:16px;text-align:center;font-weight:800}
   </style>
@@ -4414,6 +4499,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       <div id="cartItems"></div>
       <div class="form-title">收件人資料</div>
       <div class="required-hint">請填寫實際可收貨的姓名、手機與地址。</div>
+      <label class="same-member"><input type="checkbox" id="sameAsRegistered" onchange="toggleSameAsRegistered(this.checked)"><span>同註冊人資料</span></label>
+      <div class="same-member-hint" id="sameMemberHint"></div>
       <input class="field" id="name" autocomplete="name" placeholder="收件姓名 *">
       <input class="field" id="phone" type="tel" autocomplete="tel" placeholder="收件手機 *">
       <input class="field" id="email" type="email" autocomplete="email" placeholder="Email（選填，用於付款通知）">
@@ -4653,18 +4740,93 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       button.style.opacity = isCheckingOut ? ".65" : "1";
       button.style.cursor = isCheckingOut ? "not-allowed" : "pointer";
     }
+    function parseRegisteredAddress(value){
+      let text = String(value || "").trim().replace(/\\s+/g, "");
+      const result = { postalCode:"", city:"", district:"", address:text };
+      const postal = text.match(/^([0-9]{3,6})/);
+      if (postal) { result.postalCode = postal[1]; text = text.slice(postal[1].length); }
+      const cities = ["臺北市","台北市","新北市","桃園市","臺中市","台中市","臺南市","台南市","高雄市","基隆市","新竹市","嘉義市","新竹縣","苗栗縣","彰化縣","南投縣","雲林縣","嘉義縣","屏東縣","宜蘭縣","花蓮縣","臺東縣","台東縣","澎湖縣","金門縣","連江縣"];
+      const city = cities.find(name => text.indexOf(name) === 0);
+      if (city) { result.city = city; text = text.slice(city.length); }
+      const district = text.match(/^(.{1,8}?(?:區|鄉|鎮|市))/);
+      if (district) { result.district = district[1]; text = text.slice(district[1].length); }
+      result.address = text || result.address;
+      return result;
+    }
+    function setField(id, value){
+      const el = document.getElementById(id);
+      if (el) el.value = value || "";
+    }
+    function registeredShipping(){
+      const member = memberData && memberData.member ? memberData.member : {};
+      const parsed = parseRegisteredAddress(member.shippingAddress || member.address || "");
+      return {
+        name: member.name || member.displayName || lineProfile.displayName || "",
+        phone: member.phone || member.mobile || member.tel || "",
+        email: member.email || "",
+        postalCode: member.postalCode || parsed.postalCode || "",
+        city: member.city || parsed.city || "",
+        district: member.district || parsed.district || "",
+        address: member.shippingAddress || parsed.address || member.address || ""
+      };
+    }
+    function missingShippingFields(customer){
+      const fields = [["name","姓名"],["phone","手機"],["city","縣市"],["district","區域 / 鄉鎮市"],["address","路名、巷弄、門牌、樓層"]];
+      return fields.filter(item => !String(customer[item[0]] || "").trim()).map(item => item[1]);
+    }
+    function setSameMemberHint(message, type){
+      const hint = document.getElementById("sameMemberHint");
+      if (!hint) return;
+      hint.className = "same-member-hint" + (type ? " " + type : "");
+      hint.textContent = message || "";
+    }
+    function fillRegisteredShipping(){
+      const data = registeredShipping();
+      setField("name", data.name);
+      setField("phone", data.phone);
+      setField("email", data.email);
+      setField("postalCode", data.postalCode);
+      setField("city", data.city);
+      setField("district", data.district);
+      setField("address", data.address);
+      const missing = missingShippingFields(data);
+      if (missing.length) {
+        setSameMemberHint("註冊資料不完整，缺少：" + missing.join("、") + "。請先補齊會員資料或改用手填。", "warn");
+        return false;
+      }
+      setSameMemberHint("已帶入註冊人資料，送出前系統仍會再次檢查。", "ok");
+      return true;
+    }
+    function toggleSameAsRegistered(checked){
+      if (!checked) return setSameMemberHint("", "");
+      if (!lineProfile.userId) {
+        const box = document.getElementById("sameAsRegistered");
+        if (box) box.checked = false;
+        toast("請先完成 LINE 登入");
+        return loginLine();
+      }
+      if (!memberData) {
+        const box = document.getElementById("sameAsRegistered");
+        if (box) box.checked = false;
+        return toast(memberLoading ? "會員資料讀取中" : "尚未取得註冊資料");
+      }
+      fillRegisteredShipping();
+    }
     async function checkout(){
       if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
-      const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), shippingCarrier: val("shippingCarrier"), note: val("note") };
-      if (!customer.name || !customer.phone || !customer.city || !customer.district || !customer.address) return toast("請填寫完整收件資料");
+      const sameAsRegistered = !!document.getElementById("sameAsRegistered")?.checked;
+      if (sameAsRegistered && !fillRegisteredShipping()) return;
+      const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), shippingCarrier: val("shippingCarrier"), note: val("note"), sameAsRegistered };
+      const missingCustomer = missingShippingFields(customer);
+      if (missingCustomer.length) return toast("請補齊：" + missingCustomer.join("、"));
       entryContext = restoreEntryContext();
       setCheckoutBusy(true);
       let keepBusy = false;
       try {
         const clientOrderKey = buildClientOrderKey(customer);
         const currentCart = cart.map(item => ({ id: item.id, quantity: item.quantity }));
-        const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, shippingCarrier: customer.shippingCarrier, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
+        const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, shippingCarrier: customer.shippingCarrier, sameAsRegistered, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
         if (!res.ok) {
           toast(res.message || "訂單送出失敗");
           return;
