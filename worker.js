@@ -3071,6 +3071,37 @@ function getLineChannelAccessToken(env) {
   ]);
 }
 
+function getLineChannelSecret(env) {
+  return envValue(env, [
+    "LINE_CHANNEL_SECRET",
+    "Line Message API Channel Secret",
+    "Line Message API Channel secret",
+    "LINE_MESSAGING_API_CHANNEL_SECRET",
+    "LINE_MESSAGE_API_CHANNEL_SECRET",
+    "CHANNEL_SECRET",
+    "LINE_SECRET",
+  ]);
+}
+
+async function verifyLineWebhookSignature(env, rawText, signature) {
+  const secret = getLineChannelSecret(env);
+  if (!secret) return { configured: false, valid: true };
+  const provided = String(signature || "").trim();
+  if (!provided) return { configured: true, valid: false, reason: "missing_signature" };
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(rawText || ""));
+  let binary = "";
+  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+  return { configured: true, valid: btoa(binary) === provided };
+}
+
 function extractResponseText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
   const chunks = [];
@@ -3274,17 +3305,30 @@ async function buildHookTeaMonitorRows(env, options = {}) {
   const overlays = await listMonitorThreadOverlays(env);
   const overlayByUid = new Map(overlays.map(row => [String(row.id || "").trim(), row]));
   const d1Threads = await listD1LineThreads(env);
-  const d1ByUid = new Map(d1Threads.map(row => [String(row.id || row.legacy_user_id || row.source_user_id || "").trim(), row]));
+  const d1ByUid = new Map();
+  for (const row of d1Threads) {
+    for (const key of [row.id, row.legacy_user_id, row.source_user_id]) {
+      const normalized = String(key || "").trim();
+      if (normalized && !d1ByUid.has(normalized)) d1ByUid.set(normalized, row);
+    }
+  }
   const rows = [];
   const seenThreadIds = new Set();
   for (const user of users) {
     const uid = String(user.userId || user.uid || "").trim();
     if (!uid) continue;
-    seenThreadIds.add(uid);
     const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === uid);
     const pointData = pointsByUid.get(uid) || null;
     const overlay = overlayByUid.get(uid) || {};
     const d1Thread = d1ByUid.get(uid) || {};
+    for (const key of [uid, d1Thread.id, d1Thread.legacy_user_id, d1Thread.source_user_id]) {
+      const normalized = String(key || "").trim();
+      if (normalized) seenThreadIds.add(normalized);
+    }
+    const lineSourceUserId = String(
+      d1Thread.source_user_id || user.lineUserId || user.linkedLineUid || overlay.lineUserId || (/^U[a-f0-9]{32}$/i.test(uid) ? uid : "")
+    ).trim();
+    const hasLineThread = !!String(d1Thread.id || "").trim();
     const tags = Array.from(new Set([
       ...splitTags(user.tags || user.memberTags || user.memberTier || ""),
       ...splitTags(overlay.tags),
@@ -3295,6 +3339,9 @@ async function buildHookTeaMonitorRows(env, options = {}) {
     rows.push({
       id: uid,
       userId: uid,
+      lineSourceUserId,
+      hasLineThread,
+      monitorSource: hasLineThread ? "line_thread" : "crm",
       name: d1Thread.display_name || user.name || user.displayName || user.lineName || uid,
       pictureUrl: d1Thread.picture_url || user.pictureUrl || user.avatar || "",
       status: d1Thread.status || overlay.status || "open",
@@ -3323,6 +3370,9 @@ async function buildHookTeaMonitorRows(env, options = {}) {
     rows.push({
       id,
       userId: d1Thread.source_user_id || id,
+      lineSourceUserId: d1Thread.source_user_id || (/^U[a-f0-9]{32}$/i.test(id) ? id : ""),
+      hasLineThread: true,
+      monitorSource: "line_thread",
       name: d1Thread.display_name || d1Thread.source_user_id || id,
       pictureUrl: d1Thread.picture_url || "",
       status: d1Thread.status || "open",
@@ -3356,8 +3406,10 @@ async function buildHookTeaMonitorRows(env, options = {}) {
 
 function filterLineMonitorRows(rows = []) {
   return (Array.isArray(rows) ? rows : []).filter(row => {
-    const tags = Array.isArray(row?.tags) ? row.tags.map(tag => String(tag || "").toUpperCase()) : [];
-    return tags.includes("LINE") || Number(row?.unread || 0) > 0 || /^U[a-f0-9]{32}$/i.test(String(row?.id || ""));
+    const lineSourceUserId = String(row?.lineSourceUserId || row?.sourceUserId || "").trim();
+    return row?.hasLineThread === true
+      || Number(row?.unread || 0) > 0
+      || /^U[a-f0-9]{32}$/i.test(lineSourceUserId);
   });
 }
 
@@ -6636,17 +6688,49 @@ export default {
   },
 
   async handleLineWebhook(request, env, ctx) {
+    if (request.method !== "POST") {
+      await safePutKV(env, "LINE_WEBHOOK_PING_LAST", {
+        receivedAt: new Date().toISOString(),
+        method: request.method,
+        url: request.url,
+      }, { expirationTtl: 86400 }).catch(() => {});
+      return new Response("HookTea LINE webhook endpoint", { status: 200 });
+    }
     const rawText = await request.text();
     const signature = request.headers.get("x-line-signature") || "";
     try {
       let parsedPayload = {};
       if (rawText) parsedPayload = JSON.parse(rawText);
       const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
+      if (!events.length) {
+        await safePutKV(env, "LINE_WEBHOOK_PING_LAST", {
+          receivedAt: new Date().toISOString(),
+          method: request.method,
+          signaturePresent: !!signature,
+          tokenConfigured: !!getLineChannelAccessToken(env),
+        }, { expirationTtl: 86400 }).catch(() => {});
+        return new Response("OK", { status: 200 });
+      }
+      const signatureCheck = await verifyLineWebhookSignature(env, rawText, signature).catch(error => ({
+        configured: !!getLineChannelSecret(env),
+        valid: false,
+        reason: error?.message || String(error),
+      }));
+      if (signatureCheck.configured && !signatureCheck.valid) {
+        await safePutKV(env, "LINE_WEBHOOK_REJECT_LAST", {
+          receivedAt: new Date().toISOString(),
+          eventCount: events.length,
+          reason: signatureCheck.reason || "invalid_signature",
+          texts: events.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean).slice(0, 10),
+        }, { expirationTtl: 86400 }).catch(() => {});
+        return new Response("INVALID_SIGNATURE", { status: 403 });
+      }
       const unhandledEvents = [];
       await safePutKV(env, "LINE_WEBHOOK_LAST", {
         receivedAt: new Date().toISOString(),
         eventCount: events.length,
         tokenConfigured: !!getLineChannelAccessToken(env),
+        signatureVerified: signatureCheck.configured ? signatureCheck.valid : null,
         texts: events.map(event => ({
           type: event?.type || "",
           userId: event?.source?.userId || "",
