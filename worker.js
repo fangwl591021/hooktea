@@ -1041,7 +1041,17 @@ async function appendLineMonitorEvent(env, ctx, event) {
   await ensureLineOnlyCrmMember(env, ctx, lineUid, null, "line_monitor_event").catch(() => {});
   const threadId = await resolveMonitorThreadIdForLine(env, lineUid);
   if (!threadId) return;
-  await appendLineMonitorD1Event(env, event, threadId, text);
+  const nowIso = new Date().toISOString();
+  await appendLineMonitorD1Event(env, event, threadId, text).catch(async error => {
+    await safePutKV(env, "LINE_MONITOR_APPEND_ERROR_LAST", {
+      lineUserId: lineUid,
+      threadId,
+      text: text.slice(0, 160),
+      error: error?.message || String(error),
+      occurredAt: nowIso,
+    }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    console.error("[LineMonitor] D1 append failed", error);
+  });
   const key = `MONITOR_THREAD_${threadId}`;
   const overlay = await safeGetKV(env, key, {});
   const lineMessages = Array.isArray(overlay.lineMessages) ? overlay.lineMessages : [];
@@ -1065,6 +1075,12 @@ async function appendLineMonitorEvent(env, ctx, event) {
     lastLineMessageAt: new Date().toISOString(),
   };
   await safePutKV(env, key, next);
+  await safePutKV(env, "LINE_MONITOR_APPEND_LAST", {
+    lineUserId: lineUid,
+    threadId,
+    text: text.slice(0, 160),
+    appendedAt: nowIso,
+  }, { expirationTtl: 86400 * 7 }).catch(() => {});
 }
 
 async function appendLineMonitorD1Event(env, event, threadId, text) {
@@ -3397,6 +3413,7 @@ async function buildHookTeaMonitorRows(env, options = {}) {
       ...splitTags(overlay.aiTags),
       ...splitTags(d1Thread.tags),
     ]));
+    const latestOverlayMessage = Array.isArray(overlay.lineMessages) ? overlay.lineMessages[0] : null;
     const riskLevel = d1Thread.risk_level || inferHookTeaRisk(user, userOrders, pointData, overlay);
     rows.push({
       id: uid,
@@ -3410,9 +3427,9 @@ async function buildHookTeaMonitorRows(env, options = {}) {
       tags,
       note: d1Thread.note || overlay.note || "",
       riskLevel,
-      summary: d1Thread.summary || buildHookTeaSummary(user, userOrders, pointData, overlay),
+      summary: d1Thread.summary || latestOverlayMessage?.text || buildHookTeaSummary(user, userOrders, pointData, overlay),
       unread: Number(d1Thread.unread_count || 0),
-      lastMessageAt: d1Thread.last_message_at || user.updatedAt || user.createdAt || "",
+      lastMessageAt: d1Thread.last_message_at || overlay.lastLineMessageAt || overlay.updatedAt || user.updatedAt || user.createdAt || "",
       signals: {
         "會員等級": user.memberTier || user.role || "一般會員",
         "待付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length,
@@ -3478,14 +3495,24 @@ function filterLineMonitorRows(rows = []) {
 async function getHookTeaMonitorThread(env, id) {
   const uid = String(id || "").trim();
   if (!uid) return null;
-  const d1Thread = env.DB ? await env.DB.prepare(`SELECT * FROM line_threads WHERE id = ?`).bind(uid).first().catch(() => null) : null;
+  const d1Thread = env.DB ? await env.DB.prepare(`
+    SELECT * FROM line_threads
+    WHERE id = ? OR source_user_id = ? OR legacy_user_id = ?
+    ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
+    LIMIT 1
+  `).bind(uid, uid, uid, uid).first().catch(() => null) : null;
+  const d1ThreadId = String(d1Thread?.id || uid).trim();
   const users = await listHookTeaUsers(env);
-  const user = users.find(item => String(item.userId || item.uid || "").trim() === uid);
+  const user = users.find(item => {
+    const ids = [item.userId, item.uid, item.lineUserId, item.linkedLineUid].map(value => String(value || "").trim());
+    return ids.includes(uid) || ids.includes(d1ThreadId);
+  });
   if (!user && !d1Thread) return null;
   const orders = await safeGetKV(env, "ORDERS", []);
-  const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === uid);
-  const pointData = await safeGetKV(env, `POINTS_${uid}`, { logs: [] });
-  const overlay = await safeGetKV(env, `MONITOR_THREAD_${uid}`, {});
+  const userIdForData = String(user?.userId || user?.uid || d1ThreadId || uid).trim();
+  const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === userIdForData);
+  const pointData = await safeGetKV(env, `POINTS_${userIdForData}`, { logs: [] });
+  const overlay = await safeGetKV(env, `MONITOR_THREAD_${d1ThreadId}`, {});
   const paymentLogs = await safeGetKV(env, "PAYMENT_LOGS", []);
   const tags = Array.from(new Set([
     ...splitTags(user?.tags || user?.memberTags || user?.memberTier || ""),
@@ -3495,17 +3522,18 @@ async function getHookTeaMonitorThread(env, id) {
   ]));
   const riskLevel = d1Thread?.risk_level || inferHookTeaRisk(user, userOrders, pointData, overlay);
   const row = {
-    id: uid,
-    userId: uid,
+    id: d1ThreadId,
+    userId: userIdForData,
+    lineSourceUserId: d1Thread?.source_user_id || user?.lineUserId || user?.linkedLineUid || (/^U[a-f0-9]{32}$/i.test(uid) ? uid : ""),
     name: d1Thread?.display_name || user?.name || user?.displayName || user?.lineName || uid,
     pictureUrl: d1Thread?.picture_url || user?.pictureUrl || user?.avatar || "",
     status: d1Thread?.status || overlay.status || "open",
     tags,
     note: d1Thread?.note || overlay.note || "",
     riskLevel,
-    summary: d1Thread?.summary || buildHookTeaSummary(user, userOrders, pointData, overlay),
+    summary: d1Thread?.summary || (Array.isArray(overlay.lineMessages) ? overlay.lineMessages[0]?.text : "") || buildHookTeaSummary(user, userOrders, pointData, overlay),
     unread: Number(d1Thread?.unread_count || 0),
-    lastMessageAt: d1Thread?.last_message_at || user.updatedAt || user.createdAt || "",
+    lastMessageAt: d1Thread?.last_message_at || overlay.lastLineMessageAt || overlay.updatedAt || user?.updatedAt || user?.createdAt || "",
     signals: {
       "會員等級": user?.memberTier || user?.role || (d1Thread ? "未綁定" : "一般會員"),
       "待付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length,
@@ -3526,7 +3554,7 @@ async function getHookTeaMonitorThread(env, id) {
       WHERE thread_id = ?
       ORDER BY created_at ASC, inserted_at ASC
       LIMIT 500
-    `).bind(uid).all().catch(() => ({ results: [] }));
+    `).bind(d1ThreadId).all().catch(() => ({ results: [] }));
     for (const msg of results || []) {
       messages.push({
         id: msg.id,
