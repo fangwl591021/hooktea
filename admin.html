@@ -670,39 +670,97 @@
                 <div v-if="canManageRichMenu && view === 'richmenu'" class="h-[calc(100vh-73px)]"><iframe src="./menu.html?v=20260609-preserve-areas-on-image-change" class="w-full h-full border-0"></iframe></div>
 
                 <div v-if="isAdminRole && view === 'flex_rules'" class="p-8 animate-fade-in">
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-xl font-black text-slate-800">自動回覆與會員專區卡片</h2>
-                        <button @click="openEditFlexRule(null)" class="btn-green-main shadow-sm"><i class="fas fa-plus mr-1"></i>新增觸發規則</button>
+                    <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 mb-6">
+                        <div>
+                            <h2 class="text-xl font-black text-slate-800">自動回覆與會員專區卡片</h2>
+                            <p class="text-sm font-bold text-slate-500 mt-1">先建立模組檔案，再於推播或圖文選單中選用。</p>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button @click="openNewFlexRule('FLEX', 'v0')" class="btn-outline bg-white border-emerald-200 text-emerald-700"><i class="fas fa-image mr-1"></i>新增 V0</button>
+                            <button @click="openNewFlexRule('FLEX', 'v1')" class="btn-outline bg-white border-emerald-200 text-emerald-700"><i class="fas fa-video mr-1"></i>新增 V1</button>
+                            <button @click="openNewFlexRule('FLEX', 'v2')" class="btn-outline bg-white border-emerald-200 text-emerald-700"><i class="fas fa-id-card mr-1"></i>新增 V2</button>
+                            <button @click="openNewFlexRule('FLEX', 'v3')" class="btn-outline bg-white border-emerald-200 text-emerald-700"><i class="fas fa-list mr-1"></i>新增 V3</button>
+                            <button @click="openNewFlexRule('FLEX', 'v4')" class="btn-outline bg-white border-emerald-200 text-emerald-700"><i class="fas fa-object-group mr-1"></i>新增 V4</button>
+                            <button @click="openNewFlexRule('IMAGE')" class="btn-outline bg-white"><i class="fas fa-image mr-1"></i>圖片</button>
+                            <button @click="openNewFlexRule('TEXT')" class="btn-outline bg-white"><i class="fas fa-font mr-1"></i>文字</button>
+                        </div>
                     </div>
                     
                     <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                        <table class="admin-table !min-w-0 w-full">
-                            <thead>
-                                <tr class="bg-slate-50 border-b border-slate-200 text-slate-500 text-[13px]">
-                                    <th class="p-4 font-bold">觸發關鍵字 / Postback</th>
-                                    <th class="p-4 font-bold">回覆類型</th>
-                                    <th class="p-4 font-bold">狀態</th>
-                                    <th class="p-4 font-bold text-right">操作</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="rule in flexRules" :key="rule.id" class="border-b border-slate-100 last:border-0 hover:bg-slate-50 transition">
-                                    <td class="p-4 font-bold text-slate-800">{{ rule.keyword }}</td>
-                                    <td class="p-4"><span class="status-badge" :class="rule.replyType === 'FLEX' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'">{{ rule.replyType === 'FLEX' ? 'FLEX 卡片' : '純文字' }}</span></td>
-                                    <td class="p-4"><span class="status-badge" :class="rule.active !== false ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">{{ rule.active !== false ? '啟用中' : '已停用' }}</span></td>
-                                    <td class="p-4 text-right">
-                                        <button @click="openEditFlexRule(rule)" class="text-blue-500 hover:text-blue-700 font-bold text-sm mr-4 transition"><i class="fas fa-edit"></i></button>
-                                        <button @click="deleteFlexRule(rule.id)" class="text-red-500 hover:text-red-700 font-bold text-sm transition"><i class="fas fa-trash-alt"></i></button>
-                                    </td>
-                                </tr>
-                                <tr v-if="flexRules.length === 0">
-                                    <td colspan="4" class="p-12 text-center text-slate-400 font-bold"><i class="fas fa-robot text-3xl mb-3 block text-slate-300"></i>尚無設定任何觸發規則</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div class="p-5 border-b border-slate-100">
+                            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                <div>
+                                    <div class="font-black text-slate-800 flex items-center gap-2"><i class="fas fa-folder-open text-[#06C755]"></i>模組檔案庫</div>
+                                    <div class="text-xs font-bold text-slate-400 mt-1">共 {{ flexRules.length }} 個模組，符合條件 {{ filteredFlexRules.length }} 筆</div>
+                                </div>
+                                <div class="flex flex-col md:flex-row gap-3 w-full lg:w-auto">
+                                    <div class="relative w-full md:w-80"><i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i><input type="text" v-model="flexRuleSearch" placeholder="搜尋模組名稱、觸發字、ID..." class="w-full border border-slate-200 rounded px-9 py-2 text-sm font-bold outline-none focus:border-[#06C755]"></div>
+                                    <select v-model="flexRuleTypeFilter" class="border border-slate-200 rounded px-3 py-2 text-sm font-bold outline-none focus:border-[#06C755] bg-white">
+                                        <option value="ALL">全部格式</option>
+                                        <option value="FLEX">FLEX 卡片</option>
+                                        <option value="IMAGE">圖片訊息</option>
+                                        <option value="TEXT">純文字</option>
+                                    </select>
+                                    <select v-model="flexRuleStatusFilter" class="border border-slate-200 rounded px-3 py-2 text-sm font-bold outline-none focus:border-[#06C755] bg-white">
+                                        <option value="ALL">全部狀態</option>
+                                        <option value="ACTIVE">啟用中</option>
+                                        <option value="INACTIVE">停用中</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="filteredFlexRules.length" class="overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase">
+                                    <tr>
+                                        <th class="p-4">模組檔案</th>
+                                        <th class="p-4">觸發字 / Postback</th>
+                                        <th class="p-4">格式</th>
+                                        <th class="p-4">狀態</th>
+                                        <th class="p-4">建立時間</th>
+                                        <th class="p-4 text-right">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    <tr v-for="rule in pagedFlexRules" :key="rule.id" class="hover:bg-slate-50">
+                                        <td class="p-4">
+                                            <div class="font-black text-slate-800">{{ rule.moduleName || rule.keyword || rule.id }}</div>
+                                            <div class="text-xs font-mono text-slate-400 mt-1">{{ rule.id }}</div>
+                                        </td>
+                                        <td class="p-4 font-bold text-slate-600">{{ rule.keyword || '未設定' }}</td>
+                                        <td class="p-4">
+                                            <div class="flex flex-wrap gap-2">
+                                                <span class="status-badge" :class="rule.replyType === 'FLEX' ? 'bg-indigo-100 text-indigo-700' : (rule.replyType === 'IMAGE' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600')">
+                                                    {{ rule.replyType === 'FLEX' ? 'FLEX 卡片' : (rule.replyType === 'IMAGE' ? '圖片訊息' : '純文字') }}
+                                                </span>
+                                                <span v-if="rule.replyType === 'FLEX'" class="status-badge bg-emerald-50 text-emerald-700">{{ String(rule.flexTemplate || 'v1').toUpperCase() }}</span>
+                                            </div>
+                                        </td>
+                                        <td class="p-4"><span class="status-badge" :class="rule.active !== false ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">{{ rule.active !== false ? '啟用' : '停用' }}</span></td>
+                                        <td class="p-4 text-sm font-mono text-slate-500">{{ formatFlexRuleDate(rule.createdAt || rule.updatedAt || rule.id) }}</td>
+                                        <td class="p-4">
+                                            <div class="flex justify-end gap-2">
+                                                <button @click="openEditFlexRule(rule)" class="btn-outline bg-blue-50 text-blue-600 border-blue-100"><i class="fas fa-edit mr-1"></i>編輯</button>
+                                                <button @click="duplicateFlexRule(rule)" class="btn-outline bg-emerald-50 text-emerald-600 border-emerald-100"><i class="fas fa-copy mr-1"></i>複製</button>
+                                                <button @click="deleteFlexRule(rule.id)" class="btn-outline bg-red-50 text-red-600 border-red-100"><i class="fas fa-trash-alt"></i></button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="flex justify-end items-center gap-3 p-4 border-t border-slate-100 text-sm font-bold text-slate-500">
+                                <button @click="flexRulePage = Math.max(1, flexRulePage - 1)" :disabled="flexRulePage <= 1" class="btn-outline !py-1.5 !px-3 bg-white disabled:opacity-40">上一頁</button>
+                                <span class="px-2">{{ flexRulePage }} / {{ flexRuleTotalPages }}</span>
+                                <button @click="flexRulePage = Math.min(flexRuleTotalPages, flexRulePage + 1)" :disabled="flexRulePage >= flexRuleTotalPages" class="btn-outline !py-1.5 !px-3 bg-white disabled:opacity-40">下一頁</button>
+                            </div>
+                        </div>
+                        <div v-else class="p-12 text-center text-slate-400 font-bold">
+                            <i class="fas fa-robot text-3xl mb-3 block text-slate-300"></i>
+                            找不到符合條件的模組。請調整搜尋或從右上方新增。
+                        </div>
                     </div>
                 </div>
-
+                
                 <div v-if="isAdminRole && view === 'shop_modules'" class="p-8 animate-fade-in bg-slate-50 min-h-[calc(100vh-73px)]">
                     <div class="max-w-6xl mx-auto space-y-6">
                         <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
@@ -1215,55 +1273,68 @@
         </div>
 
         <div v-if="editingFlexRule" class="modal-mask" @click.self="editingFlexRule = null" style="z-index: 1000;">
-            <div class="modal-body modal-body-lg p-0 animate-fade-in !max-w-[700px] !rounded-xl bg-white shadow-2xl">
-                <div class="px-6 py-5 flex justify-between items-center bg-white border-b border-slate-100 shadow-sm z-10 relative">
-                    <h3 class="text-[19px] font-black text-slate-800 flex items-center gap-2"><i class="fas fa-robot text-[#06C755]"></i> {{ (editingFlexRule?.id || '').startsWith('NEW_') ? '新增觸發規則' : '編輯觸發規則' }}</h3>
-                    <button @click="editingFlexRule = null" class="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"><i class="fas fa-times text-xl"></i></button>
+            <div class="modal-body modal-body-lg p-0 animate-fade-in !w-[calc(100vw-32px)] !max-w-[calc(100vw-32px)] !h-[calc(100vh-32px)] !rounded-xl bg-white shadow-2xl flex flex-col">
+                <div class="px-4 py-2 flex items-center gap-3 bg-white border-b border-slate-100 shadow-sm z-10 relative">
+                    <h3 class="text-[18px] font-black text-slate-800 flex items-center gap-2 shrink-0"><i class="fas fa-robot text-[#06C755]"></i> {{ editingFlexRule?.createdAt ? '編輯模組' : '新增模組' }}</h3>
+                    <div class="ml-auto grid grid-cols-[minmax(150px,1fr)_minmax(150px,1fr)_150px_110px] gap-2 items-center max-w-[980px] flex-1">
+                        <input type="text" v-model="editingFlexRule.moduleName" class="input-field bg-slate-50 font-bold !py-2 !text-[13px]" placeholder="模組名稱">
+                        <input type="text" v-model="editingFlexRule.keyword" class="input-field bg-slate-50 font-bold !py-2 !text-[13px]" placeholder="Postback / 關鍵字">
+                        <select v-model="editingFlexRule.replyType" class="input-field bg-slate-50 font-bold text-indigo-700 !py-2 !text-[13px]">
+                            <option value="FLEX">FLEX 卡片</option>
+                            <option value="IMAGE">圖片訊息</option>
+                            <option value="TEXT">純文字</option>
+                        </select>
+                        <select v-model="editingFlexRule.active" class="input-field bg-slate-50 font-bold !py-2 !text-[13px]">
+                            <option :value="true">啟用</option>
+                            <option :value="false">停用</option>
+                        </select>
+                    </div>
+                    <button v-if="editingFlexRule.replyType === 'FLEX'" @click="saveFlexRule" :disabled="isLoading" class="btn-green-main !py-2 !px-5 text-[13px] shadow-sm active:scale-95 flex items-center gap-2"><i v-if="isLoading" class="fas fa-spinner fa-spin"></i>{{ isLoading ? '儲存中...' : '儲存模組' }}</button>
+                    <button @click="editingFlexRule = null" class="w-9 h-9 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"><i class="fas fa-times text-xl"></i></button>
                 </div>
-                <div class="p-8 overflow-y-auto max-h-[75vh] bg-slate-50 custom-scrollbar space-y-6">
-                    
-                    <div v-if="editingFlexRule.replyType === 'FLEX'" class="bg-indigo-50 border border-indigo-100 rounded-xl p-5 mb-2 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
-                        <div>
-                            <div class="font-black text-indigo-700 text-[15px] mb-1"><i class="fas fa-magic mr-1.5"></i> 快速套用範本</div>
-                            <div class="text-[13px] text-slate-500 font-bold leading-relaxed">一鍵生成「會員專區 Flex 卡片」，並自動綁定您的 LIFF 系統專屬連結！</div>
+                <div class="p-1 overflow-hidden flex-1 min-h-0 bg-slate-50 custom-scrollbar">
+                    <div class="bg-white p-0 rounded-lg border border-slate-200 shadow-sm h-full min-h-0 flex flex-col">
+                        <div v-if="editingFlexRule.replyType === 'IMAGE'" class="border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
+                            <img v-if="editingFlexRule.payload" :src="editingFlexRule.payload" class="w-full max-h-[360px] object-contain bg-white">
+                            <div v-else class="h-56 flex flex-col items-center justify-center text-slate-300 gap-3">
+                                <i class="fas fa-image text-5xl"></i>
+                                <div class="text-sm font-bold">尚未上傳圖片</div>
+                            </div>
+                            <div class="p-4 bg-white border-t border-slate-100 flex items-center gap-3">
+                                <label class="btn-green-main cursor-pointer inline-flex items-center gap-2">
+                                    <i class="fas fa-cloud-upload-alt"></i>上傳模組圖片
+                                    <input type="file" class="hidden" accept="image/*" @change="handleFlexRuleImageUpload">
+                                </label>
+                                <button v-if="editingFlexRule.payload" @click="editingFlexRule.payload = ''; editingFlexRule.previewImageUrl = ''" class="btn-outline text-red-500">移除圖片</button>
+                            </div>
                         </div>
-                        <button @click="loadMemberCardTemplate" class="bg-indigo-600 text-white font-bold text-[14px] px-6 py-2.5 rounded-lg shadow-md hover:bg-indigo-700 transition active:scale-95 whitespace-nowrap"><i class="fas fa-download mr-1.5"></i> 載入會員卡片</button>
-                    </div>
-
-                    <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                        <label class="block text-[14px] font-bold text-slate-700 mb-2">觸發關鍵字 / Postback Data <span class="text-red-500">*</span></label>
-                        <input type="text" v-model="editingFlexRule.keyword" class="input-field bg-slate-50 font-bold mb-2" placeholder="例如：HookTea會員專區">
-                        <p class="text-[12px] text-slate-500 font-bold"><i class="fas fa-info-circle text-[#06C755] mr-1"></i> 請將圖文選單編輯器中的「回傳 Data」設為此關鍵字，即可無縫觸發！</p>
-                    </div>
-
-                    <div class="grid grid-cols-2 gap-5">
-                        <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                            <label class="block text-[14px] font-bold text-slate-700 mb-2">回覆類型</label>
-                            <select v-model="editingFlexRule.replyType" class="input-field bg-slate-50 font-bold text-indigo-700">
-                                <option value="FLEX">🎴 FLEX 卡片 (JSON)</option>
-                                <option value="TEXT">💬 純文字訊息</option>
-                            </select>
+                        <div v-else-if="editingFlexRule.replyType === 'FLEX'" class="h-full min-h-0 flex flex-col">
+                            <div class="hidden rounded-lg border border-emerald-100 bg-emerald-50/70 px-3 py-2 flex-col md:flex-row md:items-center md:justify-between gap-2 md:ml-[320px]">
+                                <div class="font-black text-slate-800 flex items-center gap-2 text-[14px]"><i class="fas fa-cubes text-[#06C755]"></i>mylittlesys 自由版 Flex 編輯器</div>
+                                <div class="flex flex-wrap gap-2">
+                                    <a href="https://developers.line.biz/flex-simulator/" target="_blank" class="btn-outline bg-white !py-2 text-[12px]"><i class="fas fa-external-link-alt mr-1"></i>Simulator</a>
+                                    <button type="button" @click="openMylittlesysTemplate('v0')" class="btn-outline bg-white !py-2 text-[12px]">V0</button>
+                                    <button type="button" @click="openMylittlesysTemplate('v1')" class="btn-outline bg-white !py-2 text-[12px]">V1</button>
+                                    <button type="button" @click="openMylittlesysTemplate('v2')" class="btn-outline bg-white !py-2 text-[12px]">V2</button>
+                                    <button type="button" @click="openMylittlesysTemplate('v3')" class="btn-outline bg-white !py-2 text-[12px]">V3</button>
+                                    <button type="button" @click="openMylittlesysTemplate('v4')" class="btn-outline bg-white !py-2 text-[12px]">V4</button>
+                                    <button type="button" @click="captureMylittlesysFlexJson" class="btn-green-main !py-2 text-[12px]">抓取 JSON</button>
+                                </div>
+                            </div>
+                            <div class="rounded-lg border border-slate-200 overflow-hidden bg-white shadow-inner flex-1 min-h-0">
+                                <iframe ref="mylittlesysFlexFrame" :src="mylittlesysFlexUrl" @load="syncMylittlesysFlexFrame" class="w-full h-full bg-white" title="mylittlesys Flex editor"></iframe>
+                            </div>
+                            <details class="hidden rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                <summary class="cursor-pointer font-black text-slate-600">目前模組 JSON</summary>
+                                <textarea v-model="editingFlexRule.flexJson" rows="10" class="input-field bg-white mt-3 font-mono text-[12px] leading-relaxed resize-y" placeholder="可由上方原始編輯器抓取，或手動貼上 Flex JSON"></textarea>
+                            </details>
                         </div>
-                        <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                            <label class="block text-[14px] font-bold text-slate-700 mb-2">規則狀態</label>
-                            <select v-model="editingFlexRule.active" class="input-field bg-slate-50 font-bold">
-                                <option :value="true">🟢 啟用中</option>
-                                <option :value="false">🔴 停用</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                        <div class="flex justify-between items-center mb-3">
-                            <label class="block text-[14px] font-bold text-slate-700">回覆內容 (Payload) <span class="text-red-500">*</span></label>
-                            <a v-if="editingFlexRule.replyType === 'FLEX'" href="https://developers.line.biz/flex-simulator/" target="_blank" class="text-[12px] text-blue-500 hover:text-blue-700 font-bold transition flex items-center gap-1"><i class="fas fa-external-link-alt"></i> 開啟 LINE Flex Simulator</a>
-                        </div>
-                        <textarea v-model="editingFlexRule.payload" rows="12" class="input-field bg-slate-50 font-mono text-[12px] leading-relaxed resize-y" :placeholder="editingFlexRule.replyType === 'FLEX' ? '請將 Simulator 右上角的 JSON (View as JSON) 複製貼上於此...\n\n(系統支援自動補齊，您只需貼上 contents 陣列內的物件即可)' : '請輸入要回覆的純文字訊息...'"></textarea>
+                        <textarea v-else v-model="editingFlexRule.payload" rows="12" class="input-field bg-slate-50 font-mono text-[12px] leading-relaxed resize-y" placeholder="請輸入要回覆或推播的純文字訊息..."></textarea>
                     </div>
                 </div>
-                <div class="px-8 py-5 bg-white flex justify-end items-center gap-4 border-t border-slate-200 rounded-b-xl z-10 relative">
+                <div v-if="editingFlexRule.replyType !== 'FLEX'" class="px-8 py-5 bg-white flex justify-end items-center gap-4 border-t border-slate-200 rounded-b-xl z-10 relative">
                     <button @click="editingFlexRule = null" class="text-[15px] font-bold text-slate-500 hover:text-slate-800 px-4 transition">取消</button>
-                    <button @click="saveFlexRule" :disabled="isLoading" class="btn-green-main px-10 py-3.5 text-[17px] shadow-lg active:scale-95 flex items-center gap-2"><i v-if="isLoading" class="fas fa-spinner fa-spin"></i>{{ isLoading ? '儲存中...' : '儲存觸發規則' }}</button>
+                    <button @click="saveFlexRule" :disabled="isLoading" class="btn-green-main px-10 py-3.5 text-[17px] shadow-lg active:scale-95 flex items-center gap-2"><i v-if="isLoading" class="fas fa-spinner fa-spin"></i>{{ isLoading ? '儲存中...' : '儲存模組' }}</button>
                 </div>
             </div>
         </div>
@@ -1698,6 +1769,11 @@
                     const orderSearch = ref('');
                     const pointsLedgerSearch = ref('');
                     const auditLogSearch = ref('');
+                    const flexRuleSearch = ref('');
+                    const flexRuleTypeFilter = ref('ALL');
+                    const flexRuleStatusFilter = ref('ALL');
+                    const flexRulePage = ref(1);
+                    const flexRulePageSize = 15;
                     const bookingReportSearch = ref('');
                     const bookingReportStatus = ref('ALL');
                     const approveForm = ref({ uid: '', rent: 0, comm: 0 });
@@ -1719,6 +1795,9 @@
                     const transferConfirmed = ref(false);
                     const editingSysConfig = ref(null);
                     const editingFlexRule = ref(null);
+                    const mylittlesysFlexFrame = ref(null);
+                    const activeMylittlesysFlexMode = ref('v1');
+                    const mylittlesysFlexUrl = computed(() => `mylittlesys_free.html?tool=flex&mode=${encodeURIComponent(activeMylittlesysFlexMode.value || 'v1')}`);
 
                     const showOrdersModal = ref(false);
                     const selectedCourseForOrders = ref(null);
@@ -2479,6 +2558,106 @@
                         broadcastForm.value.audience = { tag: '', memberTier: '', gender: '', keyword: '' };
                     };
 
+                    const broadcastUri = (value, fallback = 'https://line.me') => {
+                        const uri = String(value || '').trim();
+                        return /^https?:\/\//i.test(uri) ? uri : fallback;
+                    };
+
+                    const defaultFlexImage = 'https://scdn.line-apps.com/n/channel_devcenter/img/fx/01_1_cafe.png';
+
+                    const buildFlexContentsFromForm = (form) => {
+                        const title = String(form.moduleName || form.title || '').trim() || '推播訊息';
+                        const bodyText = String(form.bodyText || form.message || '').trim() || title;
+                        const imageUrl = broadcastUri(form.imageUrl || form.previewImageUrl, defaultFlexImage);
+                        const actionUrl = broadcastUri(form.actionUrl);
+                        const buttonText = String(form.buttonText || '').trim() || '立即查看';
+                        const template = String(form.flexTemplate || 'v1');
+                        if (String(form.flexJson || '').trim()) {
+                            const raw = JSON.parse(form.flexJson || '{}');
+                            if (raw.type === 'flex' && raw.contents) return raw.contents;
+                            if (raw.type === 'bubble' || raw.type === 'carousel') return raw;
+                            throw new Error('Flex JSON 必須是 LINE flex message、bubble 或 carousel');
+                        }
+                        if (template === 'v2') {
+                            return {
+                                type: 'bubble',
+                                size: 'mega',
+                                body: {
+                                    type: 'box',
+                                    layout: 'vertical',
+                                    backgroundColor: '#102033',
+                                    paddingAll: '24px',
+                                    spacing: 'md',
+                                    contents: [
+                                        { type: 'image', url: imageUrl, size: 'lg', aspectRatio: '1:1', aspectMode: 'cover', align: 'center', gravity: 'center' },
+                                        { type: 'text', text: title, weight: 'bold', size: 'xl', color: '#ffffff', align: 'center', wrap: true },
+                                        { type: 'text', text: bodyText, size: 'sm', color: '#dbeafe', align: 'center', wrap: true }
+                                    ]
+                                },
+                                footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', color: '#06C755', action: { type: 'uri', label: buttonText, uri: actionUrl } }] }
+                            };
+                        }
+                        if (template === 'v3') {
+                            const items = bodyText.split('\n').map(v => v.trim()).filter(Boolean).slice(0, 8);
+                            const rows = (items.length ? items : [title]).map(item => ({
+                                type: 'box',
+                                layout: 'horizontal',
+                                spacing: 'sm',
+                                contents: [
+                                    { type: 'text', text: item, weight: 'bold', size: 'sm', color: '#111827', wrap: true, flex: 4 },
+                                    { type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: buttonText, uri: actionUrl }, flex: 2 }
+                                ]
+                            }));
+                            return {
+                                type: 'bubble',
+                                size: 'mega',
+                                hero: { type: 'image', url: imageUrl, size: 'full', aspectRatio: '20:9', aspectMode: 'cover' },
+                                body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [{ type: 'text', text: title, weight: 'bold', size: 'xl', wrap: true }, ...rows] }
+                            };
+                        }
+                        if (template === 'v4') {
+                            const videoUrl = broadcastUri(form.videoUrl || form.actionUrl);
+                            return {
+                                type: 'bubble',
+                                size: 'mega',
+                                hero: {
+                                    type: 'video',
+                                    url: videoUrl,
+                                    previewUrl: imageUrl,
+                                    altContent: { type: 'image', url: imageUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+                                    action: { type: 'uri', label: buttonText, uri: actionUrl }
+                                },
+                                body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+                                    { type: 'text', text: title, weight: 'bold', size: 'xl', wrap: true },
+                                    { type: 'text', text: bodyText, size: 'sm', color: '#64748b', wrap: true }
+                                ] }
+                            };
+                        }
+                        const videoUrl = broadcastUri(form.videoUrl || form.actionUrl);
+                        return {
+                            type: 'bubble',
+                            size: 'mega',
+                            hero: {
+                                type: 'video',
+                                url: videoUrl,
+                                previewUrl: imageUrl,
+                                altContent: { type: 'image', url: imageUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+                                action: { type: 'uri', label: buttonText, uri: actionUrl }
+                            },
+                            body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [
+                                { type: 'text', text: title, weight: 'bold', size: 'xl', wrap: true },
+                                { type: 'text', text: bodyText, size: 'sm', color: '#64748b', wrap: true }
+                            ] },
+                            footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', color: '#06C755', action: { type: 'uri', label: buttonText, uri: actionUrl } }] }
+                        };
+                    };
+
+                    const buildFlexMessageFromForm = (form) => ({
+                        type: 'flex',
+                        altText: String(form.altText || form.moduleName || form.keyword || 'LINE Flex 推播').slice(0, 400),
+                        contents: buildFlexContentsFromForm(form)
+                    });
+
                     const sendPaidBroadcast = async () => {
                         if (!broadcastForm.value.title.trim()) return alert('請輸入推播名稱');
                         if (!broadcastForm.value.message.trim()) return alert('請輸入推播內容');
@@ -2601,6 +2780,43 @@
                         return result.filter(log => [
                             log.uid, log.name, log.role, log.action, log.summary, log.targetUid, log.targetId, log.view
                         ].some(value => String(value || '').toLowerCase().includes(q)));
+                    });
+
+                    const flexRuleTimeValue = (rule) => {
+                        const raw = String(rule?.updatedAt || rule?.createdAt || rule?.id || '');
+                        const idTime = raw.match(/FR_(\d{10,})/);
+                        const date = idTime ? new Date(Number(idTime[1])) : new Date(raw);
+                        return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+                    };
+
+                    const filteredFlexRules = computed(() => {
+                        let result = flexRules.value.filter(rule => rule);
+                        if (flexRuleTypeFilter.value !== 'ALL') {
+                            result = result.filter(rule => String(rule.replyType || 'FLEX').toUpperCase() === flexRuleTypeFilter.value);
+                        }
+                        if (flexRuleStatusFilter.value === 'ACTIVE') {
+                            result = result.filter(rule => rule.active !== false);
+                        } else if (flexRuleStatusFilter.value === 'INACTIVE') {
+                            result = result.filter(rule => rule.active === false);
+                        }
+                        const tokens = flexRuleSearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+                        if (tokens.length) {
+                            result = result.filter(rule => {
+                                const haystack = [
+                                    rule.id, rule.moduleName, rule.keyword, rule.replyType, rule.flexTemplate,
+                                    rule.altText, rule.bodyText, rule.buttonText, rule.actionUrl
+                                ].map(v => String(v || '').toLowerCase()).join(' ');
+                                return tokens.every(token => haystack.includes(token));
+                            });
+                        }
+                        return result.slice().sort((a, b) => flexRuleTimeValue(b) - flexRuleTimeValue(a));
+                    });
+
+                    const flexRuleTotalPages = computed(() => Math.max(1, Math.ceil(filteredFlexRules.value.length / flexRulePageSize)));
+                    const pagedFlexRules = computed(() => {
+                        const page = Math.min(flexRulePage.value, flexRuleTotalPages.value);
+                        const start = (page - 1) * flexRulePageSize;
+                        return filteredFlexRules.value.slice(start, start + flexRulePageSize);
                     });
 
                     const memberBroadcastTags = (member) => {
@@ -3315,6 +3531,33 @@
                         reader.readAsDataURL(file);
                     };
 
+                    const handleFlexRuleImageUpload = (e) => {
+                        const file = e.target.files[0];
+                        if (!file || !editingFlexRule.value) return;
+                        isImageUploading.value = true;
+                        const reader = new FileReader();
+                        reader.onload = async (f) => {
+                            try {
+                                const res = await callApi('UPLOAD_IMAGE', { imageBase64: f.target.result });
+                                if (res && res.url) {
+                                    editingFlexRule.value.payload = res.url;
+                                    editingFlexRule.value.previewImageUrl = res.url;
+                                }
+                            } catch(e) {
+                                console.error(e);
+                                alert('模組圖片上傳失敗：' + e.message);
+                            } finally {
+                                isImageUploading.value = false;
+                                e.target.value = '';
+                            }
+                        };
+                        reader.onerror = () => {
+                            isImageUploading.value = false;
+                            alert('圖片讀取失敗，請換一張圖片再試');
+                        };
+                        reader.readAsDataURL(file);
+                    };
+
                     const importWpProducts = async () => {
                         if (!wpImportForm.value.username || !wpImportForm.value.appPassword || !wpImportForm.value.postIds) {
                             alert('請填寫 WordPress 帳號、Application Password 與商品 Post ID');
@@ -3574,39 +3817,218 @@
                         } catch(e) { console.error(e); alert('移除失敗：' + e.message); } finally { isLoading.value = false; }
                     };
 
-                    const openEditFlexRule = (rule) => {
-                        if (rule) {
-                            editingFlexRule.value = JSON.parse(JSON.stringify(rule));
-                        } else {
-                            editingFlexRule.value = {
-                                id: 'FR_' + Date.now(),
-                                keyword: '',
-                                replyType: 'FLEX',
-                                payload: '',
-                                active: true
-                            };
+                    const normalizeFlexRuleForm = (rule = {}) => {
+                        const next = JSON.parse(JSON.stringify(rule || {}));
+                        next.replyType = next.replyType || 'FLEX';
+                        next.flexTemplate = next.flexTemplate || 'v1';
+                        next.altText = next.altText || next.moduleName || next.keyword || '';
+                        next.bodyText = next.bodyText || '';
+                        next.buttonText = next.buttonText || '????';
+                        next.imageUrl = next.imageUrl || next.previewImageUrl || '';
+                        next.videoUrl = next.videoUrl || '';
+                        next.actionUrl = next.actionUrl || '';
+                        next.flexJson = next.flexJson || '';
+                        if (next.replyType === 'FLEX' && next.payload && !next.flexJson && !next.bodyText && !next.imageUrl) {
+                            next.flexJson = next.payload;
+                        }
+                        return next;
+                    };
+
+                    const getMylittlesysFrameWindow = () => {
+                        const iframe = mylittlesysFlexFrame.value;
+                        if (!iframe || !iframe.contentWindow) return null;
+                        try {
+                            void iframe.contentWindow.document;
+                            return iframe.contentWindow;
+                        } catch (e) {
+                            return null;
                         }
                     };
 
+                    const openMylittlesysTemplate = (template) => {
+                        if (!editingFlexRule.value) return;
+                        editingFlexRule.value.flexTemplate = template || 'v1';
+                        activeMylittlesysFlexMode.value = editingFlexRule.value.flexTemplate;
+                        const win = getMylittlesysFrameWindow();
+                        if (!win || typeof win.createNewFlex !== 'function') return;
+                        try {
+                            win.createNewFlex(editingFlexRule.value.flexTemplate);
+                            const nameInput = win.document.getElementById('save-filename');
+                            if (nameInput) nameInput.value = editingFlexRule.value.moduleName || nameInput.value || 'HookTea';
+                        } catch (e) {
+                            console.warn('mylittlesys template open failed', e);
+                        }
+                    };
+
+                    const syncMylittlesysFlexFrame = () => {
+                        if (!editingFlexRule.value || editingFlexRule.value.replyType !== 'FLEX') return;
+                        setTimeout(() => {
+                            const form = editingFlexRule.value;
+                            if (!form || form.replyType !== 'FLEX') return;
+                            activeMylittlesysFlexMode.value = form.flexTemplate || activeMylittlesysFlexMode.value || 'v1';
+                            const win = getMylittlesysFrameWindow();
+                            const raw = String(form.flexJson || form.payload || '').trim();
+                            if (win && raw && typeof win.loadMylittlesysFlexJson === 'function') {
+                                const loaded = win.loadMylittlesysFlexJson(raw, form.moduleName || form.keyword || 'HookTea', form.flexTemplate || 'v1');
+                                if (loaded) return;
+                            }
+                            openMylittlesysTemplate(form.flexTemplate || 'v1');
+                        }, 300);
+                    };
+
+                    const captureMylittlesysFlexJson = () => {
+                        if (!editingFlexRule.value) return false;
+                        const win = getMylittlesysFrameWindow();
+                        if (!win) return false;
+                        try {
+                            const raw = typeof win.getMylittlesysFlexJson === 'function'
+                                ? String(win.getMylittlesysFlexJson() || '').trim()
+                                : String(win.document.getElementById('json-output')?.value || '').trim();
+                            if (!raw) return false;
+                            JSON.parse(raw);
+                            editingFlexRule.value.flexJson = raw;
+                            editingFlexRule.value.payload = raw;
+                            const nameInput = win.document.getElementById('save-filename');
+                            if (nameInput?.value && !editingFlexRule.value.moduleName) editingFlexRule.value.moduleName = nameInput.value;
+                            return true;
+                        } catch (e) {
+                            alert('mylittlesys JSON ?????' + e.message);
+                            return false;
+                        }
+                    };
+
+                    const openEditFlexRule = (rule) => {
+                        if (rule) {
+                            editingFlexRule.value = normalizeFlexRuleForm(rule);
+                        } else {
+                            editingFlexRule.value = normalizeFlexRuleForm({
+                                id: 'FR_' + Date.now(),
+                                moduleName: '',
+                                keyword: '',
+                                replyType: 'FLEX',
+                                payload: '',
+                                previewImageUrl: '',
+                                active: true
+                            });
+                        }
+                        if (editingFlexRule.value?.replyType === 'FLEX') {
+                            activeMylittlesysFlexMode.value = editingFlexRule.value.flexTemplate || 'v1';
+                        }
+                    };
+
+                    const duplicateFlexRule = (rule) => {
+                        const suffix = String(Date.now()).slice(-6);
+                        const copied = normalizeFlexRuleForm(rule || {});
+                        delete copied.createdAt;
+                        delete copied.updatedAt;
+                        copied.id = 'FR_' + Date.now();
+                        copied.moduleName = `${copied.moduleName || copied.keyword || '??'} (??)`;
+                        if (copied.keyword) copied.keyword = `${copied.keyword}_copy_${suffix}`;
+                        if (copied.altText && copied.altText === (rule?.moduleName || rule?.keyword)) {
+                            copied.altText = copied.moduleName;
+                        }
+                        editingFlexRule.value = copied;
+                        if (copied.replyType === 'FLEX') {
+                            activeMylittlesysFlexMode.value = copied.flexTemplate || 'v1';
+                        }
+                    };
+
+                    const openNewFlexRule = (replyType = 'FLEX', template = 'v1') => {
+                        const type = String(replyType || 'FLEX').toUpperCase();
+                        const flexTemplate = String(template || 'v1').toLowerCase();
+                        editingFlexRule.value = normalizeFlexRuleForm({
+                            id: 'FR_' + Date.now(),
+                            moduleName: type === 'FLEX' ? `Flex ${flexTemplate.toUpperCase()} ??` : (type === 'IMAGE' ? '????' : '????'),
+                            keyword: '',
+                            replyType: type,
+                            flexTemplate,
+                            altText: '',
+                            bodyText: '',
+                            buttonText: '????',
+                            imageUrl: '',
+                            videoUrl: '',
+                            actionUrl: '',
+                            previewImageUrl: '',
+                            payload: '',
+                            flexJson: '',
+                            active: true
+                        });
+                        if (type === 'FLEX') activeMylittlesysFlexMode.value = flexTemplate;
+                    };
+
+                    const formatFlexRuleDate = (value) => {
+                        if (!value) return '-';
+                        const raw = String(value);
+                        const idTime = raw.match(/FR_(\d{10,})/);
+                        const date = idTime ? new Date(Number(idTime[1])) : new Date(raw);
+                        if (Number.isNaN(date.getTime())) return raw;
+                        return date.toLocaleString('zh-TW', { hour12: false });
+                    };
+
                     const saveFlexRule = async () => {
-                        if (!editingFlexRule.value.keyword || !editingFlexRule.value.payload) return alert('觸發關鍵字與回覆內容為必填！');
+                        if (editingFlexRule.value.replyType === 'FLEX') {
+                            const hasCapturedFlex = captureMylittlesysFlexJson();
+                            if (!hasCapturedFlex && !String(editingFlexRule.value.flexJson || editingFlexRule.value.payload || '').trim()) {
+                                return alert('??????? Flex JSON??????????????????? JSON??');
+                            }
+                            if (!editingFlexRule.value.moduleName) {
+                                editingFlexRule.value.moduleName = `Flex ${String(editingFlexRule.value.flexTemplate || 'v1').toUpperCase()} ??`;
+                            }
+                            try {
+                                const rawFlex = String(editingFlexRule.value.flexJson || editingFlexRule.value.payload || '').trim();
+                                const parsedFlex = rawFlex ? JSON.parse(rawFlex) : buildFlexMessageFromForm(editingFlexRule.value);
+                                const message = parsedFlex.type === 'flex' && parsedFlex.contents
+                                    ? parsedFlex
+                                    : {
+                                        type: 'flex',
+                                        altText: String(editingFlexRule.value.altText || editingFlexRule.value.moduleName || editingFlexRule.value.keyword || 'LINE Flex ??').slice(0, 400),
+                                        contents: parsedFlex
+                                    };
+                                editingFlexRule.value.payload = JSON.stringify(message, null, 2);
+                                editingFlexRule.value.previewImageUrl = editingFlexRule.value.imageUrl || editingFlexRule.value.previewImageUrl || '';
+                            } catch (e) {
+                                return alert('Flex ?????' + e.message);
+                            }
+                        }
+                        if (!editingFlexRule.value.moduleName) return alert('???????');
+                        if (!editingFlexRule.value.payload) return alert('???????');
+                        const nowIso = new Date().toISOString();
+                        const ruleToSave = {
+                            ...editingFlexRule.value,
+                            createdAt: editingFlexRule.value.createdAt || nowIso,
+                            updatedAt: nowIso
+                        };
+                        let saved = false;
                         isLoading.value = true;
                         try {
-                            const res = await callApi('ADMIN_SAVE_REPLY_RULE', editingFlexRule.value);
+                            const res = await callApi('ADMIN_SAVE_REPLY_RULE', ruleToSave);
                             if (res && res.success) {
-                                alert('✅ 觸發規則儲存成功！');
+                                if (Array.isArray(res.flexRules)) {
+                                    flexRules.value = res.flexRules;
+                                } else {
+                                    const idx = flexRules.value.findIndex(rule => rule.id === ruleToSave.id);
+                                    if (idx >= 0) flexRules.value.splice(idx, 1, ruleToSave);
+                                    else flexRules.value.unshift(ruleToSave);
+                                }
                                 editingFlexRule.value = null;
-                                fetchData(true);
+                                saved = true;
                             }
-                        } catch(e) { console.error(e); alert('儲存失敗：' + e.message); } finally { isLoading.value = false; }
+                            if (!saved) throw new Error(res?.message || '?????????');
+                        } catch(e) {
+                            console.error(e);
+                            alert('?????' + e.message);
+                        } finally {
+                            isLoading.value = false;
+                        }
+                        if (saved) alert('? ?????????');
                     };
 
                     const deleteFlexRule = async (id) => {
-                        if (!confirm('確定要永久刪除此規則嗎？')) return;
+                        if (!confirm('????????????')) return;
                         isLoading.value = true;
                         try {
                             const res = await callApi('ADMIN_DELETE_REPLY_RULE', { id });
-                            if (res && res.success) fetchData(true);
+                            if (res && res.success) flexRules.value = res.flexRules || flexRules.value.filter(rule => rule.id !== id);
                         } catch(e) {} finally { isLoading.value = false; }
                     };
 
@@ -3927,20 +4349,21 @@
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
                         memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
                         orderSearch, orderTypeFilter, filteredOrders, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
+                        flexRuleSearch, flexRuleTypeFilter, flexRuleStatusFilter, flexRulePage, flexRuleTotalPages, filteredFlexRules, pagedFlexRules,
                         newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastTagCount,
                         approveForm, teacherApprovalCandidates, wpImportForm, isImageUploading, editingCourse, editingProduct,
-                        activeEnrollmentCourse, courseOrders, editingOrder, editingSysConfig, editingFlexRule,
+                        activeEnrollmentCourse, courseOrders, editingOrder, editingSysConfig, editingFlexRule, mylittlesysFlexFrame, mylittlesysFlexUrl,
                         showOrdersModal, selectedCourseForOrders, selectedCourseOrders, currentCourseOrders,
                         showReservationCourseModal, selectedTeacherForReservation, teacherReservationCourses, isTeacherCourse,
                         activeMember, activeMemberPoints, editingPointAction,
                         lineLogin, handleLogin, toggleGroup, switchView, logout, fetchData, manualRefreshData,
                         triggerBackup, runHealthCheck, openMemberDetail, displayMemberName, memberLineUid, memberAvatarUrl, memberInitial, ledgerMemberName, copyText, openLedgerMember, memberRoleTags, toggleMemberSystem, toggleMemberOperator, toggleMemberTeacher, saveMemberDetail, deleteMember, restoreMember, openPointActionModal, submitPointAction,
                         openNewCourseModal, openEditModal, saveCourse, deleteCourse, copyCourse, openNewProductModal, openEditProductModal, saveProduct, deleteProduct, importWpProducts, syncToCalendar,
-                        handleBannerUpload, handleProductImageUpload, handleCourseImageUpload, saveSettings, addCourseLocation, openEnrollments, openCourseOrdersModal,
+                        handleBannerUpload, handleProductImageUpload, handleCourseImageUpload, handleFlexRuleImageUpload, saveSettings, addCourseLocation, openEnrollments, openCourseOrdersModal,
                         openTeacherReservationCourses, editReservationCourseFromTeacher,
                         generateCheckinLink, updateOrderAttendance, openOrderEditModal, saveOrderUpdate, transferOrderCourse,
                         openSysConfigModal, saveSysConfig, handleApproveTeacher, removeTeacher, getCourseName, formatPrice,
-                        downloadMemberReport, downloadSalesReport, downloadCourseReport, downloadBookingReport, loadPointsLedger, loadAuditLogs, loadBroadcastData, saveAudienceTag, toggleBroadcastMemberTag, resetBroadcastAudience, sendPaidBroadcast, runWasabiCheck, exportLowRiskWasabiSnapshot, verifyLowRiskWasabiSnapshot, exportHighRiskWasabiSnapshot, verifyHighRiskWasabiSnapshot, runWasabiDailyCheck, openEditFlexRule, saveFlexRule, deleteFlexRule, loadMemberCardTemplate, syncWPPointsFromCRM
+                        downloadMemberReport, downloadSalesReport, downloadCourseReport, downloadBookingReport, loadPointsLedger, loadAuditLogs, loadBroadcastData, saveAudienceTag, toggleBroadcastMemberTag, resetBroadcastAudience, sendPaidBroadcast, runWasabiCheck, exportLowRiskWasabiSnapshot, verifyLowRiskWasabiSnapshot, exportHighRiskWasabiSnapshot, verifyHighRiskWasabiSnapshot, runWasabiDailyCheck, openNewFlexRule, openEditFlexRule, duplicateFlexRule, saveFlexRule, deleteFlexRule, loadMemberCardTemplate, openMylittlesysTemplate, syncMylittlesysFlexFrame, captureMylittlesysFlexJson, formatFlexRuleDate, syncWPPointsFromCRM
                     };
                 }
             }).mount('#app');

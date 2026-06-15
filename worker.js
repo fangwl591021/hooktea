@@ -2689,6 +2689,7 @@ const STATIC_HTML_FILES = new Set([
   "mobile_admin.html",
   "videos.html",
   "line-oa-monitor.html",
+  "mylittlesys_free.html",
 ]);
 
 async function serveStaticHtml(request, env, corsHeaders) {
