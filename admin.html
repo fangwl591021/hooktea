@@ -534,6 +534,33 @@
                                         <textarea v-model="broadcastForm.message" class="input-field h-40 resize-none leading-relaxed" maxlength="4900" placeholder="請輸入要推播給受眾的 LINE 文字訊息"></textarea>
                                         <div class="text-right text-xs font-bold text-slate-400 mt-1">{{ broadcastForm.message.length }} / 4900</div>
                                     </div>
+                                    <div class="rounded-xl border border-indigo-100 bg-indigo-50/40 p-5">
+                                        <div class="flex items-center justify-between gap-3 mb-3">
+                                            <div>
+                                                <label class="input-label !mb-1">FLEX / 模組內容（可複選）</label>
+                                                <div class="text-xs font-bold text-slate-400">可搭配文字一起發送，LINE 單次最多 5 則訊息。</div>
+                                            </div>
+                                            <span class="status-badge bg-indigo-100 text-indigo-700">共 {{ broadcastMessageCount }} 則</span>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[260px] overflow-y-auto custom-scrollbar pr-1">
+                                            <label v-for="module in broadcastModuleOptions" :key="module.id" class="rounded-xl border bg-white p-3 cursor-pointer transition hover:border-indigo-300" :class="broadcastSelectedModuleIds.includes(module.id) ? 'border-indigo-500 ring-2 ring-indigo-100' : 'border-slate-200'">
+                                                <div class="flex items-start gap-3">
+                                                    <input type="checkbox" class="mt-1 w-5 h-5 accent-indigo-600" :value="module.id" v-model="broadcastSelectedModuleIds" :disabled="!broadcastSelectedModuleIds.includes(module.id) && broadcastMessageCount >= 5">
+                                                    <div class="min-w-0 flex-1">
+                                                        <div class="flex items-center gap-2">
+                                                            <span class="status-badge" :class="module.replyType === 'FLEX' ? 'bg-indigo-100 text-indigo-700' : (module.replyType === 'IMAGE' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600')">{{ module.replyType === 'FLEX' ? 'FLEX' : (module.replyType === 'IMAGE' ? '圖片' : '文字') }}</span>
+                                                            <span v-if="module.replyType === 'FLEX'" class="status-badge bg-emerald-50 text-emerald-700">{{ String(module.flexTemplate || 'v1').toUpperCase() }}</span>
+                                                        </div>
+                                                        <div class="font-black text-slate-800 truncate mt-2">{{ module.moduleName || module.keyword || module.id }}</div>
+                                                        <div class="text-xs font-bold text-slate-400 truncate mt-1">{{ module.keyword || module.altText || '無觸發字' }}</div>
+                                                    </div>
+                                                </div>
+                                            </label>
+                                            <div v-if="!broadcastModuleOptions.length" class="col-span-1 md:col-span-2 p-5 text-center text-sm font-bold text-slate-400 bg-white rounded-xl border border-slate-200">
+                                                尚未建立可推播模組，請先到「機器人與專區卡片」建立 FLEX。
+                                            </div>
+                                        </div>
+                                    </div>
                                     <div class="rounded-xl border border-slate-200 bg-slate-50 p-5">
                                         <div class="flex items-center justify-between mb-4">
                                             <h4 class="font-black text-slate-800"><i class="fas fa-filter text-indigo-500 mr-2"></i>受眾條件</h4>
@@ -1775,6 +1802,7 @@
                     const newBroadcastTag = ref({ name: '', color: '#06C755', description: '' });
                     const selectedBroadcastTag = ref('');
                     const broadcastMemberSearch = ref('');
+                    const broadcastSelectedModuleIds = ref([]);
                     const broadcastForm = ref({ title: '', message: '', audience: { tags: [], tag: '', gender: '', keyword: '' } });
                     
                     const isImageUploading = ref(false);
@@ -2506,6 +2534,7 @@
                             const data = await callApi('ADMIN_GET_BROADCAST_DATA', {}, true);
                             broadcastTags.value = Array.isArray(data?.tags) ? data.tags : [];
                             broadcastCampaigns.value = Array.isArray(data?.campaigns) ? data.campaigns : [];
+                            if (Array.isArray(data?.flexRules)) flexRules.value = data.flexRules;
                             if (!selectedBroadcastTag.value && broadcastTags.value.length) selectedBroadcastTag.value = broadcastTags.value[0].name;
                         } catch (e) {
                             console.error(e);
@@ -2652,17 +2681,81 @@
                         contents: buildFlexContentsFromForm(form)
                     });
 
+                    const broadcastModuleOptions = computed(() => flexRules.value
+                        .filter(rule => rule && rule.active !== false)
+                        .filter(rule => {
+                            const type = String(rule.replyType || 'FLEX').toUpperCase();
+                            return ['FLEX', 'IMAGE', 'TEXT'].includes(type) && String(rule.payload || rule.flexJson || rule.imageUrl || rule.bodyText || rule.message || '').trim();
+                        })
+                        .sort((a, b) => flexRuleTimeValue(b) - flexRuleTimeValue(a))
+                    );
+                    const selectedBroadcastModules = computed(() => {
+                        const selected = new Set(broadcastSelectedModuleIds.value);
+                        return broadcastModuleOptions.value.filter(module => selected.has(module.id));
+                    });
+                    const parseModuleLineMessage = (module) => {
+                        const type = String(module?.replyType || 'FLEX').toUpperCase();
+                        const raw = String(module?.payload || module?.flexJson || '').trim();
+                        if (raw) {
+                            const parsed = JSON.parse(raw);
+                            if (parsed && ['text', 'flex', 'image', 'video'].includes(parsed.type)) return parsed;
+                            if (type === 'FLEX' && parsed && ['bubble', 'carousel'].includes(parsed.type)) {
+                                return {
+                                    type: 'flex',
+                                    altText: String(module.altText || module.moduleName || module.keyword || 'LINE Flex 推播').slice(0, 400),
+                                    contents: parsed
+                                };
+                            }
+                        }
+                        if (type === 'TEXT') {
+                            const text = String(module.bodyText || module.message || module.moduleName || '').trim();
+                            if (!text) throw new Error(`${module.moduleName || module.id} 缺少文字內容`);
+                            return { type: 'text', text: text.slice(0, 4900) };
+                        }
+                        if (type === 'IMAGE') {
+                            const imageUrl = broadcastUri(module.imageUrl || module.previewImageUrl || module.payload, '');
+                            if (!imageUrl) throw new Error(`${module.moduleName || module.id} 缺少圖片網址`);
+                            return { type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl };
+                        }
+                        return buildFlexMessageFromForm(module);
+                    };
+                    const selectedBroadcastModuleMessages = computed(() => {
+                        const messages = [];
+                        for (const module of selectedBroadcastModules.value) {
+                            try {
+                                messages.push(parseModuleLineMessage(module));
+                            } catch (e) {
+                                console.warn('broadcast module parse failed', module, e);
+                            }
+                        }
+                        return messages;
+                    });
+                    const broadcastMessageCount = computed(() => (broadcastForm.value.message.trim() ? 1 : 0) + selectedBroadcastModules.value.length);
+
                     const sendPaidBroadcast = async () => {
                         if (!broadcastForm.value.title.trim()) return alert('請輸入推播名稱');
-                        if (!broadcastForm.value.message.trim()) return alert('請輸入推播內容');
+                        const text = broadcastForm.value.message.trim();
+                        const moduleMessages = [];
+                        for (const module of selectedBroadcastModules.value) {
+                            try {
+                                moduleMessages.push(parseModuleLineMessage(module));
+                            } catch (e) {
+                                return alert(`模組內容錯誤：${e.message}`);
+                            }
+                        }
+                        const messageCount = (text ? 1 : 0) + moduleMessages.length;
+                        if (!messageCount) return alert('請輸入推播文字，或選擇至少一個 FLEX / 模組內容');
+                        if (messageCount > 5) return alert('LINE 單次最多只能發送 5 則訊息，請減少文字或模組數量');
                         const count = broadcastAudiencePreview.value.length;
                         if (!count) return alert('目前受眾為 0，無法推播');
-                        if (!confirm(`確定要推播給 ${count} 位會員？\n\n送出後會直接透過 LINE OA 發送，請確認文字與受眾條件。`)) return;
+                        if (!confirm(`確定要推播給 ${count} 位會員？\n\n本次會發送 ${messageCount} 則 LINE 訊息（文字 ${text ? 1 : 0}、模組 ${moduleMessages.length}）。\n送出後會直接透過 LINE OA 發送。`)) return;
                         isLoading.value = true;
                         try {
                             const data = await callApi('ADMIN_SEND_PAID_BROADCAST', {
                                 title: broadcastForm.value.title,
-                                message: broadcastForm.value.message,
+                                message: text,
+                                moduleIds: selectedBroadcastModules.value.map(module => module.id),
+                                moduleMessages,
                                 audience: broadcastForm.value.audience,
                             });
                             if (data?.campaign) broadcastCampaigns.value.unshift(data.campaign);
@@ -4381,7 +4474,7 @@
                         memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
                         orderSearch, orderTypeFilter, filteredOrders, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
                         flexRuleSearch, flexRuleTypeFilter, flexRuleStatusFilter, flexRulePage, flexRuleTotalPages, filteredFlexRules, pagedFlexRules,
-                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, audienceTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount,
+                        newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastSelectedModuleIds, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, audienceTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount, broadcastModuleOptions, broadcastMessageCount,
                         approveForm, teacherApprovalCandidates, wpImportForm, isImageUploading, editingCourse, editingProduct,
                         activeEnrollmentCourse, courseOrders, editingOrder, editingSysConfig, editingFlexRule, mylittlesysFlexFrame, mylittlesysFlexUrl,
                         showOrdersModal, selectedCourseForOrders, selectedCourseOrders, currentCourseOrders,

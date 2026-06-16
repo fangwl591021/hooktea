@@ -1857,6 +1857,49 @@ function selectBroadcastAudience(users, audience = {}) {
   return uniqueUsersById(Array.isArray(users) ? users : []).filter(user => audienceMatchesUser(user, audience));
 }
 
+function normalizePaidBroadcastMessages(payload = {}) {
+  const messages = [];
+  const text = String(payload?.message || "").trim();
+  if (text) messages.push({ type: "text", text: text.slice(0, 4900) });
+  const moduleMessages = Array.isArray(payload?.moduleMessages) ? payload.moduleMessages : [];
+  for (const raw of moduleMessages) {
+    if (!raw || typeof raw !== "object") continue;
+    const type = String(raw.type || "").trim().toLowerCase();
+    if (!["text", "flex", "image", "video"].includes(type)) throw new Error(`不支援的 LINE 訊息類型：${type || "unknown"}`);
+    if (type === "text") {
+      const moduleText = String(raw.text || "").trim();
+      if (!moduleText) throw new Error("文字模組缺少 text");
+      messages.push({ type: "text", text: moduleText.slice(0, 4900) });
+      continue;
+    }
+    if (type === "flex") {
+      if (!raw.contents) throw new Error("FLEX 模組缺少 contents");
+      messages.push({
+        type: "flex",
+        altText: String(raw.altText || "HookTea 推播").slice(0, 400),
+        contents: raw.contents,
+      });
+      continue;
+    }
+    if (type === "image") {
+      const originalContentUrl = String(raw.originalContentUrl || raw.url || "").trim();
+      const previewImageUrl = String(raw.previewImageUrl || originalContentUrl).trim();
+      if (!/^https:\/\//i.test(originalContentUrl) || !/^https:\/\//i.test(previewImageUrl)) throw new Error("圖片模組網址必須是 HTTPS");
+      messages.push({ type: "image", originalContentUrl, previewImageUrl });
+      continue;
+    }
+    if (type === "video") {
+      const originalContentUrl = String(raw.originalContentUrl || raw.url || "").trim();
+      const previewImageUrl = String(raw.previewImageUrl || raw.previewUrl || "").trim();
+      if (!/^https:\/\//i.test(originalContentUrl) || !/^https:\/\//i.test(previewImageUrl)) throw new Error("影片模組網址與預覽圖必須是 HTTPS");
+      messages.push({ type: "video", originalContentUrl, previewImageUrl });
+    }
+  }
+  if (!messages.length) throw new Error("請輸入推播內容或選擇 FLEX 模組");
+  if (messages.length > 5) throw new Error("LINE 單次最多只能推播 5 則訊息");
+  return messages;
+}
+
 async function sendLineMulticast(env, recipients, messages) {
   const token = getLineChannelAccessToken(env);
   if (!token) throw new Error("Cloudflare 尚未綁定 LINE_CHANNEL_ACCESS_TOKEN 金鑰！");
@@ -6049,6 +6092,9 @@ export default {
               products: await safeGetProducts(env),
               paymentLogs: await safeGetKV(env, "PAYMENT_LOGS", [], { preferWasabi: false }),
               lineBindReviews: await listLineBindReviewCases(env),
+              flexRules: await safeGetKV(env, "FLEX_RULES", []),
+              broadcastTags: normalizeAudienceTags(await safeGetKV(env, "BROADCAST_TAGS", [])),
+              broadcastCampaigns: await safeGetKV(env, "PAID_BROADCASTS", []),
               teachers: localUsers.filter(u => u.memberTier && ['專業導師', '導師'].some(t => u.memberTier.includes(t))),
               settings: adminSettings
           };
@@ -6092,7 +6138,46 @@ export default {
           result.data = {
             tags: normalizeAudienceTags(await safeGetKV(env, "BROADCAST_TAGS", [])),
             campaigns: await safeGetKV(env, "PAID_BROADCASTS", []),
+            flexRules: await safeGetKV(env, "FLEX_RULES", []),
           };
+          break;
+        }
+
+        case "ADMIN_SAVE_REPLY_RULE": {
+          if (!access.isAdmin) throw new Error("Admin authorization required");
+          const existingFlexRules = await safeGetKV(env, "FLEX_RULES", []);
+          const flexRules = Array.isArray(existingFlexRules) ? existingFlexRules : [];
+          const nowIso = new Date().toISOString();
+          const rule = {
+            ...payload,
+            id: String(payload?.id || `FR_${Date.now()}`).trim(),
+            moduleName: String(payload?.moduleName || payload?.keyword || "HookTea 模組").trim(),
+            keyword: String(payload?.keyword || "").trim(),
+            replyType: String(payload?.replyType || "FLEX").trim().toUpperCase(),
+            flexTemplate: String(payload?.flexTemplate || "v1").trim().toLowerCase(),
+            payload: String(payload?.payload || payload?.flexJson || "").trim(),
+            flexJson: String(payload?.flexJson || payload?.payload || "").trim(),
+            active: payload?.active !== false,
+            createdAt: payload?.createdAt || nowIso,
+            updatedAt: nowIso,
+          };
+          if (!rule.moduleName) throw new Error("請輸入模組名稱");
+          if (!rule.payload && !rule.flexJson && !rule.imageUrl && !rule.bodyText) throw new Error("請輸入模組內容");
+          const idx = flexRules.findIndex(item => item && item.id === rule.id);
+          if (idx >= 0) flexRules[idx] = { ...flexRules[idx], ...rule };
+          else flexRules.unshift(rule);
+          await safePutKV(env, "FLEX_RULES", flexRules);
+          result.data = { success: true, flexRules };
+          break;
+        }
+
+        case "ADMIN_DELETE_REPLY_RULE": {
+          if (!access.isAdmin) throw new Error("Admin authorization required");
+          const id = String(payload?.id || "").trim();
+          if (!id) throw new Error("缺少模組 ID");
+          const flexRules = (await safeGetKV(env, "FLEX_RULES", []) || []).filter(rule => rule && rule.id !== id);
+          await safePutKV(env, "FLEX_RULES", flexRules);
+          result.data = { success: true, flexRules };
           break;
         }
 
@@ -6138,19 +6223,22 @@ export default {
           if (!access.isAdmin) throw new Error("Admin authorization required");
           const title = String(payload?.title || "").trim();
           const text = String(payload?.message || "").trim();
+          const messages = normalizePaidBroadcastMessages(payload);
           if (!title) throw new Error("請輸入推播名稱");
-          if (!text) throw new Error("請輸入推播內容");
           const allUsers = uniqueUsersById(await listUserRecords(env));
           const recipients = selectBroadcastAudience(allUsers, payload?.audience || {});
           if (!recipients.length) throw new Error("目前受眾為 0，沒有可推播會員");
           const reachableRecipients = recipients.filter(user => String(user.lineUserId || user.linkedLineUid || user.lineUid || user.userId || "").trim().startsWith("U"));
           if (!reachableRecipients.length) throw new Error("目前受眾尚未綁定 LINE UID，無法推播");
-          const sendResult = await sendLineMulticast(env, reachableRecipients, [{ type: "text", text }]);
+          const sendResult = await sendLineMulticast(env, reachableRecipients, messages);
           const campaigns = await safeGetKV(env, "PAID_BROADCASTS", []);
           const campaign = {
             id: crypto.randomUUID ? crypto.randomUUID() : `BCAST_${Date.now()}`,
             title,
             message: text,
+            messageTypes: messages.map(message => message.type),
+            messageCount: messages.length,
+            moduleIds: Array.isArray(payload?.moduleIds) ? payload.moduleIds.map(id => String(id || "").trim()).filter(Boolean) : [],
             audience: payload?.audience || {},
             targetCount: recipients.length,
             reachableCount: reachableRecipients.length,
