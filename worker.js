@@ -5318,7 +5318,53 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const count = Number(memberData.referrals?.count || 0);
       const orderCount = Number(memberData.orders?.count || 0);
       return '<section class="member-detail"><div class="member-detail-head"><div class="member-detail-title">推薦成果</div></div>'
-        + '<div class="points-summary"><div class="points-card"><small>推薦人數</small><b>'+money(count)+' 人</b></div><div class="points-card"><small>訂單紀錄</small><b>'+money(orderCount)+' 筆</b></div></div></section>';
+        + '<div class="points-summary"><div class="points-card"><small>推薦人數</small><b>'+money(count)+' 人</b></div><div class="points-card"><small>訂單紀錄</small><b>'+money(orderCount)+' 筆</b></div></div>'
+        + '<button class="member-save" onclick="shareMemberReferral()">分享給好友</button>'
+        + '<div class="member-empty" style="margin-top:10px;text-align:left">好友收到後點「加入 HookTea 會員」，會進入 LINE 身分確認並完成推薦登記。</div>'
+        + '</section>';
+    }
+    function buildMemberReferralInviteUrl(){
+      const member = memberData?.member || {};
+      const ref = memberData?.memberUid || member.userId || lineProfile.userId || "";
+      const invite = new URL(location.origin + "/referral");
+      if (ref) invite.searchParams.set("ref", ref);
+      if (lineProfile.userId) invite.searchParams.set("lineRef", lineProfile.userId);
+      invite.searchParams.set("source", "member_panel_share");
+      return invite.toString();
+    }
+    function buildMemberReferralShareMessage(inviteUrl){
+      return {
+        type: "flex",
+        altText: "HookTea 會員邀請",
+        contents: {
+          type: "bubble",
+          body: {
+            type: "box",
+            layout: "vertical",
+            spacing: "md",
+            contents: [
+              { type: "text", text: "HookTea 會員邀請", weight: "bold", size: "xl", align: "center" },
+              { type: "text", text: "點下方按鈕加入 HookTea 會員，系統會保留推薦來源。", wrap: true, size: "sm", color: "#64748b" },
+              { type: "button", style: "primary", color: "#06C755", action: { type: "uri", label: "加入 HookTea 會員", uri: inviteUrl } }
+            ]
+          }
+        }
+      };
+    }
+    async function shareMemberReferral(){
+      if (!lineProfile.userId) return loginLine();
+      const inviteUrl = buildMemberReferralInviteUrl();
+      try {
+        if (window.liff && liff.isApiAvailable && liff.isApiAvailable("shareTargetPicker")) {
+          const result = await liff.shareTargetPicker([buildMemberReferralShareMessage(inviteUrl)]);
+          toast(result ? "已送出分享邀請" : "已取消分享");
+          return;
+        }
+      } catch (error) {
+        console.warn("shareTargetPicker failed", error);
+      }
+      const text = "邀請你加入 HookTea 會員：\\n" + inviteUrl;
+      location.href = "https://line.me/R/msg/text/?" + encodeURIComponent(text);
     }
     function editMemberProfile(){ memberEditMode = true; renderMemberPanel(); }
     function cancelMemberEdit(){ memberEditMode = false; renderMemberPanel(); }
