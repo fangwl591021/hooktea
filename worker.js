@@ -4665,6 +4665,63 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   return json({ ok: true, order, payment, remittanceInfo });
 }
 
+async function handleHuaxuCancelOrder(request, env, ctx, apiHandler) {
+  const payload = await request.json().catch(() => ({}));
+  const orderId = String(payload.orderId || "").trim();
+  if (!orderId) return json({ ok: false, message: "缺少訂單編號" }, 400);
+  const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
+  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
+  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  const memberUid = resolved.memberUid || lineUid;
+  const orders = await safeGetKV(env, "ORDERS", []);
+  const list = Array.isArray(orders) ? orders : [];
+  const idx = list.findIndex(order => order && String(order.orderId || "") === orderId);
+  if (idx < 0) return json({ ok: false, message: "找不到訂單" }, 404);
+  const order = list[idx];
+  const ownerIds = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId, order.pointsMemberUid]
+    .map(value => String(value || "").trim())
+    .filter(Boolean);
+  if (!ownerIds.includes(lineUid) && !ownerIds.includes(memberUid)) {
+    return json({ ok: false, message: "無法取消非本人訂單" }, 403);
+  }
+  const status = String(order.status || "").toUpperCase();
+  if (["PAID", "SHIPPED", "COMPLETED"].includes(status)) {
+    return json({ ok: false, message: "此訂單已付款或已出貨，請聯絡客服處理" }, 400);
+  }
+  if (status === "CANCELLED") return json({ ok: true, order, duplicate: true });
+
+  const nowIso = new Date().toISOString();
+  const patch = {
+    status: "CANCELLED",
+    paymentStatus: "CANCELLED",
+    cancelledAt: nowIso,
+    cancelReason: String(payload.reason || "會員自行取消").slice(0, 120),
+  };
+  const pointsToRestore = Math.max(0, Math.floor(Number(order.pointsUsed || 0)));
+  const restoreUid = String(order.pointsMemberUid || memberUid || lineUid).trim();
+  if (pointsToRestore > 0 && order.pointsDeductedAt && !order.pointsRestoredAt && restoreUid && apiHandler?.updatePoints) {
+    await apiHandler.updatePoints(env, ctx, restoreUid, pointsToRestore, `取消訂單回補：${orderId}`, {
+      source: "huaxu_shop_cancel",
+      targetName: order.name || order.recipientName || "",
+    });
+    patch.pointsRestoredAt = nowIso;
+    patch.pointRestoreReason = "ORDER_CANCEL";
+  }
+  list[idx] = { ...order, ...patch, updatedAt: nowIso };
+  await putOrdersKV(env, ctx, list);
+  await appendPaymentLog(env, {
+    timestamp: new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }),
+    orderNo: orderId,
+    amount: Number(order.amount || 0),
+    status: "CANCELLED",
+    message: pointsToRestore > 0 ? `會員取消訂單，回補 ${pointsToRestore} 點` : "會員取消訂單",
+    tradeNo: String(order.linePayTransactionId || ""),
+    source: "HUAXU_ORDER_CANCEL",
+  }).catch(() => {});
+  if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}));
+  return json({ ok: true, order: list[idx], pointsRestored: pointsToRestore });
+}
+
 async function handleHuaxuLiffDebug(request, env) {
   const payload = await request.json().catch(() => ({}));
   const entry = {
@@ -4693,6 +4750,7 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/member" && request.method === "PUT") return handleHuaxuUpdateMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/checkin" && request.method === "POST") return handleHuaxuMemberCheckin(request, env, ctx);
   if (url.pathname === "/api/huaxu/liff-debug" && request.method === "POST") return handleHuaxuLiffDebug(request, env);
+  if (url.pathname === "/api/huaxu/orders/cancel" && request.method === "POST") return handleHuaxuCancelOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
     const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
@@ -4838,6 +4896,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     let memberLoading = false;
     let activeMemberSection = "";
     let memberEditMode = false;
+    let expandedOrderId = "";
+    let cancellingOrderId = "";
     let isCheckingOut = false;
     let entryContext = { url: location.href.split("#")[0], params: {} };
     const SHOP_LIFF_ID = ${JSON.stringify(String(shopLiffId || "2007674851-ijenzSk8"))};
@@ -5480,23 +5540,65 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         + '</section>';
     }
     function renderOrderRow(order){
+      const orderId = String(order.orderId || "");
       const status = orderStatusText(order.status);
       const payment = paymentText(order);
       const amount = Number(order.amount || 0);
       const original = Number(order.originalAmount || amount || 0);
       const points = Number(order.pointsUsed || 0);
+      const expanded = expandedOrderId === orderId;
       const tracking = order.trackingUrl
         ? '<a href="'+escapeAttr(order.trackingUrl)+'" target="_blank" rel="noopener" style="color:#2563eb;font-weight:900;text-decoration:none">物流查詢</a>'
         : (order.trackingNumber ? escapeHtml(order.trackingNumber) : "尚未出貨");
+      const cancellable = canCancelOrder(order);
+      const cancelButton = cancellable
+        ? '<button class="member-edit" style="background:#fee2e2;color:#dc2626" onclick="cancelOrder(\\''+escapeAttr(orderId)+'\\')">'+(cancellingOrderId === orderId ? "取消中..." : "取消訂單")+'</button>'
+        : "";
       return '<div class="point-log" style="display:block">'
+        + '<button style="width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0" onclick="toggleOrderDetail(\\''+escapeAttr(orderId)+'\\')">'
         + '<div class="point-log-title">'+escapeHtml(order.productName || "商城訂單")+'</div>'
-        + '<div class="point-log-date">'+escapeHtml(order.orderId || "")+' · '+escapeHtml(formatDate(order.createdAt || ""))+'</div>'
-        + '<div class="member-info-row"><span>狀態</span><b>'+escapeHtml(status)+'</b></div>'
-        + '<div class="member-info-row"><span>付款</span><b>'+escapeHtml(payment)+'</b></div>'
-        + '<div class="member-info-row"><span>金額</span><b>$'+money(amount)+(points ? ' / 折 '+money(points)+' 點' : '')+(original && original !== amount ? ' / 原 $'+money(original) : '')+'</b></div>'
-        + '<div class="member-info-row"><span>物流</span><b>'+escapeHtml(order.shippingCarrierName || "-")+'</b></div>'
-        + '<div class="member-info-row"><span>追蹤</span><b>'+tracking+'</b></div>'
+        + '<div class="point-log-date">'+escapeHtml(orderId)+' · '+escapeHtml(formatDate(order.createdAt || ""))+'</div>'
+        + '<div class="member-info-row"><span>'+escapeHtml(status)+' · $'+money(amount)+'</span><b>'+(expanded ? "收合" : "展開")+'</b></div>'
+        + '</button>'
+        + (expanded
+          ? '<div class="member-info-row"><span>狀態</span><b>'+escapeHtml(status)+'</b></div>'
+            + '<div class="member-info-row"><span>付款</span><b>'+escapeHtml(payment)+'</b></div>'
+            + '<div class="member-info-row"><span>金額</span><b>$'+money(amount)+(points ? ' / 折 '+money(points)+' 點' : '')+(original && original !== amount ? ' / 原 $'+money(original) : '')+'</b></div>'
+            + '<div class="member-info-row"><span>物流</span><b>'+escapeHtml(order.shippingCarrierName || "-")+'</b></div>'
+            + '<div class="member-info-row"><span>追蹤</span><b>'+tracking+'</b></div>'
+            + (cancelButton ? '<div style="padding-top:12px">'+cancelButton+'</div>' : '')
+          : '')
         + '</div>';
+    }
+    function toggleOrderDetail(orderId){
+      expandedOrderId = expandedOrderId === orderId ? "" : orderId;
+      renderMemberPanel();
+    }
+    function canCancelOrder(order){
+      const status = String(order.status || "").toUpperCase();
+      return !!order.orderId && !["PAID","SHIPPED","COMPLETED","CANCELLED"].includes(status);
+    }
+    async function cancelOrder(orderId){
+      if (!orderId || cancellingOrderId) return;
+      if (!confirm("確定要取消這筆訂單？")) return;
+      cancellingOrderId = orderId;
+      renderMemberPanel();
+      try {
+        const res = await fetch("/api/huaxu/orders/cancel", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ orderId, lineProfile })
+        }).then(r => r.json());
+        if (!res.ok) throw new Error(res.message || "取消訂單失敗");
+        toast(res.pointsRestored ? "訂單已取消，點數已回補" : "訂單已取消");
+        await refreshMemberData();
+        expandedOrderId = orderId;
+      } catch (error) {
+        toast(error.message || "取消訂單失敗");
+      } finally {
+        cancellingOrderId = "";
+        renderMemberPanel();
+      }
     }
     function orderStatusText(status){
       const value = String(status || "").toUpperCase();
