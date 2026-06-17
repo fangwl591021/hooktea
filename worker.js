@@ -2076,6 +2076,133 @@ function getMotherWebhookUrl(env, settings = {}) {
   ).trim();
 }
 
+function isPlainMotherWebhookAck(text) {
+  const value = String(text || "").trim();
+  if (!value) return true;
+  return /^(OK|SUCCESS|TRUE|1)$/i.test(value);
+}
+
+async function ensureCrmMemberWithAiMatch(env, ctx, lineUid, source = "mother_keyword_fallback") {
+  const uid = String(lineUid || "").trim();
+  if (!uid) return { memberUid: "", member: null, candidates: [], review: null, profile: null };
+  const existing = await findHuaxuMemberByLineUid(env, uid).catch(() => ({ memberUid: uid, member: null }));
+  if (existing?.member) return { ...existing, candidates: [], review: null, profile: null };
+  const profile = await fetchLineBotProfile(env, uid).catch(() => ({}));
+  const lineName = String(profile?.displayName || profile?.name || "").trim();
+  const candidates = lineName ? await findLegacyMemberCandidates(env, { lineName }).catch(() => []) : [];
+  const member = await ensureLineOnlyCrmMember(env, ctx, uid, profile, source);
+  let review = null;
+  if (candidates.length) {
+    review = await createLineBindReviewCase(env, ctx, {
+      lineUserId: uid,
+      lineDisplayName: lineName,
+      linePictureUrl: String(profile?.pictureUrl || profile?.picture || "").trim(),
+      providedName: lineName,
+      reason: "mother_keyword_ai_candidates",
+      candidates,
+    }).catch(() => null);
+  }
+  await safePutKV(env, `CRM_AI_MATCH_LAST_${uid}`, {
+    lineUserId: uid,
+    lineDisplayName: lineName,
+    source,
+    candidateCount: candidates.length,
+    reviewId: review?.id || "",
+    updatedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 14 }).catch(() => {});
+  return { memberUid: member?.userId || uid, member, candidates, review, profile };
+}
+
+async function buildMemberAreaLineMessage(env, lineUid, member = null) {
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const config = await getHuaxuShopConfig(env);
+  const liffId = String(config.shopLiffId || settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8").trim();
+  const params = new URLSearchParams();
+  params.set("open", "member");
+  params.set("source", "line_member_area");
+  if (lineUid) params.set("lineUid", lineUid);
+  const memberUrl = `https://liff.line.me/${encodeURIComponent(liffId)}?${params.toString()}`;
+  const name = String(member?.name || member?.displayName || member?.lineDisplayName || "LINE 會員").slice(0, 40);
+  return {
+    type: "flex",
+    altText: "HookTea 會員專區",
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "md",
+        contents: [
+          { type: "text", text: "HookTea 會員專區", weight: "bold", size: "xl", color: "#111827" },
+          { type: "text", text: name, size: "sm", color: "#64748b", wrap: true },
+          { type: "text", text: "可查看點數記錄、會員資料、推薦成果與每日打卡。", size: "sm", color: "#334155", wrap: true }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "button", style: "primary", color: "#06C755", action: { type: "uri", label: "開啟會員專區", uri: memberUrl } }
+        ]
+      }
+    }
+  };
+}
+
+async function handleMotherKeywordFallback(env, ctx, api, event, reason = "fallback") {
+  const lineUid = String(event?.source?.userId || "").trim();
+  const replyToken = event?.replyToken || "";
+  const keyword = String(event?.message?.text || "").trim();
+  const keywordType = motherSiteKeywordType(keyword);
+  if (!lineUid || !replyToken) return { ok: false, skipped: true, reason: "missing_line" };
+  const matched = await ensureCrmMemberWithAiMatch(env, ctx, lineUid, `mother_keyword_${keywordType}_${reason}`);
+  const memberUid = matched.memberUid || lineUid;
+  const member = matched.member || null;
+  let messages = [];
+  let addedPoints = 0;
+  if (keywordType === "member_area") {
+    messages = [await buildMemberAreaLineMessage(env, lineUid, member)];
+  } else if (keywordType === "checkin") {
+    const dateKey = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+    const checkinKey = `CHECKIN_${lineUid}_${dateKey}`;
+    const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
+    if (!existingCheckin?.localMirrored) {
+      await api.updatePoints(env, null, memberUid, 1, "會員打卡 CRM fallback", { source: "mother_keyword_crm_fallback" });
+      addedPoints = 1;
+      await safePutKV(env, checkinKey, {
+        lineUserId: lineUid,
+        memberUid,
+        keyword,
+        localMirrored: true,
+        mirroredAt: new Date().toISOString(),
+        source: "mother_keyword_crm_fallback",
+      }, { expirationTtl: 86400 * 45 }).catch(() => {});
+    }
+    const points = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0 }));
+    messages = [textLineMessage(addedPoints
+      ? `👍 恭喜您完成會員打卡\n⭐ 打卡贈點 1 點\n💰 目前點數：${Number(points.balance || 0)} 點`
+      : `今天已完成會員打卡。\n💰 目前點數：${Number(points.balance || 0)} 點`
+    )];
+  } else {
+    messages = [textLineMessage("已收到您的會員指令，系統正在協助您連結會員資料。")];
+  }
+  const reply = await deliverLineMessage(env, lineUid, replyToken, messages).catch(error => ({ ok: false, error: error?.message || String(error) }));
+  await safePutKV(env, `MOTHER_KEYWORD_FALLBACK_LAST_${lineUid}`, {
+    lineUserId: lineUid,
+    memberUid,
+    keyword,
+    keywordType,
+    reason,
+    addedPoints,
+    candidateCount: matched.candidates?.length || 0,
+    reviewId: matched.review?.id || "",
+    reply,
+    updatedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 14 }).catch(() => {});
+  return { ok: !!reply?.ok, reply, addedPoints };
+}
+
 async function handleLineReferralInviteText(env, ctx, event) {
   const uid = String(event?.source?.userId || "").trim();
   const replyToken = event?.replyToken || "";
@@ -4700,6 +4827,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         renderLineProfile();
         await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
         renderLineProfile();
+        if (new URLSearchParams(location.search).get("open") === "member") openMember();
       } catch (error) {
         console.warn("LIFF init failed", error);
         await logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
@@ -7200,12 +7328,19 @@ export default {
             signal: AbortSignal.timeout(8000)
           });
           const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
+          const shouldFallback = !response.ok || isPlainMotherWebhookAck(responseText);
           if (response.ok) {
             for (const event of motherKeywordEvents) {
               const text = String(event?.message?.text || "").trim();
               const keywordType = motherSiteKeywordType(text);
               const lineUid = String(event?.source?.userId || "").trim();
               if (!lineUid) continue;
+              if (shouldFallback && (keywordType === "checkin" || keywordType === "member_area")) {
+                await handleMotherKeywordFallback(env, ctx, api, event, response.ok ? "plain_ack" : "forward_not_ok").catch(error => {
+                  console.error("Mother keyword fallback error:", error);
+                });
+                continue;
+              }
               if (keywordType !== "checkin") {
                 await safePutKV(env, `MOTHER_KEYWORD_LAST_${lineUid}`, {
                   lineUserId: lineUid,
@@ -7217,22 +7352,23 @@ export default {
                 }, { expirationTtl: 86400 * 30 }).catch(() => {});
                 continue;
               }
-              const dateKey = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
-              const checkinKey = `CHECKIN_${lineUid}_${dateKey}`;
-              const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
-              if (existingCheckin?.localMirrored) continue;
-              const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid }));
-              if (!resolved?.member) await ensureLineOnlyCrmMember(env, ctx, lineUid, null, "mother_keyword_checkin");
-              const memberUid = resolved?.memberUid || lineUid;
-              await api.updatePoints(env, null, memberUid, 1, "會員打卡母站鏡像", { skipWpSync: true, source: "mother_keyword_mirror" });
-              await safePutKV(env, checkinKey, {
+              await safePutKV(env, `MOTHER_KEYWORD_LAST_${lineUid}`, {
                 lineUserId: lineUid,
-                memberUid,
                 keyword: text,
-                localMirrored: true,
-                mirroredAt: new Date().toISOString(),
-                source: "mother_keyword_direct",
-              }, { expirationTtl: 86400 * 45 }).catch(() => {});
+                keywordType,
+                forwarded: true,
+                forwardedAt: new Date().toISOString(),
+                responseStatus: response.status,
+              }, { expirationTtl: 86400 * 30 }).catch(() => {});
+            }
+          } else {
+            for (const event of motherKeywordEvents) {
+              const keywordType = motherSiteKeywordType(event?.message?.text || "");
+              if (keywordType === "checkin" || keywordType === "member_area") {
+                await handleMotherKeywordFallback(env, ctx, api, event, "forward_not_ok").catch(error => {
+                  console.error("Mother keyword fallback error:", error);
+                });
+              }
             }
           }
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
@@ -7240,17 +7376,27 @@ export default {
             route: "mother_keyword_direct",
             status: response.status,
             ok: response.ok,
+            fallback: shouldFallback,
             eventCount: motherKeywordEvents.length,
             texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             response: responseText.slice(0, 300),
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
         })().catch(async error => {
+          for (const event of motherKeywordEvents) {
+            const keywordType = motherSiteKeywordType(event?.message?.text || "");
+            if (keywordType === "checkin" || keywordType === "member_area") {
+              await handleMotherKeywordFallback(env, ctx, api, event, "forward_error").catch(fallbackError => {
+                console.error("Mother keyword fallback error:", fallbackError);
+              });
+            }
+          }
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook,
             route: "mother_keyword_direct",
             ok: false,
             error: error?.message || String(error),
+            fallback: true,
             eventCount: motherKeywordEvents.length,
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
