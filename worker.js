@@ -2704,6 +2704,7 @@ async function fetchLineBotProfile(env, uid) {
   if (!token || !userId) return null;
   const res = await fetch(`https://api.line.me/v2/bot/profile/${encodeURIComponent(userId)}`, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(2500),
   });
   if (!res.ok) return null;
   const profile = await res.json();
@@ -7294,13 +7295,26 @@ export default {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         const api = this;
+        const preflightTask = Promise.all(motherKeywordEvents.map(async event => {
+          const lineUid = String(event?.source?.userId || "").trim();
+          const keyword = String(event?.message?.text || "").trim();
+          if (!lineUid) return;
+          await ensureLineOnlyCrmMember(env, ctx, lineUid, null, `mother_keyword_${motherSiteKeywordType(keyword)}`).catch(() => {});
+          await appendLineMonitorEvent(env, ctx, event).catch(e => console.error("LINE Monitor Append Error:", e));
+        }));
         for (const event of motherKeywordEvents) {
           const lineUid = String(event?.source?.userId || "").trim();
           const keyword = String(event?.message?.text || "").trim();
           if (!lineUid) continue;
-          await ensureLineOnlyCrmMember(env, ctx, lineUid, null, `mother_keyword_${motherSiteKeywordType(keyword)}`).catch(() => {});
-          await appendLineMonitorEvent(env, ctx, event).catch(e => console.error("LINE Monitor Append Error:", e));
+          await safePutKV(env, `MOTHER_KEYWORD_RECEIVED_${lineUid}`, {
+            lineUserId: lineUid,
+            keyword,
+            keywordType: motherSiteKeywordType(keyword),
+            receivedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 * 7 }).catch(() => {});
         }
+        if (ctx) ctx.waitUntil(preflightTask);
+        else preflightTask.catch(() => {});
         await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
           receivedAt: new Date().toISOString(),
           route: "mother_keyword_direct",
