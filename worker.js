@@ -7597,6 +7597,14 @@ export default {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         const api = this;
+        const localMotherKeywordEvents = motherKeywordEvents.filter(event => {
+          const keywordType = motherSiteKeywordType(event?.message?.text || "");
+          return keywordType === "checkin" || keywordType === "member_area";
+        });
+        const forwardMotherKeywordEvents = motherKeywordEvents.filter(event => {
+          const keywordType = motherSiteKeywordType(event?.message?.text || "");
+          return keywordType !== "checkin" && keywordType !== "member_area";
+        });
         const preflightTask = Promise.all(motherKeywordEvents.map(async event => {
           const lineUid = String(event?.source?.userId || "").trim();
           const keyword = String(event?.message?.text || "").trim();
@@ -7622,31 +7630,55 @@ export default {
           route: "mother_keyword_direct",
           totalEvents: events.length,
           unhandledCount: motherKeywordEvents.length,
+          localHandledCount: localMotherKeywordEvents.length,
+          forwardedCount: forwardMotherKeywordEvents.length,
           texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
           keywordTypes: motherKeywordEvents.map(event => motherSiteKeywordType(event?.message?.text || "")),
         }, { expirationTtl: 86400 }).catch(() => {});
+        const localResults = [];
+        for (const event of localMotherKeywordEvents) {
+          const keywordType = motherSiteKeywordType(event?.message?.text || "");
+          localResults.push(await handleMotherKeywordFallback(env, ctx, api, event, "local_first").catch(error => ({
+            ok: false,
+            error: error?.message || String(error),
+            keywordType,
+          })));
+        }
+        if (localMotherKeywordEvents.length) {
+          await safePutKV(env, "MOTHER_KEYWORD_LOCAL_FIRST_LAST", {
+            handledAt: new Date().toISOString(),
+            eventCount: localMotherKeywordEvents.length,
+            texts: localMotherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            keywordTypes: localMotherKeywordEvents.map(event => motherSiteKeywordType(event?.message?.text || "")),
+            results: localResults,
+          }, { expirationTtl: 86400 }).catch(() => {});
+        }
+        if (!forwardMotherKeywordEvents.length) {
+          return new Response("OK", { status: 200 });
+        }
         const forwardTask = (async () => {
           await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
             url: forwardWebhook,
             route: "mother_keyword_direct",
-            eventCount: motherKeywordEvents.length,
-            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            eventCount: forwardMotherKeywordEvents.length,
+            texts: forwardMotherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             attemptedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
+          const forwardPayload = { ...parsedPayload, events: forwardMotherKeywordEvents };
           const response = await fetch(forwardWebhook, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "x-line-signature": signature
             },
-            body: rawText,
+            body: JSON.stringify(forwardPayload),
             redirect: "follow",
             signal: AbortSignal.timeout(8000)
           });
           const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
           const shouldFallback = !response.ok || isPlainMotherWebhookAck(responseText);
           if (response.ok) {
-            for (const event of motherKeywordEvents) {
+            for (const event of forwardMotherKeywordEvents) {
               const text = String(event?.message?.text || "").trim();
               const keywordType = motherSiteKeywordType(text);
               const lineUid = String(event?.source?.userId || "").trim();
@@ -7678,7 +7710,7 @@ export default {
               }, { expirationTtl: 86400 * 30 }).catch(() => {});
             }
           } else {
-            for (const event of motherKeywordEvents) {
+            for (const event of forwardMotherKeywordEvents) {
               const keywordType = motherSiteKeywordType(event?.message?.text || "");
               if (keywordType === "checkin" || keywordType === "member_area") {
                 await handleMotherKeywordFallback(env, ctx, api, event, "forward_not_ok").catch(error => {
@@ -7693,13 +7725,13 @@ export default {
             status: response.status,
             ok: response.ok,
             fallback: shouldFallback,
-            eventCount: motherKeywordEvents.length,
-            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            eventCount: forwardMotherKeywordEvents.length,
+            texts: forwardMotherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             response: responseText.slice(0, 300),
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
         })().catch(async error => {
-          for (const event of motherKeywordEvents) {
+          for (const event of forwardMotherKeywordEvents) {
             const keywordType = motherSiteKeywordType(event?.message?.text || "");
             if (keywordType === "checkin" || keywordType === "member_area") {
               await handleMotherKeywordFallback(env, ctx, api, event, "forward_error").catch(fallbackError => {
@@ -7713,7 +7745,7 @@ export default {
             ok: false,
             error: error?.message || String(error),
             fallback: true,
-            eventCount: motherKeywordEvents.length,
+            eventCount: forwardMotherKeywordEvents.length,
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
         });
