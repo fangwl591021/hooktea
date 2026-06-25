@@ -4292,6 +4292,9 @@ async function handleHuaxuMemberProfile(request, env) {
         status: order.status,
         remittance: order.remittance || "",
         remittanceReportedAt: order.remittanceReportedAt || "",
+        remittanceStatus: order.remittanceStatus || "",
+        remittanceVerifiedAt: order.remittanceVerifiedAt || "",
+        remittanceVerifiedBy: order.remittanceVerifiedBy || "",
         shippingCarrierName: order.shippingCarrierName || order.shipping?.carrierName || "",
         trackingNumber: order.trackingNumber || order.shipping?.trackingNumber || "",
         trackingUrl: order.trackingUrl || order.shipping?.trackingUrl || "",
@@ -4304,6 +4307,44 @@ async function handleHuaxuMemberProfile(request, env) {
   });
 }
 
+async function handleHuaxuReportRemittance(request, env, ctx) {
+  const payload = await request.json().catch(() => ({}));
+  const orderId = String(payload.orderId || "").trim();
+  const remittance = String(payload.remittance || "").replace(/\D/g, "").slice(0, 5);
+  if (!orderId) return json({ ok: false, message: "\u7f3a\u5c11\u8a02\u55ae\u7de8\u865f" }, 400);
+  if (remittance.length !== 5) return json({ ok: false, message: "\u8acb\u8f38\u5165\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc" }, 400);
+  const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
+  if (!lineUid) return json({ ok: false, message: "\u5c1a\u672a\u53d6\u5f97 LINE \u8eab\u5206" }, 401);
+  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  const memberUid = resolved.memberUid || lineUid;
+  const orders = await safeGetKV(env, "ORDERS", []);
+  const list = Array.isArray(orders) ? orders : [];
+  const idx = list.findIndex(order => order && String(order.orderId || "") === orderId);
+  if (idx < 0) return json({ ok: false, message: "\u627e\u4e0d\u5230\u8a02\u55ae" }, 404);
+  const order = list[idx];
+  const ownerIds = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId, order.pointsMemberUid].map(value => String(value || "").trim()).filter(Boolean);
+  if (!ownerIds.includes(lineUid) && !ownerIds.includes(memberUid)) return json({ ok: false, message: "\u7121\u6cd5\u56de\u5831\u975e\u672c\u4eba\u8a02\u55ae" }, 403);
+  const status = String(order.status || "").toUpperCase();
+  if (status !== "PENDING") return json({ ok: false, message: "\u6b64\u8a02\u55ae\u76ee\u524d\u4e0d\u53ef\u56de\u5831\u532f\u6b3e" }, 400);
+  if (String(order.paymentMethod || "").toUpperCase() !== "REMITTANCE") return json({ ok: false, message: "\u7121\u6cd5\u56de\u5831\u975e\u672c\u4eba\u8a02\u55ae" }, 400);
+  const nowText = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" });
+  const nowIso = new Date().toISOString();
+  const updated = { ...order, remittance, remittanceReportedAt: nowText, remittanceReportedAtIso: nowIso, remittanceStatus: "REPORTED", updatedAt: nowIso };
+  list[idx] = updated;
+  await putOrdersKV(env, ctx, list);
+  if (ctx) ctx.waitUntil(Promise.all([
+    env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}),
+    sendTelegramNotification(env, [
+      "\u{1F3E6} <b>\u532f\u6b3e\u672b\u4e94\u78bc\u56de\u5831</b>",
+      `\u55ae\u865f\uFF1A<code>${escapeTelegramHtml(updated.orderId)}</code>`,
+      `\u6703\u54e1\uFF1A${escapeTelegramHtml(updated.name || updated.recipientName || "-")}`,
+      `\u96fb\u8a71\uFF1A${escapeTelegramHtml(updated.phone || updated.recipientPhone || "-")}`,
+      `\u672b\u4e94\u78bc\uFF1A<code>${escapeTelegramHtml(remittance)}</code>`,
+      `\u91d1\u984d\uFF1A${Number(updated.amount || 0)}`,
+    ].join("\n")),
+  ]));
+  return json({ ok: true, order: updated });
+}
 async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
   const payload = await request.json().catch(() => ({}));
   let verifiedProfile = null;
@@ -4812,6 +4853,7 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/member" && request.method === "PUT") return handleHuaxuUpdateMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/checkin" && request.method === "POST") return handleHuaxuMemberCheckin(request, env, ctx);
   if (url.pathname === "/api/huaxu/liff-debug" && request.method === "POST") return handleHuaxuLiffDebug(request, env);
+  if (url.pathname === "/api/huaxu/orders/remittance" && request.method === "POST") return handleHuaxuReportRemittance(request, env, ctx);
   if (url.pathname === "/api/huaxu/orders/cancel" && request.method === "POST") return handleHuaxuCancelOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
@@ -4960,6 +5002,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     let memberEditMode = false;
     let expandedOrderId = "";
     let cancellingOrderId = "";
+    let reportingOrderId = "";
     let isCheckingOut = false;
     let entryContext = { url: location.href.split("#")[0], params: {} };
     const SHOP_LIFF_ID = ${JSON.stringify(String(shopLiffId || "2007674851-ijenzSk8"))};
@@ -5612,6 +5655,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const tracking = order.trackingUrl
         ? '<a href="'+escapeAttr(order.trackingUrl)+'" target="_blank" rel="noopener" style="color:#2563eb;font-weight:900;text-decoration:none">物流查詢</a>'
         : (order.trackingNumber ? escapeHtml(order.trackingNumber) : "尚未出貨");
+      const canReport = canReportRemittance(order);
+      const remittanceForm = canReport
+        ? '<div class="member-info-row" style="display:block"><span style="display:block;margin-bottom:8px">&#x532F;&#x6B3E;&#x5E33;&#x865F;&#x672B;&#x4E94;&#x78BC;</span><div style="display:grid;grid-template-columns:1fr auto;gap:8px"><input id="remit_'+escapeAttr(orderId)+'" inputmode="numeric" maxlength="5" pattern="[0-9]*" style="min-width:0;border:1px solid #d8e0ec;background:#fff;border-radius:10px;padding:10px;font-weight:900;font-size:16px" placeholder="12345"><button class="member-edit" onclick="reportRemittance(\\''+escapeAttr(orderId)+'\\')">'+(reportingOrderId === orderId ? "&#x9001;&#x51FA;&#x4E2D;" : "&#x9001;&#x51FA;")+'</button></div></div>'
+        : '';
       const cancellable = canCancelOrder(order);
       const cancelButton = cancellable
         ? '<button class="member-edit" style="background:#fee2e2;color:#dc2626" onclick="cancelOrder(\\''+escapeAttr(orderId)+'\\')">'+(cancellingOrderId === orderId ? "取消中..." : "取消訂單")+'</button>'
@@ -5628,6 +5675,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
             + '<div class="member-info-row"><span>金額</span><b>$'+money(amount)+(points ? ' / 折 '+money(points)+' 點' : '')+(original && original !== amount ? ' / 原 $'+money(original) : '')+'</b></div>'
             + '<div class="member-info-row"><span>物流</span><b>'+escapeHtml(order.shippingCarrierName || "-")+'</b></div>'
             + '<div class="member-info-row"><span>追蹤</span><b>'+tracking+'</b></div>'
+            + remittanceForm
             + (cancelButton ? '<div style="padding-top:12px">'+cancelButton+'</div>' : '')
           : '')
         + '</div>';
@@ -5638,7 +5686,36 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     function canCancelOrder(order){
       const status = String(order.status || "").toUpperCase();
-      return !!order.orderId && !["PAID","SHIPPED","COMPLETED","CANCELLED"].includes(status);
+      return !!order.orderId && !["PAID","SHIPPED","COMPLETED","CANCELLED"].includes(status) && !order.remittance;
+    }
+    function canReportRemittance(order){
+      const status = String(order.status || "").toUpperCase();
+      const method = String(order.paymentMethod || "").toUpperCase();
+      return !!order.orderId && status === "PENDING" && method === "REMITTANCE" && !order.remittance;
+    }
+    async function reportRemittance(orderId){
+      if (!orderId || reportingOrderId) return;
+      const input = document.getElementById("remit_" + orderId);
+      const remittance = String(input && input.value || "").replace(/\D/g, "").slice(0, 5);
+      if (remittance.length !== 5) return toast("\u8acb\u8f38\u5165\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc");
+      reportingOrderId = orderId;
+      renderMemberPanel();
+      try {
+        const res = await fetch("/api/huaxu/orders/remittance", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ orderId, remittance, lineProfile })
+        }).then(r => r.json());
+        if (!res.ok) throw new Error(res.message || "\u56de\u5831\u532f\u6b3e\u5931\u6557");
+        toast("\u5df2\u9001\u51fa\u532f\u6b3e\u672b\u4e94\u78bc\uFF0C\u7b49\u5f85\u5f8c\u53f0\u6838\u5c0d");
+        await refreshMemberData();
+        expandedOrderId = orderId;
+      } catch (error) {
+        toast(error.message || "\u56de\u5831\u532f\u6b3e\u5931\u6557");
+      } finally {
+        reportingOrderId = "";
+        renderMemberPanel();
+      }
     }
     async function cancelOrder(orderId){
       if (!orderId || cancellingOrderId) return;
@@ -6859,6 +6936,13 @@ export default {
           if (oIdx > -1) {
               const beforeOrder = editOrders[oIdx];
               const nextOrder = { ...beforeOrder, ...payload };
+              const remittanceVerified = String(beforeOrder.status || "").toUpperCase() !== "PAID" && String(nextOrder.status || "").toUpperCase() === "PAID" && String(nextOrder.paymentMethod || "").toUpperCase() === "REMITTANCE" && nextOrder.remittance && !nextOrder.remittanceVerifiedAt;
+              if (remittanceVerified) {
+                nextOrder.remittanceStatus = "VERIFIED";
+                nextOrder.remittanceVerifiedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" });
+                nextOrder.remittanceVerifiedAtIso = new Date().toISOString();
+                nextOrder.remittanceVerifiedBy = access.userData?.name || userProfile?.displayName || access.lineUserId || userId || "admin";
+              }
               const attendanceChangedToAttended = String(beforeOrder.attendance || "") !== "ATTENDED" && String(nextOrder.attendance || "") === "ATTENDED";
               if (attendanceChangedToAttended && !nextOrder.teacherCommissionDeductedAt) {
                 Object.assign(nextOrder, await deductTeacherCommissionForOrder(env, ctx, nextOrder, userId, access.userData?.name || userProfile?.displayName || "Admin", this.updatePoints.bind(this)));

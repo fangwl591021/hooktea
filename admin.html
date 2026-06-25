@@ -1578,9 +1578,18 @@
                         <div class="text-[12px] font-black text-slate-400 mb-2">付款 / 回報資訊</div>
                         <div class="text-[15px] font-black" :class="editingOrder.remittance ? 'text-orange-600' : 'text-slate-700'">{{ adminOrderPaymentText(editingOrder) }}</div>
                         <div v-if="editingOrder.remittanceReportedAt" class="text-[12px] text-slate-500 font-bold mt-1">回報時間：{{ editingOrder.remittanceReportedAt }}</div>
+                        <div v-if="editingOrder.remittanceVerifiedAt" class="text-[12px] text-emerald-600 font-bold mt-1">核銷時間：{{ editingOrder.remittanceVerifiedAt }} / {{ editingOrder.remittanceVerifiedBy || '後台' }}</div>
                         <div v-if="editingOrder.newebpayTradeNo" class="text-[12px] text-slate-500 font-mono font-bold mt-1">交易序號：{{ editingOrder.newebpayTradeNo }}</div>
                     </div>
                     <div><label class="input-label">付款狀態</label><select v-model="editingOrder.status" class="input-field font-bold"><option value="PENDING">⏳ 待付款</option><option value="PAID">✅ 已完款</option><option value="CANCELLED">❌ 已取消</option><option value="TRANSFERRED" disabled>↪ 已轉課</option></select></div>
+                    <div v-if="String(editingOrder.paymentMethod || '').toUpperCase() === 'REMITTANCE'" class="bg-white rounded-xl border border-emerald-100 p-4">
+                        <div class="text-[15px] font-black text-slate-800 mb-3 flex items-center gap-2"><i class="fas fa-university text-emerald-500"></i>匯款回填 / 核銷</div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div><label class="input-label">匯款帳號末五碼</label><input type="text" v-model="editingOrder.remittance" maxlength="5" class="input-field font-mono font-black" placeholder="會員回填末五碼"></div>
+                            <div><label class="input-label">核銷狀態</label><input type="text" :value="editingOrder.remittanceVerifiedAt ? '已核銷' : (editingOrder.remittance ? '待核對' : '未回填')" class="input-field font-bold bg-slate-50" readonly></div>
+                        </div>
+                        <button @click="verifyRemittanceOrder" :disabled="isLoading || !editingOrder.remittance" class="w-full mt-4 py-3 rounded-xl bg-emerald-600 text-white font-black disabled:opacity-50"><i class="fas fa-check-circle mr-2"></i>核對無誤，設為已完款</button>
+                    </div>
                     <div><label class="input-label">實付金額</label><input type="number" v-model.number="editingOrder.amount" class="input-field font-black text-[#06C755]"></div>
                     <div v-if="editingOrder.type === 'PRODUCT'" class="bg-white rounded-xl border border-slate-200 p-4">
                         <div class="text-[15px] font-black text-slate-800 mb-3 flex items-center gap-2"><i class="fas fa-truck text-[#06C755]"></i>寄送 / 收件資料</div>
@@ -3068,6 +3077,7 @@
                     const adminOrderPaymentText = (order) => {
                         if (!order) return '-';
                         if (order.type === 'BOOKING' || order.paymentMethod === 'TEACHER_DIRECT') return '講師自行收款';
+                        if (order.remittanceVerifiedAt) return `匯款已核銷：末五碼 ${order.remittance}`;
                         if (order.remittance) return `匯款回報：末五碼 ${order.remittance}`;
                         if (order.linePayTransactionId || order.paymentMethod === 'LINEPAY') return 'LINE Pay';
                         if (order.newebpayTradeNo || order.paymentMethod === 'NEWEBPAY') return '線上刷卡';
@@ -3822,6 +3832,16 @@
                         transferConfirmed.value = false;
                     };
 
+                    const verifyRemittanceOrder = () => {
+                        if (!editingOrder.value?.remittance) return alert('請先確認會員已回填匯款末五碼');
+                        const now = new Date();
+                        editingOrder.value.status = 'PAID';
+                        editingOrder.value.remittanceStatus = 'VERIFIED';
+                        editingOrder.value.remittanceVerifiedAt = now.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+                        editingOrder.value.remittanceVerifiedAtIso = now.toISOString();
+                        editingOrder.value.remittanceVerifiedBy = 'tonyfang';
+                        saveOrderUpdate();
+                    };
                     const saveOrderUpdate = async () => {
                         isLoading.value = true;
                         try {
@@ -3829,7 +3849,13 @@
                                 orderId: editingOrder.value.orderId,
                                 status: editingOrder.value.status,
                                 amount: editingOrder.value.amount,
-                                note: editingOrder.value.note
+                                note: editingOrder.value.note,
+                                remittance: editingOrder.value.remittance || '',
+                                remittanceReportedAt: editingOrder.value.remittanceReportedAt || '',
+                                remittanceStatus: editingOrder.value.remittanceStatus || '',
+                                remittanceVerifiedAt: editingOrder.value.remittanceVerifiedAt || '',
+                                remittanceVerifiedAtIso: editingOrder.value.remittanceVerifiedAtIso || '',
+                                remittanceVerifiedBy: editingOrder.value.remittanceVerifiedBy || ''
                             };
                             if (editingOrder.value.type === 'PRODUCT') {
                                 Object.assign(payload, {
@@ -4502,7 +4528,7 @@
                         openNewCourseModal, openEditModal, saveCourse, deleteCourse, copyCourse, openNewProductModal, openEditProductModal, saveProduct, deleteProduct, importWpProducts, syncToCalendar,
                         handleBannerUpload, handleProductImageUpload, handleCourseImageUpload, handleFlexRuleImageUpload, saveSettings, addCourseLocation, openEnrollments, openCourseOrdersModal,
                         openTeacherReservationCourses, editReservationCourseFromTeacher,
-                        generateCheckinLink, updateOrderAttendance, openOrderEditModal, saveOrderUpdate, transferOrderCourse,
+                        generateCheckinLink, updateOrderAttendance, openOrderEditModal, verifyRemittanceOrder, saveOrderUpdate, transferOrderCourse,
                         openSysConfigModal, saveSysConfig, handleApproveTeacher, removeTeacher, getCourseName, formatPrice,
                         downloadMemberReport, downloadSalesReport, downloadCourseReport, downloadBookingReport, loadPointsLedger, loadAuditLogs, loadBroadcastData, saveAudienceTag, toggleBroadcastMemberTag, resetBroadcastAudience, sendPaidBroadcast, runWasabiCheck, exportLowRiskWasabiSnapshot, verifyLowRiskWasabiSnapshot, exportHighRiskWasabiSnapshot, verifyHighRiskWasabiSnapshot, runWasabiDailyCheck, openNewFlexRule, openEditFlexRule, duplicateFlexRule, saveFlexRule, deleteFlexRule, loadMemberCardTemplate, openMylittlesysTemplate, syncMylittlesysFlexFrame, captureMylittlesysFlexJson, formatFlexRuleDate, syncWPPointsFromCRM
                     };
