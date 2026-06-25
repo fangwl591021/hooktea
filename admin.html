@@ -861,6 +861,7 @@
                                         <div><label class="input-label">付款方式</label><input v-model="sysSettings.shop_payment_methods" class="input-field" placeholder="LINEPAY,REMITTANCE"></div>
                                         <div><label class="input-label">LINE Pay 環境</label><select v-model="sysSettings.linepay_env" class="input-field bg-white"><option value="sandbox">Sandbox 測試</option><option value="production">Production 正式</option></select></div>
                                         <div class="md:col-span-2"><label class="input-label">匯款資訊</label><textarea v-model="sysSettings.remittance_info" class="input-field h-32 resize-none leading-relaxed"></textarea></div>
+
                                     </div>
                                 </div>
                             </div>
@@ -1171,6 +1172,20 @@
                         
                         <div class="section-title !mb-4 text-orange-700 border-orange-500 mt-8">官方匯款帳號設定</div>
                         <div class="mb-8"><label class="input-label">匯款資訊 (將顯示於前台結帳頁面)</label><textarea v-model="sysSettings.remittance_info" class="input-field h-32 resize-none leading-relaxed"></textarea></div>
+                        <div class="section-title !mb-4 text-sky-700 border-sky-500 mt-8">Telegram &#x7FA4;&#x7D44;&#x901A;&#x77E5;</div>
+                        <div class="mb-8 bg-sky-50 p-4 rounded-xl border border-sky-100 shadow-sm">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="input-label">Telegram Bot Token</label>
+                                    <input type="password" v-model="sysSettings.telegram_bot_token" class="input-field font-mono text-sm" placeholder="Cloudflare Worker Secret recommended">
+                                </div>
+                                <div>
+                                    <label class="input-label">Telegram Chat ID / &#x7FA4;&#x7D44; ID</label>
+                                    <input type="text" v-model="sysSettings.telegram_chat_id" class="input-field font-mono text-sm" placeholder="-1001234567890">
+                                </div>
+                            </div>
+                            <div class="text-[12px] text-sky-700 font-bold mt-3 leading-relaxed">&#x5BE9;&#x6838;&#x3001;&#x6703;&#x54E1;&#x7D81;&#x5B9A;&#x3001;&#x5831;&#x540D;&#x8207;&#x5546;&#x57CE;&#x8A02;&#x55AE;&#x7B49;&#x5F85;&#x8655;&#x7406;&#x8A0A;&#x606F;&#x6703;&#x63A8;&#x9001;&#x5230;&#x6B64;&#x7FA4;&#x7D44;&#x3002;Worker &#x8B8A;&#x6578;&#x53EF;&#x7528;&#xFF1A;TELEGRAM_BOT_TOKEN&#x3001;TELEGRAM_CHAT_ID&#xFF1B;&#x820A;&#x540D;&#x7A31; TG_BOT_TOKEN&#x3001;TG_CHAT_ID &#x4ECD;&#x652F;&#x63F4;&#x3002;</div>
+                        </div>
                         
                         <div class="section-title !mb-4 text-purple-700 border-purple-500 mt-8">前台體驗開關</div>
                         <div class="mb-8 flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
@@ -1767,6 +1782,8 @@
                         linepay_channel_id: String(settings.linepay_channel_id || ''),
                         linepay_channel_secret: String(settings.linepay_channel_secret || ''),
                         linepay_currency: String(settings.linepay_currency || 'TWD'),
+                        telegram_bot_token: String(settings.telegram_bot_token || settings.tg_bot_token || ''),
+                        telegram_chat_id: String(settings.telegram_chat_id || settings.tg_chat_id || ''),
                         shop_module: String(settings.shop_module || 'hooktea'),
                         huaxu_products_url: String(settings.huaxu_products_url || ''),
                         huaxu_api_key: String(settings.huaxu_api_key || ''),

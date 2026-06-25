@@ -944,7 +944,19 @@ async function createLineBindReviewCase(env, ctx, data = {}) {
   await safePutKV(env, "LINE_BIND_REVIEW_INDEX", nextIndex);
   const pendingForLine = await safeGetKV(env, `LINE_BIND_REVIEW_FOR_${lineUid}`, [], { preferWasabi: false });
   await safePutKV(env, `LINE_BIND_REVIEW_FOR_${lineUid}`, [id, ...(Array.isArray(pendingForLine) ? pendingForLine.filter(item => item !== id) : [])].slice(0, 20), { expirationTtl: 86400 * 30 });
-  if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}));
+  const candidateNames = record.candidates.map(item => item?.name).filter(Boolean).slice(0, 5).join("\u3001") || "\u7121\u660e\u78ba\u5019\u9078";
+  const notifyText = [
+    "\u{1F50E} <b>\u6703\u54e1\u7d81\u5b9a\u5be9\u6838</b>",
+    `LINE\uFF1A${escapeTelegramHtml(record.lineDisplayName || "\u672a\u547d\u540d")}`,
+    `UID\uFF1A<code>${escapeTelegramHtml(record.lineUserId)}</code>`,
+    `\u586b\u5beb\uFF1A${escapeTelegramHtml(record.providedPhone || record.providedName || "\u672a\u586b")}`,
+    `\u5019\u9078\uFF1A${escapeTelegramHtml(candidateNames)}`,
+    `\u539f\u56e0\uFF1A${escapeTelegramHtml(record.reason)}`,
+  ].join("\n");
+  if (ctx) ctx.waitUntil(Promise.all([
+    env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}),
+    sendTelegramNotification(env, notifyText),
+  ]));
   return record;
 }
 
@@ -2082,6 +2094,45 @@ function isPlainMotherWebhookAck(text) {
   return /^(OK|SUCCESS|TRUE|1)$/i.test(value);
 }
 
+function escapeTelegramHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function getTelegramNotifyConfig(env, settings = {}) {
+  return {
+    token: String(env.TELEGRAM_BOT_TOKEN || env.TG_BOT_TOKEN || settings.telegram_bot_token || settings.tg_bot_token || "").trim(),
+    chatId: String(env.TELEGRAM_CHAT_ID || env.TG_CHAT_ID || settings.telegram_chat_id || settings.tg_chat_id || "").trim(),
+  };
+}
+
+async function sendTelegramNotification(env, text, settings = null) {
+  const sets = settings || await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
+  const { token, chatId } = getTelegramNotifyConfig(env, sets);
+  if (!token || !chatId) return { ok: false, skipped: true, reason: "telegram_not_configured" };
+  try {
+    const res = await fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: String(text || "").slice(0, 3900),
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    });
+    const responseText = await res.text().catch(() => "");
+    const result = { ok: res.ok, status: res.status, response: responseText.slice(0, 300), sentAt: new Date().toISOString() };
+    await safePutKV(env, "TELEGRAM_NOTIFY_LAST", { ...result, text: String(text || "").slice(0, 500) }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return result;
+  } catch (error) {
+    const result = { ok: false, error: error?.message || String(error), sentAt: new Date().toISOString() };
+    await safePutKV(env, "TELEGRAM_NOTIFY_LAST", { ...result, text: String(text || "").slice(0, 500) }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return result;
+  }
+}
 async function ensureCrmMemberWithAiMatch(env, ctx, lineUid, source = "mother_keyword_fallback") {
   const uid = String(lineUid || "").trim();
   if (!uid) return { memberUid: "", member: null, candidates: [], review: null, profile: null };
@@ -4662,6 +4713,17 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     remittanceInfo,
     createdAt: new Date().toISOString(),
   }, { expirationTtl: 120 }).catch(() => {});
+  if (ctx) ctx.waitUntil(sendTelegramNotification(env, [
+    "\u{1F6D2} <b>HookTea \u8cfc\u7269\u8eca\u65b0\u8a02\u55ae</b>",
+    `\u55ae\u865f\uFF1A<code>${escapeTelegramHtml(order.orderId)}</code>`,
+    `\u6536\u4ef6\u4eba\uFF1A${escapeTelegramHtml(order.recipientName || order.name || "-")}` ,
+    `\u96fb\u8a71\uFF1A${escapeTelegramHtml(order.recipientPhone || order.phone || "-")}` ,
+    `\u5546\u54c1\uFF1A${escapeTelegramHtml(order.productName || "-")}` ,
+    `\u91d1\u984d\uFF1A${Number(order.amount || 0)}${Number(order.pointsUsed || 0) > 0 ? `\uFF08\u9ede\u6578\u6298\u62b5 ${Number(order.pointsUsed || 0)}\uFF09` : ""}` ,
+    `\u7269\u6d41\uFF1A${escapeTelegramHtml(order.shippingCarrierName || "-")}` ,
+    `\u4ed8\u6b3e\uFF1A${escapeTelegramHtml(order.paymentMethod || "-")}` ,
+    `\u72c0\u614b\uFF1A${escapeTelegramHtml(order.status || "-")}` ,
+  ].join("\n")));
   return json({ ok: true, order, payment, remittanceInfo });
 }
 
@@ -6243,7 +6305,19 @@ export default {
               redirect: "follow",
             }).catch(e => console.error("GAS Sync Error", e)));
           }
-          ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()));
+          ctx.waitUntil(Promise.all([
+            env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}),
+            sendTelegramNotification(env, [
+              "\u{1F4C5} <b>\u65b0\u9810\u7d04\u7533\u8acb</b>",
+              `\u55ae\u865f\uFF1A<code>${escapeTelegramHtml(bookingOrder.orderId)}</code>`,
+              `\u6703\u54e1\uFF1A${escapeTelegramHtml(bookingOrder.name)}`,
+              `\u96fb\u8a71\uFF1A${escapeTelegramHtml(bookingOrder.phone || "-")}`,
+              `\u9805\u76ee\uFF1A${escapeTelegramHtml(bookingOrder.courseName || "-")}` ,
+              `\u6642\u9593\uFF1A${escapeTelegramHtml(bookingOrder.bookingDate || "-")} ${escapeTelegramHtml(bookingOrder.bookingTime || "-")}` ,
+              `\u5c0e\u5e2b\uFF1A${escapeTelegramHtml(bookingOrder.teacher?.name || "-")}` ,
+              `\u72c0\u614b\uFF1A${escapeTelegramHtml(bookingOrder.status || "-")}` ,
+            ].join("\n")),
+          ]));
           result.data = { success: true, orderId, amount: 0, teacherCollectAmount, pointsUsed: requestedBookingPoints };
           break;
         }
@@ -6353,7 +6427,19 @@ export default {
           }
           shopOrders.unshift(productOrder);
           await putOrdersKV(env, ctx, shopOrders);
-          ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()));
+          ctx.waitUntil(Promise.all([
+            env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}),
+            sendTelegramNotification(env, [
+              "\u{1F6D2} <b>\u65b0\u5546\u54c1\u8a02\u55ae</b>",
+              `\u55ae\u865f\uFF1A<code>${escapeTelegramHtml(productOrder.orderId)}</code>`,
+              `\u6703\u54e1\uFF1A${escapeTelegramHtml(productOrder.name)}`,
+              `\u96fb\u8a71\uFF1A${escapeTelegramHtml(productOrder.phone || "-")}`,
+              `\u5546\u54c1\uFF1A${escapeTelegramHtml(productOrder.productName)} x ${productOrder.quantity}`,
+              `\u91d1\u984d\uFF1A${Number(productOrder.amount || 0)}` ,
+              `\u4ed8\u6b3e\uFF1A${escapeTelegramHtml(productOrder.paymentMethod || "-")}` ,
+              `\u72c0\u614b\uFF1A${escapeTelegramHtml(productOrder.status || "-")}` ,
+            ].join("\n")),
+          ]));
           result.data = { success: true, orderId: productOrder.orderId, amount: payableAmount, pointsUsed: pointCost, balance: (Number(buyerPoints.balance) || 0) - pointCost };
           break;
 
@@ -7383,25 +7469,7 @@ export default {
   },
 
   async sendTgMessage(env, text) {
-    const token = env.TG_BOT_TOKEN;
-    const chatId = env.TG_CHAT_ID || "-5283526670"; 
-    
-    if (!token) return; 
-
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    try {
-      await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: text,
-          parse_mode: "HTML"
-        })
-      });
-    } catch (e) {
-      console.error("TG Send Error:", e);
-    }
+    return sendTelegramNotification(env, text);
   },
 
   async prepareLinePayPayment(payload, env) {
