@@ -1775,6 +1775,12 @@ function normalizeMemberTagList(value) {
   return [...new Set(source.map(tag => String(tag || "").trim()).filter(Boolean))];
 }
 
+const TAIWAN_CITY_NAMES = [
+  "\u81fa\u5317\u5e02", "\u53f0\u5317\u5e02", "\u65b0\u5317\u5e02", "\u6843\u5712\u5e02", "\u81fa\u4e2d\u5e02", "\u53f0\u4e2d\u5e02", "\u81fa\u5357\u5e02", "\u53f0\u5357\u5e02", "\u9ad8\u96c4\u5e02",
+  "\u57fa\u9686\u5e02", "\u65b0\u7af9\u5e02", "\u5609\u7fa9\u5e02", "\u65b0\u7af9\u7e23", "\u82d7\u6817\u7e23", "\u5f70\u5316\u7e23", "\u5357\u6295\u7e23", "\u96f2\u6797\u7e23",
+  "\u5609\u7fa9\u7e23", "\u5c4f\u6771\u7e23", "\u5b9c\u862d\u7e23", "\u82b1\u84ee\u7e23", "\u81fa\u6771\u7e23", "\u53f0\u6771\u7e23", "\u6f8e\u6e56\u7e23", "\u91d1\u9580\u7e23", "\u9023\u6c5f\u7e23"
+];
+
 function parseTaiwanShippingAddress(value) {
   let text = String(value || "").trim().replace(/\s+/g, "");
   const result = { postalCode: "", city: "", district: "", address: text };
@@ -1830,6 +1836,36 @@ function missingShippingFields(customer) {
     ["address", "路名、巷弄、門牌、樓層"],
   ];
   return fields.filter(([key]) => !String(customer?.[key] || "").trim()).map(([, label]) => label);
+}
+
+
+function validateTaiwanMobilePhone(value) {
+  const phone = normalizeMemberPhone(value);
+  return { phone, valid: /^09\d{8}$/.test(phone) };
+}
+
+function validateHuaxuShippingCustomer(customer) {
+  const data = customer || {};
+  const errors = [];
+  const phoneCheck = validateTaiwanMobilePhone(data.phone);
+  const postalCode = String(data.postalCode || "").trim();
+  const city = String(data.city || "").trim();
+  const district = String(data.district || "").trim();
+  const address = String(data.address || "").trim();
+  const compactAddress = address.replace(/\s+/g, "");
+  const parsedFull = parseTaiwanShippingAddress([postalCode, city, district, address].filter(Boolean).join(""));
+  const resolvedCity = city || parsedFull.city;
+  const resolvedDistrict = district || parsedFull.district;
+
+  if (!phoneCheck.valid) errors.push("\u6536\u4ef6\u624b\u6a5f\u9700\u70ba 09 \u958b\u982d 10 \u78bc\u624b\u6a5f\u865f\u78bc");
+  if (postalCode && !/^\d{3,6}$/.test(postalCode)) errors.push("\u90f5\u905e\u5340\u865f\u9700\u70ba 3-6 \u78bc\u6578\u5b57");
+  if (!resolvedCity || !TAIWAN_CITY_NAMES.includes(resolvedCity)) errors.push("\u8acb\u586b\u5beb\u6b63\u78ba\u7e23\u5e02");
+  if (!resolvedDistrict || !/^.{1,8}(?:\u5340|\u9109|\u93ae|\u5e02)$/.test(resolvedDistrict)) errors.push("\u8acb\u586b\u5beb\u6b63\u78ba\u5340\u57df / \u9109\u93ae\u5e02");
+  if (compactAddress.length < 4) errors.push("\u8acb\u586b\u5beb\u5b8c\u6574\u8def\u540d\u3001\u5df7\u5f04\u3001\u9580\u724c\u6216\u4fe1\u7bb1");
+  if (!/(?:\u8def|\u8857|\u5927\u9053|\u6bb5|\u5df7|\u5f04|\u6751|\u91cc|\u865f|\u53f7|\u6a13|\u5ba4|\u4fe1\u7bb1)/.test(compactAddress)) errors.push("\u5730\u5740\u9700\u5305\u542b\u8def\u8857\u3001\u5df7\u5f04\u3001\u9580\u724c\u6216\u4fe1\u7bb1\u7b49\u8a73\u7d30\u8cc7\u8a0a");
+  if (!/(?:\d+.*(?:\u865f|\u53f7)|\d+.*\u4fe1\u7bb1|\d+\s*-\s*\d+)/.test(compactAddress)) errors.push("\u5730\u5740\u9700\u5305\u542b\u9580\u724c\u865f\u78bc\u6216\u4fe1\u7bb1\u865f\u78bc");
+
+  return { ok: errors.length === 0, errors: [...new Set(errors)], phone: phoneCheck.phone, city: resolvedCity, district: resolvedDistrict, address };
 }
 
 function splitBroadcastTagList(raw) {
@@ -4525,7 +4561,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const sameAsRegistered = payload.sameAsRegistered === true || payload.customer?.sameAsRegistered === true;
   let customer = {
     name: String(payload.customer?.name || "").trim().slice(0, 80),
-    phone: String(payload.customer?.phone || "").trim().slice(0, 40),
+    phone: normalizeMemberPhone(payload.customer?.phone || "").slice(0, 40),
     email: String(payload.customer?.email || "").trim().slice(0, 120),
     postalCode: String(payload.customer?.postalCode || "").trim().slice(0, 12),
     city: String(payload.customer?.city || "").trim().slice(0, 40),
@@ -4552,6 +4588,14 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   if (missingCustomer.length) {
     return json({ ok: false, message: `請填寫完整收件資料：${missingCustomer.join("、")}` }, 400);
   }
+  const shippingValidation = validateHuaxuShippingCustomer(customer);
+  if (!shippingValidation.ok) {
+    return json({ ok: false, message: `\u6536\u4ef6\u8cc7\u6599\u683c\u5f0f\u4e0d\u5b8c\u6574\uff1a${shippingValidation.errors.join("\u3001")}` }, 400);
+  }
+  customer.phone = shippingValidation.phone;
+  customer.city = shippingValidation.city || customer.city;
+  customer.district = shippingValidation.district || customer.district;
+  customer.address = shippingValidation.address || customer.address;
   const shippingAddress = [customer.postalCode, customer.city, customer.district, customer.address].filter(Boolean).join(" ");
   const entryParams = payload.entryParams && typeof payload.entryParams === "object" && !Array.isArray(payload.entryParams)
     ? Object.fromEntries(Object.entries(payload.entryParams).map(([key, value]) => [String(key).slice(0, 80), String(value ?? "").slice(0, 500)]))
@@ -5286,6 +5330,33 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const fields = [["name","姓名"],["phone","手機"],["city","縣市"],["district","區域 / 鄉鎮市"],["address","路名、巷弄、門牌、樓層"]];
       return fields.filter(item => !String(customer[item[0]] || "").trim()).map(item => item[1]);
     }
+    function normalizeCheckoutPhone(value){
+      const digits = String(value || "").replace(/\\.0$/, "").replace(/\\D+/g, "");
+      return digits && !digits.startsWith("0") && digits.length === 9 ? "0" + digits : digits;
+    }
+    function validateShippingCustomer(customer){
+      const data = customer || {};
+      const errors = [];
+      const phone = normalizeCheckoutPhone(data.phone);
+      const postalCode = String(data.postalCode || "").trim();
+      const city = String(data.city || "").trim();
+      const district = String(data.district || "").trim();
+      const address = String(data.address || "").trim();
+      const compactAddress = address.replace(/\\s+/g, "");
+      const cities = ["\u81fa\u5317\u5e02","\u53f0\u5317\u5e02","\u65b0\u5317\u5e02","\u6843\u5712\u5e02","\u81fa\u4e2d\u5e02","\u53f0\u4e2d\u5e02","\u81fa\u5357\u5e02","\u53f0\u5357\u5e02","\u9ad8\u96c4\u5e02","\u57fa\u9686\u5e02","\u65b0\u7af9\u5e02","\u5609\u7fa9\u5e02","\u65b0\u7af9\u7e23","\u82d7\u6817\u7e23","\u5f70\u5316\u7e23","\u5357\u6295\u7e23","\u96f2\u6797\u7e23","\u5609\u7fa9\u7e23","\u5c4f\u6771\u7e23","\u5b9c\u862d\u7e23","\u82b1\u84ee\u7e23","\u81fa\u6771\u7e23","\u53f0\u6771\u7e23","\u6f8e\u6e56\u7e23","\u91d1\u9580\u7e23","\u9023\u6c5f\u7e23"];
+      const parsed = parseRegisteredAddress([postalCode, city, district, address].filter(Boolean).join(""));
+      const resolvedCity = city || parsed.city;
+      const resolvedDistrict = district || parsed.district;
+      if (!/^09\\d{8}$/.test(phone)) errors.push("\u6536\u4ef6\u624b\u6a5f\u9700\u70ba 09 \u958b\u982d 10 \u78bc\u624b\u6a5f\u865f\u78bc");
+      if (postalCode && !/^\\d{3,6}$/.test(postalCode)) errors.push("\u90f5\u905e\u5340\u865f\u9700\u70ba 3-6 \u78bc\u6578\u5b57");
+      if (!resolvedCity || !cities.includes(resolvedCity)) errors.push("\u8acb\u586b\u5beb\u6b63\u78ba\u7e23\u5e02");
+      if (!resolvedDistrict || !/^.{1,8}(?:\u5340|\u9109|\u93ae|\u5e02)$/.test(resolvedDistrict)) errors.push("\u8acb\u586b\u5beb\u6b63\u78ba\u5340\u57df / \u9109\u93ae\u5e02");
+      if (compactAddress.length < 4) errors.push("\u8acb\u586b\u5beb\u5b8c\u6574\u8def\u540d\u3001\u5df7\u5f04\u3001\u9580\u724c\u6216\u4fe1\u7bb1");
+      if (!/(?:\u8def|\u8857|\u5927\u9053|\u6bb5|\u5df7|\u5f04|\u6751|\u91cc|\u865f|\u53f7|\u6a13|\u5ba4|\u4fe1\u7bb1)/.test(compactAddress)) errors.push("\u5730\u5740\u9700\u5305\u542b\u8def\u8857\u3001\u5df7\u5f04\u3001\u9580\u724c\u6216\u4fe1\u7bb1\u7b49\u8a73\u7d30\u8cc7\u8a0a");
+      if (!/(?:\\d+.*(?:\u865f|\u53f7)|\\d+.*\u4fe1\u7bb1|\\d+\\s*-\\s*\\d+)/.test(compactAddress)) errors.push("\u5730\u5740\u9700\u5305\u542b\u9580\u724c\u865f\u78bc\u6216\u4fe1\u7bb1\u865f\u78bc");
+      return { ok: errors.length === 0, errors: [...new Set(errors)], phone, city: resolvedCity, district: resolvedDistrict, address };
+    }
+
     function setSameMemberHint(message, type){
       const hint = document.getElementById("sameMemberHint");
       if (!hint) return;
@@ -5334,6 +5405,16 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), shippingCarrier: val("shippingCarrier"), note: val("note"), sameAsRegistered };
       const missingCustomer = missingShippingFields(customer);
       if (missingCustomer.length) return toast("請補齊：" + missingCustomer.join("、"));
+      const shippingValidation = validateShippingCustomer(customer);
+      if (!shippingValidation.ok) return toast("\u6536\u4ef6\u8cc7\u6599\u683c\u5f0f\u4e0d\u5b8c\u6574\uff1a" + shippingValidation.errors.join("\u3001"));
+      customer.phone = shippingValidation.phone;
+      customer.city = shippingValidation.city || customer.city;
+      customer.district = shippingValidation.district || customer.district;
+      customer.address = shippingValidation.address || customer.address;
+      setField("phone", customer.phone);
+      setField("city", customer.city);
+      setField("district", customer.district);
+      setField("address", customer.address);
       entryContext = restoreEntryContext();
       setCheckoutBusy(true);
       let keepBusy = false;
