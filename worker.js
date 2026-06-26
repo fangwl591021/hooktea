@@ -4833,7 +4833,7 @@ async function handleHuaxuCancelOrder(request, env, ctx, apiHandler) {
   }
   const status = String(order.status || "").toUpperCase();
   if (["PAID", "SHIPPED", "COMPLETED"].includes(status)) {
-    return json({ ok: false, message: "此訂單已付款或已出貨，請聯絡客服處理" }, 400);
+    return json({ ok: false, message: "\u6b64\u8a02\u55ae\u5df2\u4ed8\u6b3e\u6216\u5df2\u9032\u5165\u914d\u9001\uff0c\u8acb\u806f\u7d61\u5ba2\u670d\u8655\u7406" }, 400);
   }
   if (status === "CANCELLED") return json({ ok: true, order, duplicate: true });
 
@@ -5825,7 +5825,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (value === "PAID") return "已付款";
       if (value === "PENDING") return "待付款";
       if (value === "CANCELLED") return "已取消";
-      if (value === "SHIPPED") return "已出貨";
+      if (value === "SHIPPED") return "\u914d\u9001\u4e2d";
       if (value === "COMPLETED") return "已完成";
       return status || "-";
     }

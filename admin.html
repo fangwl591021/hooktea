@@ -1581,7 +1581,7 @@
                         <div v-if="editingOrder.remittanceVerifiedAt" class="text-[12px] text-emerald-600 font-bold mt-1">核銷時間：{{ editingOrder.remittanceVerifiedAt }} / {{ editingOrder.remittanceVerifiedBy || '後台' }}</div>
                         <div v-if="editingOrder.newebpayTradeNo" class="text-[12px] text-slate-500 font-mono font-bold mt-1">交易序號：{{ editingOrder.newebpayTradeNo }}</div>
                     </div>
-                    <div><label class="input-label">付款狀態</label><select v-model="editingOrder.status" class="input-field font-bold"><option value="PENDING">⏳ 待付款</option><option value="PAID">✅ 已完款</option><option value="CANCELLED">❌ 已取消</option><option value="TRANSFERRED" disabled>↪ 已轉課</option></select></div>
+                    <div><label class="input-label">訂單狀態</label><select v-model="editingOrder.status" class="input-field font-bold"><option value="PENDING">⏳ 待付款</option><option value="PAID">✅ 已完款</option><option value="SHIPPED">🚚 配送中</option><option value="COMPLETED">✅ 已完成</option><option value="CANCELLED">❌ 已取消</option></select></div>
                     <div v-if="String(editingOrder.paymentMethod || '').toUpperCase() === 'REMITTANCE'" class="bg-white rounded-xl border border-emerald-100 p-4">
                         <div class="text-[15px] font-black text-slate-800 mb-3 flex items-center gap-2"><i class="fas fa-university text-emerald-500"></i>匯款回填 / 核銷</div>
                         <div class="grid grid-cols-2 gap-4">
@@ -3057,7 +3057,10 @@
                             return '已預約';
                         }
                         if (order?.status === 'TRANSFERRED') return '已轉課';
-                        return isPaidOrder(order) ? '已完款' : (order?.status === 'CANCELLED' ? '已取消' : '待付');
+                        if (order?.status === 'SHIPPED') return '配送中';
+                        if (order?.status === 'COMPLETED') return '已完成';
+                        if (order?.status === 'CANCELLED') return '已取消';
+                        return isPaidOrder(order) ? '已完款' : '待付';
                     };
                     const adminOrderStatusClass = (order) => {
                         if (order?.type === 'BOOKING') {
@@ -3066,6 +3069,9 @@
                             return 'bg-indigo-100 text-indigo-700';
                         }
                         if (order?.status === 'TRANSFERRED') return 'bg-indigo-100 text-indigo-700';
+                        if (order?.status === 'SHIPPED') return 'bg-blue-100 text-blue-700';
+                        if (order?.status === 'COMPLETED') return 'status-pill-paid';
+                        if (order?.status === 'CANCELLED') return 'bg-slate-100 text-slate-600';
                         return isPaidOrder(order) ? 'status-pill-paid' : 'status-pill-waiting';
                     };
                     const adminOrderAmountText = (order) => {
@@ -3085,7 +3091,7 @@
                         if (order.paymentMethod === 'POINTS' || (Number(order.amount || 0) <= 0 && Number(order.pointsUsed || 0) > 0)) return '點數折抵';
                         return '未指定';
                     };
-                    const statusText = (status, order = null) => order ? adminOrderStatusText(order) : ({ PAID: '已完款', PENDING: '待付款', BOOKED: '已預約', COMPLETED: '已完成', CANCELLED: '已取消', TRANSFERRED: '已轉課' }[status] || status || '');
+                    const statusText = (status, order = null) => order ? adminOrderStatusText(order) : ({ PAID: '已完款', PENDING: '待付款', BOOKED: '已預約', SHIPPED: '配送中', COMPLETED: '已完成', CANCELLED: '已取消', TRANSFERRED: '已轉課' }[status] || status || '');
                     const shippingAddressText = (order) => {
                         const shipping = order?.shipping || {};
                         return String(
