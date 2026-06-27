@@ -2024,6 +2024,44 @@ function imageLineMessage(url) {
   return { type: "image", originalContentUrl: imageUrl, previewImageUrl: imageUrl };
 }
 
+function hookteaOrderStatusLabel(status) {
+  const value = String(status || "").toUpperCase();
+  if (value === "PENDING") return "\u5f85\u4ed8\u6b3e";
+  if (value === "PAID") return "\u5df2\u4ed8\u6b3e";
+  if (value === "PREPARING") return "\u5099\u8ca8\u4e2d";
+  if (value === "SHIPPED") return "\u914d\u9001\u4e2d";
+  if (value === "COMPLETED") return "\u5df2\u5b8c\u6210";
+  if (value === "CANCELLED") return "\u5df2\u53d6\u6d88";
+  if (value === "TRANSFERRED") return "\u5df2\u8f49\u8ab2";
+  return status || "-";
+}
+
+function getOrderLineRecipient(order) {
+  return [
+    order?.lineProfile?.userId,
+    order?.lineUserId,
+    order?.linkedLineUid,
+    order?.userId,
+    order?.memberUid,
+  ].map(value => String(value || "").trim()).find(value => /^U[a-zA-Z0-9]{20,}$/.test(value)) || "";
+}
+
+async function notifyOrderStatusChangeLine(env, order, beforeStatus, nextStatus) {
+  const to = getOrderLineRecipient(order);
+  if (!to) return { ok: false, skipped: true, reason: "missing_line_uid" };
+  const lines = [
+    "HookTea \u8a02\u55ae\u72c0\u614b\u66f4\u65b0",
+    `\u55ae\u865f\uff1a${order.orderId || "-"}`,
+    `\u72c0\u614b\uff1a${hookteaOrderStatusLabel(beforeStatus)} \u2192 ${hookteaOrderStatusLabel(nextStatus)}`,
+    `\u5546\u54c1\uff1a${String(order.productName || order.courseName || order.name || "\u8a02\u55ae").split("\n")[0]}`,
+  ];
+  if (String(nextStatus || "").toUpperCase() === "SHIPPED") {
+    lines.push(`\u7269\u6d41\uff1a${order.shippingCarrierName || order.shipping?.carrierName || "-"}`);
+    if (order.trackingNumber || order.shipping?.trackingNumber) lines.push(`\u67e5\u8a62\u7de8\u865f\uff1a${order.trackingNumber || order.shipping?.trackingNumber}`);
+    if (order.trackingUrl || order.shipping?.trackingUrl) lines.push(`\u67e5\u8a62\u9023\u7d50\uff1a${order.trackingUrl || order.shipping?.trackingUrl}`);
+  }
+  return pushLineMessage(env, to, textLineMessage(lines.join("\n")));
+}
 function buildReferralInviteUrl(liffId, refUid, lineUid) {
   const params = new URLSearchParams();
   if (refUid) params.set("ref", refUid);
@@ -4832,7 +4870,7 @@ async function handleHuaxuCancelOrder(request, env, ctx, apiHandler) {
     return json({ ok: false, message: "無法取消非本人訂單" }, 403);
   }
   const status = String(order.status || "").toUpperCase();
-  if (["PAID", "SHIPPED", "COMPLETED"].includes(status)) {
+  if (["PAID", "PREPARING", "SHIPPED", "COMPLETED"].includes(status)) {
     return json({ ok: false, message: "\u6b64\u8a02\u55ae\u5df2\u4ed8\u6b3e\u6216\u5df2\u9032\u5165\u914d\u9001\uff0c\u8acb\u806f\u7d61\u5ba2\u670d\u8655\u7406" }, 400);
   }
   if (status === "CANCELLED") return json({ ok: true, order, duplicate: true });
@@ -5442,7 +5480,11 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           await refreshMemberData();
         }
         if (paymentMethod === "REMITTANCE" && res.order && Number(res.order.amount || 0) > 0) {
-          alert("訂單已成立：" + res.order.orderId + "\\n\\n匯款資訊：\\n" + (res.remittanceInfo || "尚未設定匯款帳號，請等候客服提供匯款資訊。"));
+          alert("\u8a02\u55ae\u5df2\u6210\u7acb\uff1a" + res.order.orderId + "\\n\\n\u532f\u6b3e\u8cc7\u8a0a\uff1a\\n" + (res.remittanceInfo || "\u5c1a\u672a\u8a2d\u5b9a\u532f\u6b3e\u5e33\u865f\uff0c\u8acb\u7b49\u5019\u5ba2\u670d\u63d0\u4f9b\u532f\u6b3e\u8cc7\u8a0a\u3002") + "\\n\\n\u532f\u6b3e\u5f8c\u8acb\u5728\u8a02\u55ae\u67e5\u8a62\u4e2d\u586b\u5beb\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc\u3002");
+          memberTab = "orders";
+          expandedOrderId = res.order.orderId;
+          await refreshMemberData();
+          openMember();
         }
       } catch (error) {
         toast("訂單送出失敗，請稍後再試");
@@ -5767,7 +5809,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     function canCancelOrder(order){
       const status = String(order.status || "").toUpperCase();
-      return !!order.orderId && !["PAID","SHIPPED","COMPLETED","CANCELLED"].includes(status) && !order.remittance;
+      return !!order.orderId && !["PAID","PREPARING","SHIPPED","COMPLETED","CANCELLED"].includes(status) && !order.remittance;
     }
     function canReportRemittance(order){
       const status = String(order.status || "").toUpperCase();
@@ -5825,6 +5867,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (value === "PAID") return "已付款";
       if (value === "PENDING") return "待付款";
       if (value === "CANCELLED") return "已取消";
+      if (value === "PREPARING") return "\u5099\u8ca8\u4e2d";
       if (value === "SHIPPED") return "\u914d\u9001\u4e2d";
       if (value === "COMPLETED") return "已完成";
       return status || "-";
@@ -7017,7 +7060,13 @@ export default {
           if (oIdx > -1) {
               const beforeOrder = editOrders[oIdx];
               const nextOrder = { ...beforeOrder, ...payload };
-              const remittanceVerified = String(beforeOrder.status || "").toUpperCase() !== "PAID" && String(nextOrder.status || "").toUpperCase() === "PAID" && String(nextOrder.paymentMethod || "").toUpperCase() === "REMITTANCE" && nextOrder.remittance && !nextOrder.remittanceVerifiedAt;
+              const beforeStatus = String(beforeOrder.status || "").toUpperCase();
+              const nextStatus = String(nextOrder.status || "").toUpperCase();
+              if (String(nextOrder.type || "").toUpperCase() === "PRODUCT" && nextStatus === "SHIPPED") {
+                const trackingRequired = String(nextOrder.trackingNumber || nextOrder.shipping?.trackingNumber || "").trim();
+                if (!trackingRequired) throw new Error("改為配送中前，請先填寫物流 / 訂單查詢編號");
+              }
+              const remittanceVerified = beforeStatus !== "PAID" && nextStatus === "PAID" && String(nextOrder.paymentMethod || "").toUpperCase() === "REMITTANCE" && nextOrder.remittance && !nextOrder.remittanceVerifiedAt;
               if (remittanceVerified) {
                 nextOrder.remittanceStatus = "VERIFIED";
                 nextOrder.remittanceVerifiedAt = new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" });
@@ -7030,6 +7079,9 @@ export default {
               }
               editOrders[oIdx] = nextOrder;
               await putOrdersKV(env, ctx, editOrders);
+              if (beforeStatus !== nextStatus) {
+                ctx.waitUntil(notifyOrderStatusChangeLine(env, nextOrder, beforeStatus, nextStatus).catch(error => console.error("[LINE] order status notification failed", error)));
+              }
           }
           if (env.GAS_URL) ctx.waitUntil(fetch(env.GAS_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
           ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()));

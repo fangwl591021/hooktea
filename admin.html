@@ -1581,7 +1581,7 @@
                         <div v-if="editingOrder.remittanceVerifiedAt" class="text-[12px] text-emerald-600 font-bold mt-1">核銷時間：{{ editingOrder.remittanceVerifiedAt }} / {{ editingOrder.remittanceVerifiedBy || '後台' }}</div>
                         <div v-if="editingOrder.newebpayTradeNo" class="text-[12px] text-slate-500 font-mono font-bold mt-1">交易序號：{{ editingOrder.newebpayTradeNo }}</div>
                     </div>
-                    <div><label class="input-label">訂單狀態</label><select v-model="editingOrder.status" class="input-field font-bold"><option value="PENDING">⏳ 待付款</option><option value="PAID">✅ 已完款</option><option value="SHIPPED">🚚 配送中</option><option value="COMPLETED">✅ 已完成</option><option value="CANCELLED">❌ 已取消</option></select></div>
+                    <div><label class="input-label">訂單狀態</label><select v-model="editingOrder.status" class="input-field font-bold"><option value="PENDING">⏳ 待付款</option><option value="PAID">✅ 已完款</option><option value="PREPARING">&#x1F4E6; &#x5099;&#x8CA8;&#x4E2D;</option><option value="SHIPPED">🚚 配送中</option><option value="COMPLETED">✅ 已完成</option><option value="CANCELLED">❌ 已取消</option></select></div>
                     <div v-if="String(editingOrder.paymentMethod || '').toUpperCase() === 'REMITTANCE'" class="bg-white rounded-xl border border-emerald-100 p-4">
                         <div class="text-[15px] font-black text-slate-800 mb-3 flex items-center gap-2"><i class="fas fa-university text-emerald-500"></i>匯款回填 / 核銷</div>
                         <div class="grid grid-cols-2 gap-4">
@@ -1603,6 +1603,7 @@
                             <div class="col-span-2"><label class="input-label">完整寄送地址</label><input type="text" v-model="editingOrder.shippingAddress" class="input-field font-bold"></div>
                             <div><label class="input-label">物流方式</label><select v-model="editingOrder.shippingCarrier" class="input-field font-bold"><option value="FAMILY">全家</option><option value="SEVEN">7-11</option><option value="POST">中華郵政</option></select></div>
                             <div><label class="input-label">物流 / 訂單查詢編號</label><input type="text" v-model="editingOrder.trackingNumber" class="input-field font-mono font-bold" placeholder="出貨後填入"></div>
+                            <div class="col-span-2 shipping-tracking-required-warning" v-if="String(editingOrder.status || '').toUpperCase() === 'SHIPPED' && !String(editingOrder.trackingNumber || editingOrder.shipping?.trackingNumber || '').trim()"><div class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] font-black text-red-600"><i class="fas fa-exclamation-triangle mr-2"></i>&#x6539;&#x70BA;&#x914D;&#x9001;&#x4E2D;&#x524D;&#xFF0C;&#x8ACB;&#x5148;&#x586B;&#x5BEB;&#x7269;&#x6D41; / &#x8A02;&#x55AE;&#x67E5;&#x8A62;&#x7DE8;&#x865F;&#x3002;</div></div>
                             <div class="col-span-2" v-if="trackingLookupUrl(editingOrder)"><a :href="trackingLookupUrl(editingOrder)" target="_blank" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-50 text-blue-600 font-bold border border-blue-100 hover:bg-blue-100"><i class="fas fa-external-link-alt"></i>開啟物流查詢</a></div>
                         </div>
                     </div>
@@ -3057,6 +3058,7 @@
                             return '已預約';
                         }
                         if (order?.status === 'TRANSFERRED') return '已轉課';
+                        if (order?.status === 'PREPARING') return '\u5099\u8ca8\u4e2d';
                         if (order?.status === 'SHIPPED') return '配送中';
                         if (order?.status === 'COMPLETED') return '已完成';
                         if (order?.status === 'CANCELLED') return '已取消';
@@ -3069,6 +3071,7 @@
                             return 'bg-indigo-100 text-indigo-700';
                         }
                         if (order?.status === 'TRANSFERRED') return 'bg-indigo-100 text-indigo-700';
+                        if (order?.status === 'PREPARING') return 'bg-amber-100 text-amber-700';
                         if (order?.status === 'SHIPPED') return 'bg-blue-100 text-blue-700';
                         if (order?.status === 'COMPLETED') return 'status-pill-paid';
                         if (order?.status === 'CANCELLED') return 'bg-slate-100 text-slate-600';
@@ -3091,7 +3094,7 @@
                         if (order.paymentMethod === 'POINTS' || (Number(order.amount || 0) <= 0 && Number(order.pointsUsed || 0) > 0)) return '點數折抵';
                         return '未指定';
                     };
-                    const statusText = (status, order = null) => order ? adminOrderStatusText(order) : ({ PAID: '已完款', PENDING: '待付款', BOOKED: '已預約', SHIPPED: '配送中', COMPLETED: '已完成', CANCELLED: '已取消', TRANSFERRED: '已轉課' }[status] || status || '');
+                    const statusText = (status, order = null) => order ? adminOrderStatusText(order) : ({ PAID: '已完款', PENDING: '待付款', PREPARING: '\u5099\u8ca8\u4e2d', BOOKED: '已預約', SHIPPED: '配送中', COMPLETED: '已完成', CANCELLED: '已取消', TRANSFERRED: '已轉課' }[status] || status || '');
                     const shippingAddressText = (order) => {
                         const shipping = order?.shipping || {};
                         return String(
@@ -3849,6 +3852,10 @@
                         saveOrderUpdate();
                     };
                     const saveOrderUpdate = async () => {
+                        if (editingOrder.value?.type === 'PRODUCT' && String(editingOrder.value.status || '').toUpperCase() === 'SHIPPED' && !String(editingOrder.value.trackingNumber || editingOrder.value.shipping?.trackingNumber || '').trim()) {
+                            alert('\u6539\u70ba\u914d\u9001\u4e2d\u524d\uff0c\u8acb\u5148\u586b\u5beb\u7269\u6d41 / \u8a02\u55ae\u67e5\u8a62\u7de8\u865f');
+                            return;
+                        }
                         isLoading.value = true;
                         try {
                             const payload = {
