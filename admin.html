@@ -4005,7 +4005,7 @@
                         next.flexTemplate = next.flexTemplate || 'v1';
                         next.altText = next.altText || next.moduleName || next.keyword || '';
                         next.bodyText = next.bodyText || '';
-                        next.buttonText = next.buttonText || '????';
+                        next.buttonText = next.buttonText || '\u7acb\u5373\u67e5\u770b';
                         next.imageUrl = next.imageUrl || next.previewImageUrl || '';
                         next.videoUrl = next.videoUrl || '';
                         next.actionUrl = next.actionUrl || '';
@@ -4074,7 +4074,7 @@
                             if (nameInput?.value && !editingFlexRule.value.moduleName) editingFlexRule.value.moduleName = nameInput.value;
                             return true;
                         } catch (e) {
-                            alert('mylittlesys JSON ?????' + e.message);
+                            alert('mylittlesys JSON \u89e3\u6790\u5931\u6557\uff1a' + e.message);
                             return false;
                         }
                     };
@@ -4104,7 +4104,7 @@
                         delete copied.createdAt;
                         delete copied.updatedAt;
                         copied.id = 'FR_' + Date.now();
-                        copied.moduleName = `${copied.moduleName || copied.keyword || '??'} (??)`;
+                        copied.moduleName = `${copied.moduleName || copied.keyword || '\u6a21\u7d44'} (\u8907\u88fd)`;
                         if (copied.keyword) copied.keyword = `${copied.keyword}_copy_${suffix}`;
                         if (copied.altText && copied.altText === (rule?.moduleName || rule?.keyword)) {
                             copied.altText = copied.moduleName;
@@ -4120,13 +4120,13 @@
                         const flexTemplate = String(template || 'v1').toLowerCase();
                         editingFlexRule.value = normalizeFlexRuleForm({
                             id: 'FR_' + Date.now(),
-                            moduleName: type === 'FLEX' ? `Flex ${flexTemplate.toUpperCase()} ??` : (type === 'IMAGE' ? '????' : '????'),
+                            moduleName: type === 'FLEX' ? `Flex ${flexTemplate.toUpperCase()} \u6a21\u7d44` : (type === 'IMAGE' ? '\u5716\u7247\u6a21\u7d44' : '\u6587\u5b57\u6a21\u7d44'),
                             keyword: '',
                             replyType: type,
                             flexTemplate,
                             altText: '',
                             bodyText: '',
-                            buttonText: '????',
+                            buttonText: '\u7acb\u5373\u67e5\u770b',
                             imageUrl: '',
                             videoUrl: '',
                             actionUrl: '',
@@ -4151,10 +4151,10 @@
                         if (editingFlexRule.value.replyType === 'FLEX') {
                             const hasCapturedFlex = captureMylittlesysFlexJson();
                             if (!hasCapturedFlex && !String(editingFlexRule.value.flexJson || editingFlexRule.value.payload || '').trim()) {
-                                return alert('??????? Flex JSON??????????????????? JSON??');
+                                return alert('\u8acb\u5148\u7522\u751f\u6216\u8cbc\u4e0a Flex JSON\uff0c\u518d\u5132\u5b58\u6a21\u7d44\u3002');
                             }
                             if (!editingFlexRule.value.moduleName) {
-                                editingFlexRule.value.moduleName = `Flex ${String(editingFlexRule.value.flexTemplate || 'v1').toUpperCase()} ??`;
+                                editingFlexRule.value.moduleName = `Flex ${String(editingFlexRule.value.flexTemplate || 'v1').toUpperCase()} \u6a21\u7d44`;
                             }
                             try {
                                 const rawFlex = String(editingFlexRule.value.flexJson || editingFlexRule.value.payload || '').trim();
@@ -4163,17 +4163,17 @@
                                     ? parsedFlex
                                     : {
                                         type: 'flex',
-                                        altText: String(editingFlexRule.value.altText || editingFlexRule.value.moduleName || editingFlexRule.value.keyword || 'LINE Flex ??').slice(0, 400),
+                                        altText: String(editingFlexRule.value.altText || editingFlexRule.value.moduleName || editingFlexRule.value.keyword || 'LINE Flex \u63a8\u64ad').slice(0, 400),
                                         contents: parsedFlex
                                     };
                                 editingFlexRule.value.payload = JSON.stringify(message, null, 2);
                                 editingFlexRule.value.previewImageUrl = editingFlexRule.value.imageUrl || editingFlexRule.value.previewImageUrl || '';
                             } catch (e) {
-                                return alert('Flex ?????' + e.message);
+                                return alert('Flex JSON \u683c\u5f0f\u932f\u8aa4\uff1a' + e.message);
                             }
                         }
-                        if (!editingFlexRule.value.moduleName) return alert('???????');
-                        if (!editingFlexRule.value.payload) return alert('???????');
+                        if (!editingFlexRule.value.moduleName) return alert('\u8acb\u8f38\u5165\u6a21\u7d44\u540d\u7a31');
+                        if (!editingFlexRule.value.payload) return alert('\u8acb\u8f38\u5165\u56de\u8986\u5167\u5bb9');
                         const nowIso = new Date().toISOString();
                         const ruleToSave = {
                             ...editingFlexRule.value,
@@ -4195,18 +4195,18 @@
                                 editingFlexRule.value = null;
                                 saved = true;
                             }
-                            if (!saved) throw new Error(res?.message || '?????????');
+                            if (!saved) throw new Error(res?.message || '\u6a21\u7d44\u5132\u5b58\u5931\u6557');
                         } catch(e) {
                             console.error(e);
-                            alert('?????' + e.message);
+                            alert('\u5132\u5b58\u5931\u6557\uff1a' + e.message);
                         } finally {
                             isLoading.value = false;
                         }
-                        if (saved) alert('? ?????????');
+                        if (saved) alert('\u2705 \u6a21\u7d44\u5df2\u5132\u5b58');
                     };
 
                     const deleteFlexRule = async (id) => {
-                        if (!confirm('????????????')) return;
+                        if (!confirm('\u78ba\u5b9a\u522a\u9664\u6b64\u6a21\u7d44\uff1f')) return;
                         isLoading.value = true;
                         try {
                             const res = await callApi('ADMIN_DELETE_REPLY_RULE', { id });
