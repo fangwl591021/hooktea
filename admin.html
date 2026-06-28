@@ -87,7 +87,7 @@
                             <div @click="switchView('members')" class="nav-item" :class="{'nav-active': view === 'members' || view === 'member_detail'}"><i class="fas fa-users w-6 text-center"></i>客戶 CRM</div>
                             <div v-if="false" @click="switchView('courses')" class="nav-item" :class="{'nav-active': view === 'courses' || view === 'course_edit' || view === 'course_enrollments'}"><i class="fas fa-book w-6 text-center"></i>課程 / 預約服務</div>
                             <div @click="switchView('products')" class="nav-item" :class="{'nav-active': view === 'products'}"><i class="fas fa-store w-6 text-center"></i>商城商品</div>
-                            <div @click="switchView('consultation')" class="nav-item" :class="{'nav-active': view === 'consultation' || view === 'sys_config'}"><i class="fas fa-calendar-check w-6 text-center"></i>預約設定</div>
+                            <div v-if="false" @click="switchView('consultation')" class="nav-item" :class="{'nav-active': view === 'consultation' || view === 'sys_config'}"><i class="fas fa-calendar-check w-6 text-center"></i>預約設定</div>
                             <div v-if="canViewFinance" @click="switchView('orders')" class="nav-item" :class="{'nav-active': view === 'orders' || view === 'order_edit'}"><i class="fas fa-receipt w-6 text-center"></i>訂單維護</div>
                             <div v-if="false" @click="switchView('booking_report')" class="nav-item" :class="{'nav-active': view === 'booking_report'}"><i class="fas fa-clipboard-list w-6 text-center"></i>預約報表</div>
                             <div v-if="canViewFinance" @click="switchView('points_ledger')" class="nav-item" :class="{'nav-active': view === 'points_ledger'}"><i class="fas fa-coins w-6 text-center"></i>點數總表</div>
@@ -1971,7 +1971,7 @@
                         return user.isTeacher === true || user.role === 'teacher' || user.crmRole === 'teacher' || String(user.memberTier || '').includes('導師');
                     }));
                     const adminOnlyViews = new Set(['dashboard', 'orders', 'booking_report', 'points_ledger', 'payment_logs', 'audit_logs', 'paid_broadcast', 'richmenu', 'settings', 'flex_rules', 'shop_modules']);
-                    const hiddenFeatureViews = new Set(['courses', 'course_edit', 'course_enrollments', 'booking_report']);
+                    const hiddenFeatureViews = new Set(['courses', 'course_edit', 'course_enrollments', 'booking_report', 'consultation', 'sys_config']);
                     const systemAllowedViews = new Set(['richmenu']);
                     const systemAllowedActions = new Set(['ADMIN_GET_DATA', 'ADMIN_GET_SLOTS', 'ADMIN_MANAGE_POINTS', 'GET_USER_POINTS', 'UPLOAD_IMAGE', 'DEPLOY_RICH_MENU', 'LOG_ADMIN_EVENT']);
                     const operatorDefaultView = 'members';
