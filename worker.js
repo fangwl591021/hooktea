@@ -6076,6 +6076,13 @@ export default {
     if (url.searchParams.get("action") === "NEWEBPAY_NOTIFY") {
       return this.handleNewebpayNotify(request, env, ctx);
     }
+    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+      const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+      const shopLiffId = String(settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8").trim();
+      return new Response(renderHuaxuShopHtml(shopLiffId), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     const staticResponse = await serveStaticHtml(request, env, corsHeaders);
     if (staticResponse) return staticResponse;
 
