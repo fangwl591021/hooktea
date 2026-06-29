@@ -2654,6 +2654,7 @@ async function queryWetwPointList(settings, member, env = {}) {
       page: 1,
       per_page: 100,
     }),
+    signal: AbortSignal.timeout(4000),
   });
   const text = await res.text();
   let data = null;
@@ -5621,11 +5622,14 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       memberLoading = true;
       renderMemberPanel();
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 7000);
         const res = await fetch("/api/huaxu/member", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile })
-        }).then(r => r.json());
+          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile }),
+          signal: controller.signal
+        }).then(r => r.json()).finally(() => clearTimeout(timeoutId));
         memberData = res && res.ok ? res : null;
       } catch (error) {
         console.warn("Member profile load failed", error);
