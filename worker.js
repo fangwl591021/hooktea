@@ -5541,7 +5541,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           openMember();
         }
         if (paymentMethod === "COD" && res.order && Number(res.order.amount || 0) > 0) {
-          alert("\u8a02\u55ae\u5df2\u6210\u7acb\uff1a" + res.order.orderId + "\n\n\u4ed8\u6b3e\u65b9\u5f0f\uff1a\u8ca8\u5230\u4ed8\u6b3e\n\u8acb\u7559\u610f\u914d\u9001\u901a\u77e5\u8207\u53d6\u8ca8\u4ed8\u6b3e\u3002");
+          alert("\u8a02\u55ae\u5df2\u6210\u7acb\uff1a" + res.order.orderId + "\\n\\n\u4ed8\u6b3e\u65b9\u5f0f\uff1a\u8ca8\u5230\u4ed8\u6b3e\\n\u8acb\u7559\u610f\u914d\u9001\u901a\u77e5\u8207\u53d6\u8ca8\u4ed8\u6b3e\u3002");
           memberTab = "orders";
           expandedOrderId = res.order.orderId;
           await refreshMemberData();
