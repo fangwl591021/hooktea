@@ -2207,6 +2207,45 @@ async function sendTelegramNotification(env, text, settings = null) {
     return result;
   }
 }
+async function ensureFastLineCheckinMember(env, ctx, lineUid, profile = null, source = "mother_keyword_checkin_fast") {
+  const uid = String(lineUid || "").trim();
+  if (!uid || !uid.startsWith("U")) return { memberUid: "", member: null };
+  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false }).catch(() => null);
+  const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
+  for (const candidateId of candidateIds) {
+    const member = await safeGetKV(env, `USER_${candidateId}`, null).catch(() => null);
+    if (member && (member.userId || candidateId)) return { memberUid: member.userId || candidateId, member, binding };
+  }
+  let lineProfile = profile;
+  if (!lineProfile || (!lineProfile.displayName && !lineProfile.name && !lineProfile.pictureUrl && !lineProfile.picture)) {
+    lineProfile = await fetchLineBotProfile(env, uid).catch(() => profile || {});
+  }
+  const displayName = String(lineProfile?.displayName || lineProfile?.name || uid).trim();
+  const pictureUrl = String(lineProfile?.pictureUrl || lineProfile?.picture || "").trim();
+  const now = new Date();
+  const member = {
+    userId: uid,
+    legacyMemberId: "",
+    lineUserId: uid,
+    linkedLineUid: uid,
+    lineDisplayName: displayName,
+    name: displayName,
+    displayName,
+    pictureUrl,
+    phone: "",
+    mobile: "",
+    tel: "",
+    memberTier: "\u4e00\u822c\u6703\u54e1",
+    crmBindingStatus: "LINE_ONLY_PENDING_LEGACY",
+    bindingStatus: "LINE \u5f85\u7d81\u5b9a",
+    source,
+    createdAt: now.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" }),
+    updatedAt: now.toISOString(),
+  };
+  await putUserKV(env, ctx, uid, member);
+  return { memberUid: uid, member, binding: null };
+}
+
 async function ensureCrmMemberWithAiMatch(env, ctx, lineUid, source = "mother_keyword_fallback") {
   const uid = String(lineUid || "").trim();
   if (!uid) return { memberUid: "", member: null, candidates: [], review: null, profile: null };
@@ -2281,7 +2320,13 @@ async function handleMotherKeywordFallback(env, ctx, api, event, reason = "fallb
   const keyword = String(event?.message?.text || "").trim();
   const keywordType = motherSiteKeywordType(keyword);
   if (!lineUid || !replyToken) return { ok: false, skipped: true, reason: "missing_line" };
-  const matched = await ensureCrmMemberWithAiMatch(env, ctx, lineUid, `mother_keyword_${keywordType}_${reason}`);
+  let matched = { memberUid: lineUid, member: null, candidates: [], review: null, profile: null };
+  if (keywordType === "checkin") {
+    matched = await ensureFastLineCheckinMember(env, ctx, lineUid, null, `mother_keyword_${keywordType}_${reason}`);
+    if (ctx) ctx.waitUntil(ensureCrmMemberWithAiMatch(env, ctx, lineUid, `mother_keyword_${keywordType}_ai_background`).catch(error => console.error("Mother keyword AI match background error:", error)));
+  } else {
+    matched = await ensureCrmMemberWithAiMatch(env, ctx, lineUid, `mother_keyword_${keywordType}_${reason}`);
+  }
   const memberUid = matched.memberUid || lineUid;
   const member = matched.member || null;
   let messages = [];
