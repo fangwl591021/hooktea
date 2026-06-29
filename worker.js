@@ -7944,164 +7944,83 @@ export default {
       if (motherKeywordEvents.length) {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
-        const api = this;
-        const localMotherKeywordEvents = motherKeywordEvents.filter(event => {
-          const keywordType = motherSiteKeywordType(event?.message?.text || "");
-          return keywordType === "checkin" || keywordType === "member_area";
-        });
-        const forwardMotherKeywordEvents = motherKeywordEvents.filter(event => {
-          const keywordType = motherSiteKeywordType(event?.message?.text || "");
-          return keywordType !== "checkin" && keywordType !== "member_area";
-        });
+        const allEventsAreMotherKeywords = motherKeywordEvents.length === events.length;
         const preflightTask = Promise.all(motherKeywordEvents.map(async event => {
           const lineUid = String(event?.source?.userId || "").trim();
           const keyword = String(event?.message?.text || "").trim();
           if (!lineUid) return;
-          await ensureLineOnlyCrmMember(env, ctx, lineUid, null, `mother_keyword_${motherSiteKeywordType(keyword)}`).catch(() => {});
+          await ensureLineOnlyCrmMember(env, ctx, lineUid, null, `mother_keyword_forward_only_${motherSiteKeywordType(keyword)}`).catch(() => {});
           await appendLineMonitorEvent(env, ctx, event).catch(e => console.error("LINE Monitor Append Error:", e));
-        }));
-        for (const event of motherKeywordEvents) {
-          const lineUid = String(event?.source?.userId || "").trim();
-          const keyword = String(event?.message?.text || "").trim();
-          if (!lineUid) continue;
           await safePutKV(env, `MOTHER_KEYWORD_RECEIVED_${lineUid}`, {
             lineUserId: lineUid,
             keyword,
             keywordType: motherSiteKeywordType(keyword),
+            route: "forward_only",
             receivedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 * 7 }).catch(() => {});
-        }
+        }));
         if (ctx) ctx.waitUntil(preflightTask);
         else preflightTask.catch(() => {});
+
         await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
           receivedAt: new Date().toISOString(),
-          route: "mother_keyword_direct",
+          route: "mother_keyword_forward_only",
           totalEvents: events.length,
-          unhandledCount: motherKeywordEvents.length,
-          localHandledCount: localMotherKeywordEvents.length,
-          forwardedCount: forwardMotherKeywordEvents.length,
+          forwardedCount: motherKeywordEvents.length,
+          localHandledCount: 0,
           texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
           keywordTypes: motherKeywordEvents.map(event => motherSiteKeywordType(event?.message?.text || "")),
         }, { expirationTtl: 86400 }).catch(() => {});
-        const localResults = [];
-        for (const event of localMotherKeywordEvents) {
-          const keywordType = motherSiteKeywordType(event?.message?.text || "");
-          localResults.push(await handleMotherKeywordFallback(env, ctx, api, event, "local_first").catch(error => ({
-            ok: false,
-            error: error?.message || String(error),
-            keywordType,
-          })));
-        }
-        if (localMotherKeywordEvents.length) {
-          await safePutKV(env, "MOTHER_KEYWORD_LOCAL_FIRST_LAST", {
-            handledAt: new Date().toISOString(),
-            eventCount: localMotherKeywordEvents.length,
-            texts: localMotherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-            keywordTypes: localMotherKeywordEvents.map(event => motherSiteKeywordType(event?.message?.text || "")),
-            results: localResults,
-          }, { expirationTtl: 86400 }).catch(() => {});
-        }
-        if (!forwardMotherKeywordEvents.length) {
-          return new Response("OK", { status: 200 });
-        }
+
+        const forwardPayload = allEventsAreMotherKeywords ? parsedPayload : { ...parsedPayload, events: motherKeywordEvents };
+        const forwardBody = allEventsAreMotherKeywords ? rawText : JSON.stringify(forwardPayload);
+        const forwardHeaders = {
+          "Content-Type": "application/json",
+          "x-hooktea-forwarded-by": "hooktea-mother-keyword-forward-only",
+        };
+        if (allEventsAreMotherKeywords && signature) forwardHeaders["x-line-signature"] = signature;
         const forwardTask = (async () => {
           await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
             url: forwardWebhook,
-            route: "mother_keyword_direct",
-            eventCount: forwardMotherKeywordEvents.length,
-            texts: forwardMotherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            route: "mother_keyword_forward_only",
+            eventCount: motherKeywordEvents.length,
+            allEventsAreMotherKeywords,
+            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             attemptedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
-          const forwardPayload = { ...parsedPayload, events: forwardMotherKeywordEvents };
           const response = await fetch(forwardWebhook, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-line-signature": signature
-            },
-            body: JSON.stringify(forwardPayload),
+            headers: forwardHeaders,
+            body: forwardBody,
             redirect: "follow",
             signal: AbortSignal.timeout(8000)
           });
           const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
-          const shouldFallback = !response.ok || isPlainMotherWebhookAck(responseText);
-          if (response.ok) {
-            for (const event of forwardMotherKeywordEvents) {
-              const text = String(event?.message?.text || "").trim();
-              const keywordType = motherSiteKeywordType(text);
-              const lineUid = String(event?.source?.userId || "").trim();
-              if (!lineUid) continue;
-              if (shouldFallback && (keywordType === "checkin" || keywordType === "member_area")) {
-                await handleMotherKeywordFallback(env, ctx, api, event, response.ok ? "plain_ack" : "forward_not_ok").catch(error => {
-                  console.error("Mother keyword fallback error:", error);
-                });
-                continue;
-              }
-              if (keywordType !== "checkin") {
-                await safePutKV(env, `MOTHER_KEYWORD_LAST_${lineUid}`, {
-                  lineUserId: lineUid,
-                  keyword: text,
-                  keywordType,
-                  forwarded: true,
-                  forwardedAt: new Date().toISOString(),
-                  responseStatus: response.status,
-                }, { expirationTtl: 86400 * 30 }).catch(() => {});
-                continue;
-              }
-              await safePutKV(env, `MOTHER_KEYWORD_LAST_${lineUid}`, {
-                lineUserId: lineUid,
-                keyword: text,
-                keywordType,
-                forwarded: true,
-                forwardedAt: new Date().toISOString(),
-                responseStatus: response.status,
-              }, { expirationTtl: 86400 * 30 }).catch(() => {});
-            }
-          } else {
-            for (const event of forwardMotherKeywordEvents) {
-              const keywordType = motherSiteKeywordType(event?.message?.text || "");
-              if (keywordType === "checkin" || keywordType === "member_area") {
-                await handleMotherKeywordFallback(env, ctx, api, event, "forward_not_ok").catch(error => {
-                  console.error("Mother keyword fallback error:", error);
-                });
-              }
-            }
-          }
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook,
-            route: "mother_keyword_direct",
+            route: "mother_keyword_forward_only",
             status: response.status,
             ok: response.ok,
-            fallback: shouldFallback,
-            eventCount: forwardMotherKeywordEvents.length,
-            texts: forwardMotherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            fallback: false,
+            eventCount: motherKeywordEvents.length,
+            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             response: responseText.slice(0, 300),
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
         })().catch(async error => {
-          for (const event of forwardMotherKeywordEvents) {
-            const keywordType = motherSiteKeywordType(event?.message?.text || "");
-            if (keywordType === "checkin" || keywordType === "member_area") {
-              await handleMotherKeywordFallback(env, ctx, api, event, "forward_error").catch(fallbackError => {
-                console.error("Mother keyword fallback error:", fallbackError);
-              });
-            }
-          }
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook,
-            route: "mother_keyword_direct",
+            route: "mother_keyword_forward_only",
             ok: false,
             error: error?.message || String(error),
-            fallback: true,
-            eventCount: forwardMotherKeywordEvents.length,
+            fallback: false,
+            eventCount: motherKeywordEvents.length,
             forwardedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
         });
-        if (ctx) ctx.waitUntil(forwardTask);
-        else await forwardTask;
+        await forwardTask;
         return new Response("OK", { status: 200 });
       }
-
       for (const event of events) {
         let handled = false;
         if (event?.type === "message" && event?.message?.type === "text") {
