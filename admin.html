@@ -347,7 +347,7 @@
                                         <div class="text-[12px] font-mono text-slate-500 mt-1">{{ o.phone || '-' }}</div>
                                         <div v-if="o.type === 'PRODUCT'" class="text-[12px] text-slate-500 mt-1 leading-relaxed max-w-[260px]">{{ shippingAddressText(o) || '未填寫寄送地址' }}</div>
                                         <div v-if="o.type === 'PRODUCT'" class="text-[12px] font-bold text-slate-600 mt-1">
-                                            物流：{{ shippingCarrierText(o) }}
+                                            物流：{{ shippingCarrierText(o) }}<span v-if="shippingStoreInfoText(o)"> / {{ shippingStoreInfoText(o) }}</span>
                                             <a v-if="trackingLookupUrl(o)" :href="trackingLookupUrl(o)" target="_blank" class="text-blue-600 ml-2 hover:underline">查詢</a>
                                         </div>
                                     </td>
@@ -858,7 +858,7 @@
                                 <div v-if="activeShopModuleTab === 'payment'" class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
                                     <div class="section-title !mb-5 text-amber-700 border-amber-500">付款與訂單模組</div>
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div><label class="input-label">付款方式</label><input v-model="sysSettings.shop_payment_methods" class="input-field" placeholder="LINEPAY,REMITTANCE"></div>
+                                        <div><label class="input-label">付款方式</label><input v-model="sysSettings.shop_payment_methods" class="input-field" placeholder="LINEPAY,REMITTANCE,COD"></div>
                                         <div><label class="input-label">LINE Pay 環境</label><select v-model="sysSettings.linepay_env" class="input-field bg-white"><option value="sandbox">Sandbox 測試</option><option value="production">Production 正式</option></select></div>
                                         <div class="md:col-span-2"><label class="input-label">匯款資訊</label><textarea v-model="sysSettings.remittance_info" class="input-field h-32 resize-none leading-relaxed"></textarea></div>
 
@@ -1602,6 +1602,7 @@
                             <div><label class="input-label">區域 / 鄉鎮市</label><input type="text" v-model="editingOrder.shippingDistrict" class="input-field font-bold"></div>
                             <div class="col-span-2"><label class="input-label">完整寄送地址</label><input type="text" v-model="editingOrder.shippingAddress" class="input-field font-bold"></div>
                             <div><label class="input-label">物流方式</label><select v-model="editingOrder.shippingCarrier" class="input-field font-bold"><option value="FAMILY">全家</option><option value="SEVEN">7-11</option><option value="POST">中華郵政</option></select></div>
+                            <div><label class="input-label">超商店號 / 店名</label><input type="text" v-model="editingOrder.shippingStoreInfo" class="input-field font-bold" placeholder="例如：全家竹北自強店"></div>
                             <div><label class="input-label">物流 / 訂單查詢編號</label><input type="text" v-model="editingOrder.trackingNumber" class="input-field font-mono font-bold" placeholder="出貨後填入"></div>
                             <div class="col-span-2 shipping-tracking-required-warning" v-if="String(editingOrder.status || '').toUpperCase() === 'SHIPPED' && !String(editingOrder.trackingNumber || editingOrder.shipping?.trackingNumber || '').trim()"><div class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] font-black text-red-600"><i class="fas fa-exclamation-triangle mr-2"></i>&#x6539;&#x70BA;&#x914D;&#x9001;&#x4E2D;&#x524D;&#xFF0C;&#x8ACB;&#x5148;&#x586B;&#x5BEB;&#x7269;&#x6D41; / &#x8A02;&#x55AE;&#x67E5;&#x8A62;&#x7DE8;&#x865F;&#x3002;</div></div>
                             <div class="col-span-2" v-if="trackingLookupUrl(editingOrder)"><a :href="trackingLookupUrl(editingOrder)" target="_blank" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-50 text-blue-600 font-bold border border-blue-100 hover:bg-blue-100"><i class="fas fa-external-link-alt"></i>開啟物流查詢</a></div>
@@ -1804,7 +1805,7 @@
                         shop_member_title: String(settings.shop_member_title || '會員專區'),
                         shop_checkin_label: String(settings.shop_checkin_label || '每日簽到領點'),
                         shop_member_modules: String(settings.shop_member_modules || '點數記錄,分享好友,推薦成果,個人基本資料'),
-                        shop_payment_methods: String(settings.shop_payment_methods || 'LINEPAY,REMITTANCE')
+                        shop_payment_methods: String(settings.shop_payment_methods || 'LINEPAY,REMITTANCE,COD')
                     });
                     
                     const memberSearch = ref('');
@@ -3093,6 +3094,7 @@
                         if (order.linePayTransactionId || order.paymentMethod === 'LINEPAY') return 'LINE Pay';
                         if (order.newebpayTradeNo || order.paymentMethod === 'NEWEBPAY') return '線上刷卡';
                         if (order.paymentMethod === 'REMITTANCE') return '銀行匯款：尚未回報';
+                        if (order.paymentMethod === 'COD') return '貨到付款';
                         if (order.paymentMethod === 'POINTS' || (Number(order.amount || 0) <= 0 && Number(order.pointsUsed || 0) > 0)) return '點數折抵';
                         return '未指定';
                     };
@@ -3114,6 +3116,7 @@
                         if (carrier === 'POST') return '中華郵政';
                         return order?.shippingCarrierName || '全家';
                     };
+                    const shippingStoreInfoText = (order) => String(order?.shippingStoreInfo || order?.shipping?.storeInfo || '').trim();
                     const trackingLookupUrl = (order) => {
                         const trackingNumber = String(order?.trackingNumber || order?.shipping?.trackingNumber || '').trim();
                         if (!trackingNumber) return '';
@@ -3231,11 +3234,12 @@
                             if (order?.linePayTransactionId || order?.paymentMethod === 'LINEPAY') return 'LINE Pay';
                             if (order?.newebpayTradeNo || order?.paymentMethod === 'NEWEBPAY') return '線上刷卡';
                             if (order?.paymentMethod === 'REMITTANCE') return '銀行匯款';
+                            if (order?.paymentMethod === 'COD') return '貨到付款';
                             if (order?.paymentMethod === 'POINTS' || (Number(order?.amount || 0) <= 0 && Number(order?.pointsUsed || 0) > 0)) return '點數全額折抵';
                             if (order?.status === 'PENDING') return '待付款';
                             return '';
                         };
-                        const rows = [["訂單編號", "建立時間", "學員姓名", "聯絡電話", "Email", "寄送地址", "物流方式", "物流查詢編號", "物流查詢網址", "課程與服務名稱", "系統代收", "講師應收", "點數折抵", "狀態", "學員備註", "付款來源"]];
+                        const rows = [["訂單編號", "建立時間", "學員姓名", "聯絡電話", "Email", "寄送地址", "物流方式", "超商店號或店名", "物流查詢編號", "物流查詢網址", "課程與服務名稱", "系統代收", "講師應收", "點數折抵", "狀態", "學員備註", "付款來源"]];
                         sourceOrders.forEach(o => {
                             const amount = Number(String(o.amount).replace(/[^0-9.]/g, '')) || 0;
                             const teacherAmount = o.type === 'BOOKING' ? Number(o.teacherCollectAmount || 0) : 0;
@@ -3247,6 +3251,7 @@
                                 o.email || o.recipientEmail || "",
                                 shippingAddressText(o),
                                 shippingCarrierText(o),
+                                shippingStoreInfoText(o),
                                 o.trackingNumber || "",
                                 trackingLookupUrl(o),
                                 orderCourseName(o),
@@ -3835,6 +3840,7 @@
                         editingOrder.value = JSON.parse(JSON.stringify(o));
                         if (editingOrder.value.type === 'PRODUCT') {
                             editingOrder.value.shippingCarrier = editingOrder.value.shippingCarrier || editingOrder.value.shipping?.carrier || 'FAMILY';
+                            editingOrder.value.shippingStoreInfo = editingOrder.value.shippingStoreInfo || editingOrder.value.shipping?.storeInfo || '';
                             editingOrder.value.trackingNumber = editingOrder.value.trackingNumber || editingOrder.value.shipping?.trackingNumber || '';
                         }
                         if (isPaidOrder(editingOrder.value)) editingOrder.value.status = 'PAID';
@@ -3883,6 +3889,7 @@
                                     shippingAddress: editingOrder.value.shippingAddress,
                                     shippingCarrier: editingOrder.value.shippingCarrier || 'FAMILY',
                                     shippingCarrierName: shippingCarrierText(editingOrder.value),
+                                    shippingStoreInfo: editingOrder.value.shippingStoreInfo || '',
                                     trackingNumber: editingOrder.value.trackingNumber || '',
                                     trackingUrl: trackingLookupUrl(editingOrder.value),
                                     address: editingOrder.value.shippingAddress,
@@ -3897,6 +3904,7 @@
                                         fullAddress: editingOrder.value.shippingAddress,
                                         carrier: editingOrder.value.shippingCarrier || 'FAMILY',
                                         carrierName: shippingCarrierText(editingOrder.value),
+                                        storeInfo: editingOrder.value.shippingStoreInfo || '',
                                         trackingNumber: editingOrder.value.trackingNumber || '',
                                         trackingUrl: trackingLookupUrl(editingOrder.value),
                                         note: editingOrder.value.note
@@ -4525,7 +4533,7 @@
                         isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
                         users, teachers, courses, products, orders, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
-                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, trackingLookupUrl, orderCourseName,
+                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,

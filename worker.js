@@ -4255,6 +4255,8 @@ async function getHuaxuShopConfig(env) {
   const categories = !savedCategories.length || savedCategories.some(item => oldWashCategories.includes(item))
     ? hookTeaCategories
     : savedCategories;
+  const paymentMethods = splitList(settings.shop_payment_methods || "LINEPAY,REMITTANCE,COD");
+  if (!paymentMethods.includes("COD")) paymentMethods.push("COD");
   return {
     heroTitle: String(settings.shop_hero_title || "HookTea 精選 LINE 限定商城"),
     heroBadge: String(settings.shop_hero_badge || "新會員限定"),
@@ -4264,7 +4266,7 @@ async function getHuaxuShopConfig(env) {
     memberTitle: String(settings.shop_member_title || "會員專區"),
     checkinLabel: String(settings.shop_checkin_label || "每日簽到領點"),
     memberModules: splitList(settings.shop_member_modules || "點數記錄,分享好友,推薦成果,個人基本資料"),
-    paymentMethods: splitList(settings.shop_payment_methods || "LINEPAY,REMITTANCE"),
+    paymentMethods,
   };
 }
 
@@ -4650,6 +4652,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     city: String(payload.customer?.city || "").trim().slice(0, 40),
     district: String(payload.customer?.district || "").trim().slice(0, 40),
     address: String(payload.customer?.address || "").trim().slice(0, 160),
+    shippingStoreInfo: String(payload.customer?.shippingStoreInfo || payload.shippingStoreInfo || "").trim().slice(0, 120),
     note: String(payload.customer?.note || "").trim().slice(0, 300),
   };
   if (sameAsRegistered) {
@@ -4718,7 +4721,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   }
   const payableTotal = Math.max(0, total - pointsUsed);
   const requestedMethod = String(payload.paymentMethod || "LINEPAY").toUpperCase();
-  const paymentMethod = payableTotal <= 0 ? "POINTS" : (["LINEPAY", "REMITTANCE"].includes(requestedMethod) ? requestedMethod : "LINEPAY");
+  const paymentMethod = payableTotal <= 0 ? "POINTS" : (["LINEPAY", "REMITTANCE", "COD"].includes(requestedMethod) ? requestedMethod : "LINEPAY");
   const requestedShippingCarrier = String(payload.shippingCarrier || payload.customer?.shippingCarrier || "").toUpperCase();
   const shippingCarrier = ["FAMILY", "SEVEN", "POST"].includes(requestedShippingCarrier) ? requestedShippingCarrier : "FAMILY";
   const shippingCarrierName = {
@@ -4780,6 +4783,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       fullAddress: shippingAddress,
       carrier: shippingCarrier,
       carrierName: shippingCarrierName,
+      storeInfo: customer.shippingStoreInfo,
       trackingNumber: "",
       trackingUrl: "",
       note: customer.note,
@@ -4805,6 +4809,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     paymentMethod,
     shippingCarrier,
     shippingCarrierName,
+    shippingStoreInfo: customer.shippingStoreInfo,
     trackingNumber: "",
     trackingUrl: "",
     sameAsRegistered,
@@ -4843,6 +4848,8 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       "尚未設定匯款帳號，請等候客服提供匯款資訊。"
     );
     payment = { provider: "REMITTANCE", orderId: order.orderId, status: "PENDING" };
+  } else if (payableTotal > 0 && paymentMethod === "COD") {
+    payment = { provider: "COD", orderId: order.orderId, status: "PENDING" };
   } else if (payableTotal > 0 && apiHandler?.preparePayment) {
     const workerUrl = String(payload.workerUrl || new URL(request.url).origin).replace(/\/+$/, "");
     const returnUrl = String(payload.returnUrl || `${workerUrl}/huaxu-shop.html`);
@@ -4889,6 +4896,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     `\u5546\u54c1\uFF1A${escapeTelegramHtml(order.productName || "-")}` ,
     `\u91d1\u984d\uFF1A${Number(order.amount || 0)}${Number(order.pointsUsed || 0) > 0 ? `\uFF08\u9ede\u6578\u6298\u62b5 ${Number(order.pointsUsed || 0)}\uFF09` : ""}` ,
     `\u7269\u6d41\uFF1A${escapeTelegramHtml(order.shippingCarrierName || "-")}` ,
+    `\u9580\u5e02\uFF1A${escapeTelegramHtml(order.shippingStoreInfo || order.shipping?.storeInfo || "-")}` ,
     `\u4ed8\u6b3e\uFF1A${escapeTelegramHtml(order.paymentMethod || "-")}` ,
     `\u72c0\u614b\uFF1A${escapeTelegramHtml(order.status || "-")}` ,
   ].join("\n")));
@@ -5083,6 +5091,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         <option value="SEVEN">7-11</option>
         <option value="POST">中華郵政</option>
       </select>
+      <input class="field" id="shippingStoreInfo" placeholder="超商店號或店名（選填，例如：全家竹北自強店）">
       <textarea class="field" id="note" placeholder="配送備註（例如：管理室代收、可收貨時段）"></textarea>
       <div class="pay-title">付款方式</div>
       <div class="pay-options" id="payOptions"></div>
@@ -5120,7 +5129,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     let activeCategory = "虎克茶商品全品項";
     let cart = JSON.parse(localStorage.getItem("huaxu_cart") || "[]");
     let paymentMethod = localStorage.getItem("huaxu_payment") || "LINEPAY";
-    if (!["LINEPAY","REMITTANCE"].includes(paymentMethod)) paymentMethod = "LINEPAY";
+    if (!["LINEPAY","REMITTANCE","COD"].includes(paymentMethod)) paymentMethod = "LINEPAY";
     let pointDeduction = Math.max(0, Math.floor(Number(localStorage.getItem("huaxu_points_used") || 0)));
     let lineProfile = {};
     let memberData = null;
@@ -5283,7 +5292,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       renderPayOptions();
     }
     function renderPayOptions(){
-      const labels = { LINEPAY:"LINE Pay", REMITTANCE:"匯款" };
+      const labels = { LINEPAY:"LINE Pay", REMITTANCE:"匯款", COD:"貨到付款" };
       const el = document.getElementById("payOptions");
       if (!el) return;
       const payable = cartTotals().payable;
@@ -5368,7 +5377,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); }
     function buildClientOrderKey(customer){
       const cartKey = cart.map(item => String(item.id || "") + ":" + Number(item.quantity || 1)).sort().join("|");
-      return [lineProfile.userId || "guest", paymentMethod, pointDeduction, customer.shippingCarrier, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
+      return [lineProfile.userId || "guest", paymentMethod, pointDeduction, customer.shippingCarrier, customer.shippingStoreInfo, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
     }
     function setCheckoutBusy(busy){
       isCheckingOut = !!busy;
@@ -5485,7 +5494,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (totals.used > 0 && !lineProfile.userId) return loginLine();
       const sameAsRegistered = !!document.getElementById("sameAsRegistered")?.checked;
       if (sameAsRegistered && !fillRegisteredShipping()) return;
-      const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), shippingCarrier: val("shippingCarrier"), note: val("note"), sameAsRegistered };
+      const customer = { name: val("name"), phone: val("phone"), email: val("email"), postalCode: val("postalCode"), city: val("city"), district: val("district"), address: val("address"), shippingCarrier: val("shippingCarrier"), shippingStoreInfo: val("shippingStoreInfo"), note: val("note"), sameAsRegistered };
       const missingCustomer = missingShippingFields(customer);
       if (missingCustomer.length) return toast("請補齊：" + missingCustomer.join("、"));
       const shippingValidation = validateShippingCustomer(customer);
@@ -5526,6 +5535,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         }
         if (paymentMethod === "REMITTANCE" && res.order && Number(res.order.amount || 0) > 0) {
           alert("\u8a02\u55ae\u5df2\u6210\u7acb\uff1a" + res.order.orderId + "\\n\\n\u532f\u6b3e\u8cc7\u8a0a\uff1a\\n" + (res.remittanceInfo || "\u5c1a\u672a\u8a2d\u5b9a\u532f\u6b3e\u5e33\u865f\uff0c\u8acb\u7b49\u5019\u5ba2\u670d\u63d0\u4f9b\u532f\u6b3e\u8cc7\u8a0a\u3002") + "\\n\\n\u532f\u6b3e\u5f8c\u8acb\u5728\u8a02\u55ae\u67e5\u8a62\u4e2d\u586b\u5beb\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc\u3002");
+          memberTab = "orders";
+          expandedOrderId = res.order.orderId;
+          await refreshMemberData();
+          openMember();
+        }
+        if (paymentMethod === "COD" && res.order && Number(res.order.amount || 0) > 0) {
+          alert("\u8a02\u55ae\u5df2\u6210\u7acb\uff1a" + res.order.orderId + "\n\n\u4ed8\u6b3e\u65b9\u5f0f\uff1a\u8ca8\u5230\u4ed8\u6b3e\n\u8acb\u7559\u610f\u914d\u9001\u901a\u77e5\u8207\u53d6\u8ca8\u4ed8\u6b3e\u3002");
           memberTab = "orders";
           expandedOrderId = res.order.orderId;
           await refreshMemberData();
@@ -5842,6 +5858,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
             + '<div class="member-info-row"><span>付款</span><b>'+escapeHtml(payment)+'</b></div>'
             + '<div class="member-info-row"><span>金額</span><b>$'+money(amount)+(points ? ' / 折 '+money(points)+' 點' : '')+(original && original !== amount ? ' / 原 $'+money(original) : '')+'</b></div>'
             + '<div class="member-info-row"><span>物流</span><b>'+escapeHtml(order.shippingCarrierName || "-")+'</b></div>'
+            + (order.shippingStoreInfo || order.shipping?.storeInfo ? '<div class="member-info-row"><span>門市</span><b>'+escapeHtml(order.shippingStoreInfo || order.shipping.storeInfo || "-")+'</b></div>' : '')
             + '<div class="member-info-row"><span>追蹤</span><b>'+tracking+'</b></div>'
             + remittanceForm
             + (cancelButton ? '<div style="padding-top:12px">'+cancelButton+'</div>' : '')
@@ -5921,6 +5938,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const method = String(order.paymentMethod || "").toUpperCase();
       if (method === "LINEPAY") return "LINE Pay";
       if (method === "REMITTANCE") return order.remittance ? "匯款末五碼 " + order.remittance : "銀行匯款";
+      if (method === "COD") return "貨到付款";
       if (method === "POINTS") return "點數折抵";
       return order.paymentMethod || "-";
     }
