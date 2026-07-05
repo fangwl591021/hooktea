@@ -860,6 +860,15 @@
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <div><label class="input-label">付款方式</label><input v-model="sysSettings.shop_payment_methods" class="input-field" placeholder="LINEPAY,REMITTANCE,COD"></div>
                                         <div><label class="input-label">LINE Pay 環境</label><select v-model="sysSettings.linepay_env" class="input-field bg-white"><option value="sandbox">Sandbox 測試</option><option value="production">Production 正式</option></select></div>
+                                        <div><label class="input-label">基本運費</label><input type="number" min="0" v-model="sysSettings.shop_shipping_fee" class="input-field font-bold" placeholder="例如：60"></div>
+                                        <div><label class="input-label">滿額免運門檻</label><input type="number" min="0" v-model="sysSettings.shop_free_shipping_subtotal" class="input-field font-bold" placeholder="例如：1500，0 表示不啟用"></div>
+                                        <div class="md:col-span-2 flex items-center justify-between bg-slate-50 rounded-xl border border-slate-100 p-4">
+                                            <div>
+                                                <div class="font-black text-slate-700">開放消費者自行取消訂單</div>
+                                                <div class="text-xs text-slate-500 font-bold mt-1">啟用後，待付款且尚未回報匯款的訂單可由會員端自行取消。</div>
+                                            </div>
+                                            <select v-model="sysSettings.allow_cancel_order" class="input-field !w-32 !py-2 !text-sm font-bold bg-white"><option value="true">啟用</option><option value="false">停用</option></select>
+                                        </div>
                                         <div class="md:col-span-2"><label class="input-label">匯款資訊</label><textarea v-model="sysSettings.remittance_info" class="input-field h-32 resize-none leading-relaxed"></textarea></div>
 
                                     </div>
@@ -1805,7 +1814,10 @@
                         shop_member_title: String(settings.shop_member_title || '會員專區'),
                         shop_checkin_label: String(settings.shop_checkin_label || '每日簽到領點'),
                         shop_member_modules: String(settings.shop_member_modules || '點數記錄,分享好友,推薦成果,個人基本資料'),
-                        shop_payment_methods: String(settings.shop_payment_methods || 'LINEPAY,REMITTANCE,COD')
+                        shop_payment_methods: String(settings.shop_payment_methods || 'LINEPAY,REMITTANCE,COD'),
+                        shop_shipping_fee: String(settings.shop_shipping_fee || '0'),
+                        shop_free_shipping_subtotal: String(settings.shop_free_shipping_subtotal || '0'),
+                        allow_cancel_order: String(settings.allow_cancel_order || 'true')
                     });
                     
                     const memberSearch = ref('');

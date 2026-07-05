@@ -4256,8 +4256,10 @@ async function getHuaxuShopConfig(env) {
   const categories = !savedCategories.length || savedCategories.some(item => oldWashCategories.includes(item))
     ? hookTeaCategories
     : savedCategories;
-  const paymentMethods = splitList(settings.shop_payment_methods || "LINEPAY,REMITTANCE,COD");
-  if (!paymentMethods.includes("COD")) paymentMethods.push("COD");
+  const paymentMethods = splitList(settings.shop_payment_methods || "LINEPAY,REMITTANCE,COD")
+    .map(item => item.toUpperCase())
+    .filter(item => ["LINEPAY", "REMITTANCE", "COD"].includes(item));
+  const normalizedPaymentMethods = paymentMethods.length ? [...new Set(paymentMethods)] : ["LINEPAY", "REMITTANCE", "COD"];
   return {
     heroTitle: String(settings.shop_hero_title || "HookTea 精選 LINE 限定商城"),
     heroBadge: String(settings.shop_hero_badge || "新會員限定"),
@@ -4267,7 +4269,10 @@ async function getHuaxuShopConfig(env) {
     memberTitle: String(settings.shop_member_title || "會員專區"),
     checkinLabel: String(settings.shop_checkin_label || "每日簽到領點"),
     memberModules: splitList(settings.shop_member_modules || "點數記錄,分享好友,推薦成果,個人基本資料"),
-    paymentMethods,
+    paymentMethods: normalizedPaymentMethods,
+    shippingFee: Math.max(0, Number.parseInt(settings.shop_shipping_fee || "0", 10) || 0),
+    freeShippingSubtotal: Math.max(0, Number.parseInt(settings.shop_free_shipping_subtotal || "0", 10) || 0),
+    allowCancelOrder: String(settings.allow_cancel_order || "true") !== "false",
   };
 }
 
@@ -4639,6 +4644,15 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   if (!items.length) return json({ ok: false, message: "找不到有效商品" }, 400);
 
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const configuredPaymentMethods = String(settings.shop_payment_methods || "LINEPAY,REMITTANCE,COD")
+    .split(/[,\n，]/)
+    .map(item => item.trim().toUpperCase())
+    .filter(item => ["LINEPAY", "REMITTANCE", "COD"].includes(item));
+  const allowedPaymentMethods = configuredPaymentMethods.length ? [...new Set(configuredPaymentMethods)] : ["LINEPAY", "REMITTANCE", "COD"];
+  const baseShippingFee = Math.max(0, Number.parseInt(settings.shop_shipping_fee || "0", 10) || 0);
+  const freeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_free_shipping_subtotal || "0", 10) || 0);
+  const shippingFee = total > 0 && !(freeShippingSubtotal > 0 && total >= freeShippingSubtotal) ? baseShippingFee : 0;
   const lineProfile = {
     userId: String(payload.lineProfile?.userId || "").slice(0, 80),
     displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
@@ -4720,9 +4734,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     if (requestedPointsUsed > maxPointDeduction) return json({ ok: false, message: `本次商品最高可折抵 ${maxPointDeduction} 點` }, 400);
     if (pointsUsed > balance) return json({ ok: false, message: `點數不足，目前可用 ${balance} 點` }, 400);
   }
-  const payableTotal = Math.max(0, total - pointsUsed);
-  const requestedMethod = String(payload.paymentMethod || "LINEPAY").toUpperCase();
-  const paymentMethod = payableTotal <= 0 ? "POINTS" : (["LINEPAY", "REMITTANCE", "COD"].includes(requestedMethod) ? requestedMethod : "LINEPAY");
+  const payableTotal = Math.max(0, total + shippingFee - pointsUsed);
+  const requestedMethod = String(payload.paymentMethod || allowedPaymentMethods[0] || "LINEPAY").toUpperCase();
+  const paymentMethod = payableTotal <= 0 ? "POINTS" : (allowedPaymentMethods.includes(requestedMethod) ? requestedMethod : (allowedPaymentMethods[0] || "LINEPAY"));
   const requestedShippingCarrier = String(payload.shippingCarrier || payload.customer?.shippingCarrier || "").toUpperCase();
   const shippingCarrier = ["FAMILY", "SEVEN", "POST"].includes(requestedShippingCarrier) ? requestedShippingCarrier : "FAMILY";
   const shippingCarrierName = {
@@ -4803,6 +4817,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     productCode: items.map(item => item.code).filter(Boolean).join(","),
     quantity: items.reduce((sum, item) => sum + item.quantity, 0),
     originalAmount: total,
+    subtotal: total,
+    shippingFee,
+    freeShippingSubtotal,
     amount: payableTotal,
     pointsUsed,
     pointBalanceBefore: pointsUsed > 0 ? Math.max(0, Math.floor(Number(pointDataForOrder.balance || 0))) : 0,
@@ -4839,7 +4856,6 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   let payment = null;
   let remittanceInfo = "";
   if (payableTotal > 0 && paymentMethod === "REMITTANCE") {
-    const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
     remittanceInfo = String(
       settings.remittance_info ||
       settings.bankTransferInfo ||
@@ -4906,6 +4922,8 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
 
 async function handleHuaxuCancelOrder(request, env, ctx, apiHandler) {
   const payload = await request.json().catch(() => ({}));
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  if (String(settings.allow_cancel_order || "true") === "false") return json({ ok: false, message: "目前未開放會員自行取消訂單，請聯絡客服處理" }, 403);
   const orderId = String(payload.orderId || "").trim();
   if (!orderId) return json({ ok: false, message: "缺少訂單編號" }, 400);
   const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
@@ -5292,13 +5310,28 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       localStorage.setItem("huaxu_payment", method);
       renderPayOptions();
     }
+    function configuredPaymentMethods(){
+      const allowed = Array.isArray(shopConfig.paymentMethods) && shopConfig.paymentMethods.length
+        ? shopConfig.paymentMethods.map(method => String(method || "").toUpperCase()).filter(method => ["LINEPAY","REMITTANCE","COD"].includes(method))
+        : ["LINEPAY","REMITTANCE","COD"];
+      return allowed.length ? [...new Set(allowed)] : ["LINEPAY","REMITTANCE","COD"];
+    }
+    function normalizePaymentMethod(){
+      const allowed = configuredPaymentMethods();
+      if (!allowed.includes(paymentMethod)) {
+        paymentMethod = allowed[0] || "LINEPAY";
+        localStorage.setItem("huaxu_payment", paymentMethod);
+      }
+      return paymentMethod;
+    }
     function renderPayOptions(){
       const labels = { LINEPAY:"LINE Pay", REMITTANCE:"匯款", COD:"貨到付款" };
       const el = document.getElementById("payOptions");
       if (!el) return;
       const payable = cartTotals().payable;
-      el.innerHTML = Object.keys(labels).map(method =>
-        '<button type="button" '+(payable <= 0 ? "disabled" : "")+' class="pay-option '+(paymentMethod===method?'active':'')+'" onclick="setPaymentMethod(\\''+method+'\\')">'+labels[method]+'</button>'
+      normalizePaymentMethod();
+      el.innerHTML = configuredPaymentMethods().map(method =>
+        '<button type="button" '+(payable <= 0 ? "disabled" : "")+' class="pay-option '+(paymentMethod===method?'active':'')+'" onclick="setPaymentMethod(\\''+method+'\\')">'+(labels[method] || method)+'</button>'
       ).join("");
     }
     function cartTotals(){
@@ -5316,7 +5349,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const memberBalance = memberPointBalance();
       const allowedPoints = Math.max(0, Math.min(subtotal, maxPoints, memberBalance));
       const used = Math.max(0, Math.min(pointDeduction, allowedPoints));
-      return { subtotal, maxPoints, memberBalance, allowedPoints, used, payable: Math.max(0, subtotal - used) };
+      const baseShipping = Math.max(0, Math.floor(Number(shopConfig.shippingFee || 0)) || 0);
+      const freeAt = Math.max(0, Math.floor(Number(shopConfig.freeShippingSubtotal || 0)) || 0);
+      const shippingFee = subtotal > 0 && !(freeAt > 0 && subtotal >= freeAt) ? baseShipping : 0;
+      return { subtotal, maxPoints, memberBalance, allowedPoints, used, shippingFee, freeShippingSubtotal: freeAt, payable: Math.max(0, subtotal + shippingFee - used) };
     }
     function memberPointBalance(){
       if (!memberData || !memberData.points) return 0;
@@ -5348,8 +5384,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const el = document.getElementById("orderSummary");
       if (!el) return;
       const totals = clampPointDeduction();
+      const freeNote = totals.freeShippingSubtotal > 0 ? ' <small>滿 $'+money(totals.freeShippingSubtotal)+' 免運</small>' : '';
       el.innerHTML =
         '<div class="summary-row"><span>商品小計</span><b>$'+money(totals.subtotal)+'</b></div>'
+        +'<div class="summary-row"><span>運費'+freeNote+'</span><b>'+(totals.shippingFee ? '$'+money(totals.shippingFee) : '免運')+'</b></div>'
         +'<div class="summary-row"><span>點數折抵</span><b>- $'+money(totals.used)+'</b></div>'
         +'<div class="summary-row total"><span>實付金額</span><b>$'+money(totals.payable)+'</b></div>';
       const note = document.getElementById("pointNote");
@@ -5874,6 +5912,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       renderMemberPanel();
     }
     function canCancelOrder(order){
+      if (shopConfig.allowCancelOrder === false) return false;
       const status = String(order.status || "").toUpperCase();
       return !!order.orderId && !["PAID","PREPARING","SHIPPED","COMPLETED","CANCELLED"].includes(status) && !order.remittance;
     }
