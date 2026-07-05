@@ -3051,18 +3051,31 @@ async function serveStaticHtml(request, env, corsHeaders) {
   if (!fileName) fileName = "index.html";
   if (!STATIC_HTML_FILES.has(fileName)) return null;
   const rawVersion = url.searchParams.get("v") || Date.now().toString();
-  const rawUrl = `https://api.github.com/repos/fangwl591021/hooktea/contents/${encodeURIComponent(fileName)}?ref=main&v=${encodeURIComponent(rawVersion)}`;
-  try {
-    const rawRes = await fetch(rawUrl, { headers: { "User-Agent": "hooktea-worker", "Accept": "application/vnd.github.raw" }, cache: "no-store", cf: { cacheTtl: 0 } });
-    if (rawRes.ok) {
-      const headers = new Headers(corsHeaders);
-      headers.set("Content-Type", "text/html; charset=utf-8");
-      headers.set("Cache-Control", "no-cache");
-      headers.set("X-HookTea-Static-Source", "github-contents-api");
-      return new Response(request.method === "HEAD" ? null : await rawRes.text(), { headers });
+  const rawCandidates = [
+    {
+      url: `https://raw.githubusercontent.com/fangwl591021/hooktea/main/${encodeURIComponent(fileName)}?v=${encodeURIComponent(rawVersion)}`,
+      source: "github-raw",
+      headers: { "User-Agent": "hooktea-worker" },
+    },
+    {
+      url: `https://api.github.com/repos/fangwl591021/hooktea/contents/${encodeURIComponent(fileName)}?ref=main&v=${encodeURIComponent(rawVersion)}`,
+      source: "github-contents-api",
+      headers: { "User-Agent": "hooktea-worker", "Accept": "application/vnd.github.raw" },
+    },
+  ];
+  for (const candidate of rawCandidates) {
+    try {
+      const rawRes = await fetch(candidate.url, { headers: candidate.headers, cache: "no-store", cf: { cacheTtl: 0 } });
+      if (rawRes.ok) {
+        const headers = new Headers(corsHeaders);
+        headers.set("Content-Type", "text/html; charset=utf-8");
+        headers.set("Cache-Control", "no-cache");
+        headers.set("X-HookTea-Static-Source", candidate.source);
+        return new Response(request.method === "HEAD" ? null : await rawRes.text(), { headers });
+      }
+    } catch (e) {
+      console.error(`[StaticHTML] ${candidate.source} fallback: ${fileName}`, e);
     }
-  } catch (e) {
-    console.error(`[StaticHTML] GitHub raw fallback to R2: ${fileName}`, e);
   }
   const object = await env["act-image"]?.get(`static/${fileName}`);
   if (!object) return null;
