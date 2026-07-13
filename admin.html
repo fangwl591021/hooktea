@@ -861,7 +861,9 @@
                                         <div><label class="input-label">付款方式</label><input v-model="sysSettings.shop_payment_methods" class="input-field" placeholder="LINEPAY,REMITTANCE,COD"></div>
                                         <div><label class="input-label">LINE Pay 環境</label><select v-model="sysSettings.linepay_env" class="input-field bg-white"><option value="sandbox">Sandbox 測試</option><option value="production">Production 正式</option></select></div>
                                         <div><label class="input-label">基本運費</label><input type="number" min="0" v-model="sysSettings.shop_shipping_fee" class="input-field font-bold" placeholder="例如：60"></div>
-                                        <div><label class="input-label">滿額免運門檻</label><input type="number" min="0" v-model="sysSettings.shop_free_shipping_subtotal" class="input-field font-bold" placeholder="例如：1500，0 表示不啟用"></div>
+                                        <div><label class="input-label">通用免運門檻</label><input type="number" min="0" v-model="sysSettings.shop_free_shipping_subtotal" class="input-field font-bold" placeholder="0 表示不啟用；物流專屬門檻優先"></div>
+                                        <div><label class="input-label">超商免運門檻</label><input type="number" min="0" v-model="sysSettings.shop_cvs_free_shipping_subtotal" class="input-field font-bold" placeholder="例如：888"></div>
+                                        <div><label class="input-label">郵局宅配免運門檻</label><input type="number" min="0" v-model="sysSettings.shop_post_free_shipping_subtotal" class="input-field font-bold" placeholder="例如：1200"></div>
                                         <div class="md:col-span-2 flex items-center justify-between bg-slate-50 rounded-xl border border-slate-100 p-4">
                                             <div>
                                                 <div class="font-black text-slate-700">開放消費者自行取消訂單</div>
@@ -1817,6 +1819,8 @@
                         shop_payment_methods: String(settings.shop_payment_methods || 'LINEPAY,REMITTANCE,COD'),
                         shop_shipping_fee: String(settings.shop_shipping_fee || '0'),
                         shop_free_shipping_subtotal: String(settings.shop_free_shipping_subtotal || '0'),
+                        shop_cvs_free_shipping_subtotal: String(settings.shop_cvs_free_shipping_subtotal || '888'),
+                        shop_post_free_shipping_subtotal: String(settings.shop_post_free_shipping_subtotal || '1200'),
                         allow_cancel_order: String(settings.allow_cancel_order || 'true')
                     });
                     

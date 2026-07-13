@@ -4285,6 +4285,8 @@ async function getHuaxuShopConfig(env) {
     paymentMethods: normalizedPaymentMethods,
     shippingFee: Math.max(0, Number.parseInt(settings.shop_shipping_fee || "0", 10) || 0),
     freeShippingSubtotal: Math.max(0, Number.parseInt(settings.shop_free_shipping_subtotal || "0", 10) || 0),
+    cvsFreeShippingSubtotal: Math.max(0, Number.parseInt(settings.shop_cvs_free_shipping_subtotal || "888", 10) || 0),
+    postFreeShippingSubtotal: Math.max(0, Number.parseInt(settings.shop_post_free_shipping_subtotal || "1200", 10) || 0),
     allowCancelOrder: String(settings.allow_cancel_order || "true") !== "false",
   };
 }
@@ -4664,8 +4666,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     .filter(item => ["LINEPAY", "REMITTANCE", "COD"].includes(item));
   const allowedPaymentMethods = configuredPaymentMethods.length ? [...new Set(configuredPaymentMethods)] : ["LINEPAY", "REMITTANCE", "COD"];
   const baseShippingFee = Math.max(0, Number.parseInt(settings.shop_shipping_fee || "0", 10) || 0);
-  const freeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_free_shipping_subtotal || "0", 10) || 0);
-  const shippingFee = total > 0 && !(freeShippingSubtotal > 0 && total >= freeShippingSubtotal) ? baseShippingFee : 0;
+  const globalFreeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_free_shipping_subtotal || "0", 10) || 0);
+  const cvsFreeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_cvs_free_shipping_subtotal || "888", 10) || 0);
+  const postFreeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_post_free_shipping_subtotal || "1200", 10) || 0);
   const lineProfile = {
     userId: String(payload.lineProfile?.userId || "").slice(0, 80),
     displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
@@ -4747,9 +4750,6 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     if (requestedPointsUsed > maxPointDeduction) return json({ ok: false, message: `本次商品最高可折抵 ${maxPointDeduction} 點` }, 400);
     if (pointsUsed > balance) return json({ ok: false, message: `點數不足，目前可用 ${balance} 點` }, 400);
   }
-  const payableTotal = Math.max(0, total + shippingFee - pointsUsed);
-  const requestedMethod = String(payload.paymentMethod || allowedPaymentMethods[0] || "LINEPAY").toUpperCase();
-  const paymentMethod = payableTotal <= 0 ? "POINTS" : (allowedPaymentMethods.includes(requestedMethod) ? requestedMethod : (allowedPaymentMethods[0] || "LINEPAY"));
   const requestedShippingCarrier = String(payload.shippingCarrier || payload.customer?.shippingCarrier || "").toUpperCase();
   const shippingCarrier = ["FAMILY", "SEVEN", "POST"].includes(requestedShippingCarrier) ? requestedShippingCarrier : "FAMILY";
   const shippingCarrierName = {
@@ -4757,6 +4757,14 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     SEVEN: "7-11",
     POST: "中華郵政",
   }[shippingCarrier] || "全家";
+  const carrierFreeShippingSubtotal = shippingCarrier === "POST"
+    ? postFreeShippingSubtotal
+    : (["FAMILY", "SEVEN"].includes(shippingCarrier) ? cvsFreeShippingSubtotal : 0);
+  const effectiveFreeShippingSubtotal = carrierFreeShippingSubtotal || globalFreeShippingSubtotal;
+  const shippingFee = total > 0 && !(effectiveFreeShippingSubtotal > 0 && total >= effectiveFreeShippingSubtotal) ? baseShippingFee : 0;
+  const payableTotal = Math.max(0, total + shippingFee - pointsUsed);
+  const requestedMethod = String(payload.paymentMethod || allowedPaymentMethods[0] || "LINEPAY").toUpperCase();
+  const paymentMethod = payableTotal <= 0 ? "POINTS" : (allowedPaymentMethods.includes(requestedMethod) ? requestedMethod : (allowedPaymentMethods[0] || "LINEPAY"));
   const itemFingerprint = items
     .map(item => `${item.id}:${item.quantity}:${item.price}`)
     .sort()
@@ -4832,7 +4840,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     originalAmount: total,
     subtotal: total,
     shippingFee,
-    freeShippingSubtotal,
+    freeShippingSubtotal: effectiveFreeShippingSubtotal,
     amount: payableTotal,
     pointsUsed,
     pointBalanceBefore: pointsUsed > 0 ? Math.max(0, Math.floor(Number(pointDataForOrder.balance || 0))) : 0,
@@ -5118,7 +5126,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       <input class="field" id="district" autocomplete="address-level2" placeholder="區域 / 鄉鎮市 *">
       <input class="field" id="address" autocomplete="street-address" placeholder="路名、巷弄、門牌、樓層 *">
       <div class="form-title">物流方式</div>
-      <select class="field" id="shippingCarrier">
+      <select class="field" id="shippingCarrier" onchange="renderCart()">
         <option value="FAMILY">全家</option>
         <option value="SEVEN">7-11</option>
         <option value="POST">中華郵政</option>
@@ -5363,7 +5371,12 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const allowedPoints = Math.max(0, Math.min(subtotal, maxPoints, memberBalance));
       const used = Math.max(0, Math.min(pointDeduction, allowedPoints));
       const baseShipping = Math.max(0, Math.floor(Number(shopConfig.shippingFee || 0)) || 0);
-      const freeAt = Math.max(0, Math.floor(Number(shopConfig.freeShippingSubtotal || 0)) || 0);
+      const globalFreeAt = Math.max(0, Math.floor(Number(shopConfig.freeShippingSubtotal || 0)) || 0);
+      const cvsFreeAt = Math.max(0, Math.floor(Number(shopConfig.cvsFreeShippingSubtotal || 888)) || 0);
+      const postFreeAt = Math.max(0, Math.floor(Number(shopConfig.postFreeShippingSubtotal || 1200)) || 0);
+      const carrier = String(document.getElementById("shippingCarrier")?.value || "FAMILY").toUpperCase();
+      const carrierFreeAt = carrier === "POST" ? postFreeAt : (["FAMILY","SEVEN"].includes(carrier) ? cvsFreeAt : 0);
+      const freeAt = carrierFreeAt || globalFreeAt;
       const shippingFee = subtotal > 0 && !(freeAt > 0 && subtotal >= freeAt) ? baseShipping : 0;
       return { subtotal, maxPoints, memberBalance, allowedPoints, used, shippingFee, freeShippingSubtotal: freeAt, payable: Math.max(0, subtotal + shippingFee - used) };
     }
