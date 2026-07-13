@@ -2143,12 +2143,33 @@ function configuredKeywordRewards(settings = {}) {
   return { points, keywords };
 }
 
-async function handleShopKeywordReward(env, ctx, event, updatePointsFn) {
+async function getKvJsonOnly(env, key, defaultVal = null) {
+  try {
+    const raw = await Promise.race([
+      env.ACTION_DATA.get(key),
+      new Promise(resolve => setTimeout(() => resolve(null), 1200)),
+    ]);
+    return raw ? JSON.parse(raw) : defaultVal;
+  } catch (error) {
+    console.error(`[KVOnly:Get] ${key} failed`, error);
+    return defaultVal;
+  }
+}
+
+async function putKvJsonOnly(env, key, value, options = undefined) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  await Promise.race([
+    env.ACTION_DATA.put(key, text, options),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`KV put timeout: ${key}`)), 1800)),
+  ]);
+}
+
+async function handleShopKeywordReward(env, ctx, event) {
   if (event?.type !== "message" || event?.message?.type !== "text") return false;
   const text = String(event.message.text || "").trim();
   const lineUid = String(event?.source?.userId || "").trim();
   const replyToken = String(event?.replyToken || "").trim();
-  if (!text || !lineUid || !replyToken || typeof updatePointsFn !== "function") return false;
+  if (!text || !lineUid || !replyToken) return false;
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const reward = configuredKeywordRewards(settings);
   if (!reward.points || !reward.keywords.length) return false;
@@ -2156,56 +2177,98 @@ async function handleShopKeywordReward(env, ctx, event, updatePointsFn) {
   if (!matchedKeyword) return false;
 
   const nowIso = new Date().toISOString();
+  const createdTs = Date.now();
+  const createdAt = new Date(createdTs).toLocaleString();
+  const keywordHash = await sha256HexBody(matchedKeyword);
+  const recordKey = `KEYWORD_REWARD_${lineUid}_${keywordHash.slice(0, 24)}`;
   const writeDiagnostic = data => safePutKV(env, "KEYWORD_REWARD_LAST", {
     lineUserId: lineUid,
     text,
     matchedKeyword,
     points: reward.points,
+    recordKey,
     ...data,
     updatedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 7 }).catch(() => {});
 
-  try {
-    await writeDiagnostic({ status: "matched", replyTokenPresent: !!replyToken });
-    const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({}));
-    const memberUid = String(resolved.memberUid || lineUid).trim();
-    const memberName = resolved.member?.name || resolved.member?.displayName || "";
-    const keywordHash = await sha256HexBody(matchedKeyword);
-    const recordKey = `KEYWORD_REWARD_${lineUid}_${keywordHash.slice(0, 24)}`;
-    const existing = await safeGetKV(env, recordKey, null).catch(() => null);
-    const pointData = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0, logs: [] }));
-    if (existing?.claimedAt) {
-      const duplicateMessage = textLineMessage(`這組活動關鍵字已領取過。\n目前點數：${Number(pointData.balance || 0)} 點`);
-      const delivery = await deliverLineMessage(env, lineUid, replyToken, duplicateMessage).catch(e => ({ ok: false, error: e?.message || String(e) }));
-      await writeDiagnostic({ status: "duplicate", memberUid, recordKey, balance: Number(pointData.balance || 0), delivery });
-      return true;
+  await writeDiagnostic({ status: "matched", replyTokenPresent: !!replyToken });
+  const ack = await replyLineMessage(env, replyToken, textLineMessage(`已收到「${matchedKeyword}」，系統正在確認贈點。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+  await writeDiagnostic({ status: "ack_sent", ack });
+
+  const task = (async () => {
+    try {
+      const binding = await getKvJsonOnly(env, `LINE_BIND_${lineUid}`, null);
+      const memberUid = String(binding?.legacyUserId || lineUid).trim();
+      const pointKey = `POINTS_${memberUid}`;
+      const existing = await getKvJsonOnly(env, recordKey, null);
+      const pointData = await getKvJsonOnly(env, pointKey, { balance: 0, logs: [] }) || { balance: 0, logs: [] };
+      const rewardReason = `關鍵字贈點：${matchedKeyword}`;
+      const logs = Array.isArray(pointData.logs) ? pointData.logs : [];
+      const priorRewardLog = logs.find(log => String(log?.reason || "") === rewardReason);
+
+      if (existing?.claimedAt || priorRewardLog) {
+        if (!existing?.claimedAt && priorRewardLog) {
+          await putKvJsonOnly(env, recordKey, {
+            lineUserId: lineUid,
+            memberUid,
+            keyword: matchedKeyword,
+            points: reward.points,
+            recoveredFromPointLog: true,
+            claimedAt: priorRewardLog.createdAt || nowIso,
+            recoveredAt: nowIso,
+          }, { expirationTtl: 86400 * 3650 });
+        }
+        const delivery = await pushLineMessage(env, lineUid, textLineMessage(`這組活動關鍵字已領取過。\n目前 CRM 點數：${Number(pointData.balance || 0)} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, balance: Number(pointData.balance || 0), delivery });
+        return;
+      }
+
+      const numericPoints = Number(reward.points || 0);
+      const logEntry = { logId: crypto.randomUUID ? crypto.randomUUID() : String(createdTs), amount: Math.abs(numericPoints), reason: rewardReason, createdAt, type: numericPoints >= 0 ? "EARN" : "SPEND" };
+      const nextPoints = {
+        ...pointData,
+        balance: Number(pointData.balance || 0) + numericPoints,
+        logs: [logEntry, ...logs].slice(0, 50),
+      };
+      await putKvJsonOnly(env, pointKey, nextPoints);
+      await putKvJsonOnly(env, recordKey, {
+        lineUserId: lineUid,
+        memberUid,
+        keyword: matchedKeyword,
+        points: numericPoints,
+        source: "local",
+        claimedAt: nowIso,
+      }, { expirationTtl: 86400 * 3650 });
+      const delivery = await pushLineMessage(env, lineUid, textLineMessage(`恭喜領取成功！\n關鍵字：${matchedKeyword}\n贈點：${numericPoints} 點\n目前 CRM 點數：${Number(nextPoints.balance || 0)} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+      await writeDiagnostic({ status: "success", memberUid, balance: Number(nextPoints.balance || 0), delivery });
+
+      await safePutKV(env, pointKey, nextPoints).catch(error => console.error("Keyword reward R2 point sync failed", error));
+      await updatePointsIndexRecord(env, memberUid, nextPoints).catch(error => console.error("Keyword reward point index sync failed", error));
+      await appendPointsLedger(env, {
+        logId: logEntry.logId,
+        uid: memberUid,
+        type: numericPoints >= 0 ? "EARN" : "SPEND",
+        amount: numericPoints,
+        points: Math.abs(numericPoints),
+        reason: rewardReason,
+        balanceAfter: Number(nextPoints.balance || 0),
+        createdAt,
+        createdTs,
+        source: "shop_keyword_reward",
+        operatorUid: "",
+        operatorName: "",
+        targetName: "",
+      }).catch(error => console.error("Keyword reward ledger sync failed", error));
+      observeHighRiskDualWrite(env, ctx || null, ["points", "point-ledger"]);
+    } catch (error) {
+      const delivery = await pushLineMessage(env, lineUid, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+      await writeDiagnostic({ status: "error", error: error?.message || String(error), delivery });
+      console.error("Keyword Reward Background Error:", error);
     }
-
-    await updatePointsFn(env, ctx, memberUid, reward.points, `關鍵字贈點：${matchedKeyword}`, {
-      source: "shop_keyword_reward",
-      targetName: memberName,
-    });
-    const nextPoints = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0, logs: [] }));
-    await safePutKV(env, recordKey, {
-      lineUserId: lineUid,
-      memberUid,
-      keyword: matchedKeyword,
-      points: reward.points,
-      claimedAt: nowIso,
-    }, { expirationTtl: 86400 * 3650 }).catch(() => {});
-    const successMessage = textLineMessage(`恭喜領取成功！\n關鍵字：${matchedKeyword}\n贈點：${reward.points} 點\n目前點數：${Number(nextPoints.balance || 0)} 點`);
-    const delivery = await deliverLineMessage(env, lineUid, replyToken, successMessage).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({ status: "success", memberUid, recordKey, balance: Number(nextPoints.balance || 0), delivery });
-    return true;
-  } catch (error) {
-    const message = `關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`;
-    const delivery = await deliverLineMessage(env, lineUid, replyToken, textLineMessage(message)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({ status: "error", error: error?.message || String(error), delivery });
-    console.error("Keyword Reward Handle Error:", error);
-    return true;
-  }
+  })();
+  if (ctx) ctx.waitUntil(task); else await task;
+  return true;
 }
-
 function isReferralInviteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
   return /^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
