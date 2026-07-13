@@ -871,6 +871,9 @@
                                             </div>
                                             <select v-model="sysSettings.allow_cancel_order" class="input-field !w-32 !py-2 !text-sm font-bold bg-white"><option value="true">啟用</option><option value="false">停用</option></select>
                                         </div>
+                                        <div><label class="input-label">關鍵字贈點關鍵字</label><input v-model="sysSettings.shop_keyword_reward_keywords" class="input-field font-bold" placeholder="例如：夏日活動；多組可用逗號或換行分隔"></div>
+                                        <div><label class="input-label">每次贈點數</label><input type="number" min="0" v-model="sysSettings.shop_keyword_reward_points" class="input-field font-bold text-[#06C755]" placeholder="例如：10"></div>
+                                        <div class="md:col-span-2 text-xs text-slate-500 font-bold -mt-2">每個 LINE 會員每組關鍵字只能領一次；更換關鍵字後會視同新的贈點流程。</div>
                                         <div class="md:col-span-2"><label class="input-label">匯款資訊</label><textarea v-model="sysSettings.remittance_info" class="input-field h-32 resize-none leading-relaxed"></textarea></div>
 
                                     </div>
@@ -1821,6 +1824,8 @@
                         shop_free_shipping_subtotal: String(settings.shop_free_shipping_subtotal || '0'),
                         shop_cvs_free_shipping_subtotal: String(settings.shop_cvs_free_shipping_subtotal || '888'),
                         shop_post_free_shipping_subtotal: String(settings.shop_post_free_shipping_subtotal || '1200'),
+                        shop_keyword_reward_keywords: String(settings.shop_keyword_reward_keywords || ''),
+                        shop_keyword_reward_points: String(settings.shop_keyword_reward_points || '0'),
                         allow_cancel_order: String(settings.allow_cancel_order || 'true')
                     });
                     

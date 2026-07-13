@@ -2134,6 +2134,54 @@ async function buildHookTeaInvite(env, lineUid) {
   };
 }
 
+function configuredKeywordRewards(settings = {}) {
+  const points = Math.max(0, Math.floor(Number(settings.shop_keyword_reward_points || 0)) || 0);
+  const keywords = String(settings.shop_keyword_reward_keywords || settings.shop_keyword_reward_keyword || "")
+    .split(/[,\n，;；]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+  return { points, keywords };
+}
+
+async function handleShopKeywordReward(env, ctx, event, updatePointsFn) {
+  if (event?.type !== "message" || event?.message?.type !== "text") return false;
+  const text = String(event.message.text || "").trim();
+  const lineUid = String(event?.source?.userId || "").trim();
+  const replyToken = String(event?.replyToken || "").trim();
+  if (!text || !lineUid || !replyToken || typeof updatePointsFn !== "function") return false;
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const reward = configuredKeywordRewards(settings);
+  if (!reward.points || !reward.keywords.length) return false;
+  const matchedKeyword = reward.keywords.find(keyword => text === keyword);
+  if (!matchedKeyword) return false;
+
+  const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({}));
+  const memberUid = String(resolved.memberUid || lineUid).trim();
+  const memberName = resolved.member?.name || resolved.member?.displayName || "";
+  const keywordHash = await sha256HexBody(matchedKeyword);
+  const recordKey = `KEYWORD_REWARD_${lineUid}_${keywordHash.slice(0, 24)}`;
+  const existing = await safeGetKV(env, recordKey, null).catch(() => null);
+  const pointData = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0, logs: [] }));
+  if (existing?.claimedAt) {
+    await replyLineMessage(env, replyToken, textLineMessage(`這組活動關鍵字已領取過。\n目前點數：${Number(pointData.balance || 0)} 點`));
+    return true;
+  }
+
+  await updatePointsFn(env, ctx, memberUid, reward.points, `關鍵字贈點：${matchedKeyword}`, {
+    source: "shop_keyword_reward",
+    targetName: memberName,
+  });
+  const nextPoints = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0, logs: [] }));
+  await safePutKV(env, recordKey, {
+    lineUserId: lineUid,
+    memberUid,
+    keyword: matchedKeyword,
+    points: reward.points,
+    claimedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 3650 }).catch(() => {});
+  await replyLineMessage(env, replyToken, textLineMessage(`恭喜領取成功！\n關鍵字：${matchedKeyword}\n贈點：${reward.points} 點\n目前點數：${Number(nextPoints.balance || 0)} 點`));
+  return true;
+}
 function isReferralInviteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
   return /^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
@@ -4260,7 +4308,7 @@ async function getHuaxuShopOrders(env) {
 async function getHuaxuShopConfig(env) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const splitList = value => String(value || "")
-    .split(/[,\n，]/)
+    .split(/[,\n，;；]/)
     .map(item => item.trim())
     .filter(Boolean);
   const hookTeaCategories = ["虎克茶商品全品項", "虎克茶系列", "女王饗樂系列", "禮盒開運茶系列", "傳統茶系列"];
@@ -4661,7 +4709,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const configuredPaymentMethods = String(settings.shop_payment_methods || "LINEPAY,REMITTANCE,COD")
-    .split(/[,\n，]/)
+    .split(/[,\n，;；]/)
     .map(item => item.trim().toUpperCase())
     .filter(item => ["LINEPAY", "REMITTANCE", "COD"].includes(item));
   const allowedPaymentMethods = configuredPaymentMethods.length ? [...new Set(configuredPaymentMethods)] : ["LINEPAY", "REMITTANCE", "COD"];
@@ -8102,7 +8150,11 @@ export default {
         if (event?.type === "message" && event?.message?.type === "text") {
           const text = String(event?.message?.text || "").trim();
           const uid = String(event?.source?.userId || "").trim();
-          if (isReferralInviteKeyword(text)) {
+          handled = await handleShopKeywordReward(env, ctx, event, this.updatePoints.bind(this)).catch(e => {
+            console.error("Keyword Reward Error:", e);
+            return false;
+          });
+          if (!handled && isReferralInviteKeyword(text)) {
             const inviteUrl = buildReferralInviteUrl("2007674851-lQljb6Cm", uid, uid);
             const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid);
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
