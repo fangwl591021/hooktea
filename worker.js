@@ -2169,7 +2169,7 @@ async function handleShopKeywordReward(env, ctx, event) {
   const text = String(event.message.text || "").trim();
   const lineUid = String(event?.source?.userId || "").trim();
   const replyToken = String(event?.replyToken || "").trim();
-  if (!text || !lineUid || !replyToken) return false;
+  if (!text || !lineUid) return false;
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const reward = configuredKeywordRewards(settings);
   if (!reward.points || !reward.keywords.length) return false;
@@ -2187,18 +2187,19 @@ async function handleShopKeywordReward(env, ctx, event) {
     matchedKeyword,
     points: reward.points,
     recordKey,
+    replyTokenPresent: !!replyToken,
     ...data,
     updatedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 7 }).catch(() => {});
 
-  await writeDiagnostic({ status: "matched", replyTokenPresent: !!replyToken });
-  const ack = await replyLineMessage(env, replyToken, textLineMessage(`已收到「${matchedKeyword}」，系統正在確認贈點。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-  await writeDiagnostic({ status: "ack_sent", ack });
-
+  await writeDiagnostic({ status: "queued" });
   const task = (async () => {
     try {
       const binding = await getKvJsonOnly(env, `LINE_BIND_${lineUid}`, null);
       const memberUid = String(binding?.legacyUserId || lineUid).trim();
+      const member = await getKvJsonOnly(env, `USER_${memberUid}`, null);
+      const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
+      const namePrefix = memberName ? `${memberName}，` : "";
       const pointKey = `POINTS_${memberUid}`;
       const existing = await getKvJsonOnly(env, recordKey, null);
       const pointData = await getKvJsonOnly(env, pointKey, { balance: 0, logs: [] }) || { balance: 0, logs: [] };
@@ -2218,8 +2219,8 @@ async function handleShopKeywordReward(env, ctx, event) {
             recoveredAt: nowIso,
           }, { expirationTtl: 86400 * 3650 });
         }
-        const delivery = await pushLineMessage(env, lineUid, textLineMessage(`這組活動關鍵字已領取過。\n目前 CRM 點數：${Number(pointData.balance || 0)} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, balance: Number(pointData.balance || 0), delivery });
+        const delivery = await pushLineMessage(env, lineUid, textLineMessage(`${namePrefix}這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, balance: Number(pointData.balance || 0), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
         return;
       }
 
@@ -2239,8 +2240,8 @@ async function handleShopKeywordReward(env, ctx, event) {
         source: "local",
         claimedAt: nowIso,
       }, { expirationTtl: 86400 * 3650 });
-      const delivery = await pushLineMessage(env, lineUid, textLineMessage(`恭喜領取成功！\n關鍵字：${matchedKeyword}\n贈點：${numericPoints} 點\n目前 CRM 點數：${Number(nextPoints.balance || 0)} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-      await writeDiagnostic({ status: "success", memberUid, balance: Number(nextPoints.balance || 0), delivery });
+      const delivery = await pushLineMessage(env, lineUid, textLineMessage(`${namePrefix}恭喜您獲得 ${numericPoints} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+      await writeDiagnostic({ status: "success", memberUid, balance: Number(nextPoints.balance || 0), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
 
       await safePutKV(env, pointKey, nextPoints).catch(error => console.error("Keyword reward R2 point sync failed", error));
       await updatePointsIndexRecord(env, memberUid, nextPoints).catch(error => console.error("Keyword reward point index sync failed", error));
@@ -2262,7 +2263,7 @@ async function handleShopKeywordReward(env, ctx, event) {
       observeHighRiskDualWrite(env, ctx || null, ["points", "point-ledger"]);
     } catch (error) {
       const delivery = await pushLineMessage(env, lineUid, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-      await writeDiagnostic({ status: "error", error: error?.message || String(error), delivery });
+      await writeDiagnostic({ status: "error", error: error?.message || String(error), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
       console.error("Keyword Reward Background Error:", error);
     }
   })();
