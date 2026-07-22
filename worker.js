@@ -5520,6 +5520,28 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (!memberData || !memberData.points) return 0;
       return Math.max(0, Math.floor(Number(memberData.points.balance || 0)));
     }
+    function fallbackMemberData(reason){
+      const displayName = lineProfile.displayName || "";
+      return {
+        ok: true,
+        bound: false,
+        syncFallback: true,
+        fallbackReason: reason || "unavailable",
+        lineUserId: lineProfile.userId || "",
+        memberUid: lineProfile.userId || "",
+        member: {
+          userId: lineProfile.userId || "",
+          lineUserId: lineProfile.userId || "",
+          name: displayName,
+          displayName,
+          pictureUrl: lineProfile.pictureUrl || "",
+          memberTier: "一般會員",
+        },
+        points: { balance: 0, source: "fallback", shared: { ok: false, reason: reason || "unavailable" }, logs: [] },
+        orders: { count: 0, latest: [] },
+        referrals: { count: 0 },
+      };
+    }
     function clampPointDeduction(){
       const totals = cartTotals();
       pointDeduction = Math.max(0, Math.min(Math.floor(Number(pointDeduction || 0)), totals.allowedPoints));
@@ -5558,11 +5580,9 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         note.className = "point-note" + (!canUse || (!totals.allowedPoints && totals.subtotal > 0) ? " warn" : "");
         note.textContent = !lineProfile.userId
           ? "請先登入 LINE 才能使用點數折抵。"
-          : memberLoading
-            ? "會員點數讀取中..."
-            : !memberData
-              ? "尚未連動會員資料，無法使用點數折抵。"
-              : "目前可用 " + money(totals.memberBalance) + " 點，本次最高可折抵 " + money(totals.allowedPoints) + " 點。";
+          : !memberData
+            ? "目前可用 0 點，本次最高可折抵 0 點。"
+            : "目前可用 " + money(totals.memberBalance) + " 點，本次最高可折抵 " + money(totals.allowedPoints) + " 點。" + (memberLoading ? "（同步中）" : "");
       }
       renderPayOptions();
     }
@@ -5820,6 +5840,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     async function loadMemberData(accessToken){
       if (!lineProfile.userId) return;
       memberLoading = true;
+      memberData = memberData || fallbackMemberData("syncing");
+      renderCart();
       renderMemberPanel();
       try {
         const controller = new AbortController();
@@ -5830,10 +5852,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile }),
           signal: controller.signal
         }).then(r => r.json()).finally(() => clearTimeout(timeoutId));
-        memberData = res && res.ok ? res : null;
+        memberData = res && res.ok ? Object.assign({ syncFallback: false }, res) : fallbackMemberData(res?.message || "sync_failed");
       } catch (error) {
         console.warn("Member profile load failed", error);
-        memberData = null;
+        memberData = fallbackMemberData(error?.name === "AbortError" ? "timeout" : "sync_failed");
       } finally {
         memberLoading = false;
         renderCart();
@@ -5862,7 +5884,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const name = member.name || member.displayName || lineProfile.displayName || "LINE 會員";
       const avatar = member.pictureUrl || lineProfile.pictureUrl || "";
       const tier = member.memberTier || "一般會員";
-      const balance = memberLoading ? "讀取中" : (memberData?.points ? Number(memberData.points.balance || 0).toLocaleString("zh-TW") + " 點" : "尚未連動");
+      const balance = memberData?.points ? Number(memberData.points.balance || 0).toLocaleString("zh-TW") + " 點" + (memberLoading ? "（同步中）" : "") : "0 點";
       const shareCount = memberData?.referrals ? Number(memberData.referrals.count || 0) : 0;
       const modules = Array.isArray(shopConfig.memberModules) && shopConfig.memberModules.length
         ? shopConfig.memberModules
@@ -6006,7 +6028,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const points = memberData.points || {};
       const balance = Number(points.balance || 0);
       const logs = Array.isArray(points.logs) ? points.logs : [];
-      const sourceText = points.source === "wetw" ? "母站共用點數" : "HookTea 本地點數";
+      const sourceText = points.source === "wetw" ? "母站共用點數" : (points.source === "fallback" ? "尚未同步，暫以 0 點顯示" : "HookTea 本地點數");
       return '<section class="member-detail"><div class="member-detail-head"><div class="member-detail-title">點數記錄</div><button class="member-edit" onclick="refreshMemberData()">重新整理</button></div>'
         + '<div class="points-summary"><div class="points-card"><small>目前餘額</small><b>'+money(balance)+' 點</b></div><div class="points-card"><small>資料來源</small><b style="font-size:15px">'+escapeHtml(sourceText)+'</b></div></div>'
         + (logs.length ? logs.map(renderPointLog).join("") : '<div class="member-empty">目前沒有點數異動紀錄</div>')
