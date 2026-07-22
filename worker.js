@@ -919,6 +919,39 @@ async function findLegacyMemberCandidates(env, query = {}) {
   return candidates.sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
+async function bindUniqueLegacyMemberByLineName(env, ctx, lineUid, lineProfile = {}) {
+  const uid = String(lineUid || "").trim();
+  const lineName = normalizeBindName(lineProfile?.name || lineProfile?.displayName || "");
+  if (!uid || !uid.startsWith("U") || !lineName) return { bound: false, reason: "missing_line_name" };
+  const candidates = await findLegacyMemberCandidates(env, { lineName }).catch(() => []);
+  const exact = candidates.filter(item => normalizeBindName(item.name || "") === lineName);
+  if (exact.length !== 1) return { bound: false, reason: exact.length > 1 ? "duplicate_line_name" : "not_found", candidates };
+  const userId = String(exact[0].userId || exact[0].legacyMemberId || "").trim();
+  if (!userId) return { bound: false, reason: "missing_user_id", candidates };
+  const current = await safeGetKV(env, `USER_${userId}`, null);
+  if (!current) return { bound: false, reason: "member_not_found", candidates };
+  const member = {
+    ...current,
+    lineUserId: current.lineUserId || uid,
+    linkedLineUid: current.linkedLineUid || uid,
+    lineDisplayName: current.lineDisplayName || lineName,
+    pictureUrl: current.pictureUrl || lineProfile?.picture || lineProfile?.pictureUrl || "",
+    updatedAt: new Date().toISOString(),
+    legacyLinkedAt: current.legacyLinkedAt || new Date().toISOString(),
+  };
+  await putUserKV(env, ctx, userId, member);
+  await safePutKV(env, `LINE_BIND_${uid}`, {
+    lineUserId: uid,
+    legacyUserId: userId,
+    name: member.name || member.displayName || lineName,
+    source: "exact_line_name",
+    linkedAt: new Date().toISOString(),
+  });
+  await mergeLineMonitorThread(env, uid, userId).catch(() => {});
+  await mergePointDataForLineBind(env, ctx, userId, uid).catch(() => {});
+  return { bound: true, userId, member, source: "exact_line_name" };
+}
+
 async function createLineBindReviewCase(env, ctx, data = {}) {
   const now = new Date();
   const lineUid = String(data.lineUserId || "").trim();
@@ -4492,7 +4525,11 @@ async function handleHuaxuMemberProfile(request, env) {
   }
   const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
   if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  let resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  if (!resolved.member) {
+    const autoBound = await bindUniqueLegacyMemberByLineName(env, null, lineUid, verifiedProfile || payload.lineProfile || {}).catch(() => null);
+    if (autoBound?.bound) resolved = { memberUid: autoBound.userId, member: autoBound.member, binding: { legacyUserId: autoBound.userId }, source: autoBound.source };
+  }
   const memberUid = resolved.memberUid || lineUid;
   const member = resolved.member || null;
   const registeredShipping = registeredShippingFromMember(member || {});
@@ -4866,7 +4903,11 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   }
   if (pointsUsed > 0) {
     if (!lineProfile.userId) return json({ ok: false, message: "請先完成 LINE 登入，才能使用點數折抵" }, 401);
-    const resolvedForPoints = await findHuaxuMemberByLineUid(env, lineProfile.userId);
+    let resolvedForPoints = await findHuaxuMemberByLineUid(env, lineProfile.userId);
+    if (!resolvedForPoints.member) {
+      const autoBound = await bindUniqueLegacyMemberByLineName(env, ctx, lineProfile.userId, lineProfile).catch(() => null);
+      if (autoBound?.bound) resolvedForPoints = { memberUid: autoBound.userId, member: autoBound.member, binding: { legacyUserId: autoBound.userId }, source: autoBound.source };
+    }
     memberUidForPoints = resolvedForPoints.memberUid || lineProfile.userId;
     const localPointData = await safeGetKV(env, `POINTS_${memberUidForPoints}`, { balance: 0, logs: [] });
     const memberForPoints = resolvedForPoints.member || { userId: memberUidForPoints, lineUserId: lineProfile.userId };
