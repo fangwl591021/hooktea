@@ -2039,38 +2039,47 @@ async function sendLineMulticast(env, recipients, messages) {
   return { sent, failed: ids.length - sent, total: ids.length, errors };
 }
 
+async function fetchLineApiWithTimeout(url, init, timeoutMs = 4500) {
+  let timeoutId = null;
+  const timeout = new Promise(resolve => {
+    timeoutId = setTimeout(() => resolve({ timeout: true }), timeoutMs);
+  });
+  const request = fetch(url, init).then(async res => {
+    if (!res.ok) return { ok: false, status: res.status, text: await res.text().catch(() => "") };
+    return { ok: true, status: res.status };
+  }).catch(error => ({ ok: false, error: error?.message || String(error) }));
+  const result = await Promise.race([request, timeout]);
+  if (timeoutId) clearTimeout(timeoutId);
+  if (result?.timeout) return { ok: false, timeout: true, timeoutMs };
+  return result;
+}
+
 async function replyLineMessage(env, replyToken, messages) {
   const token = getLineChannelAccessToken(env);
   const lineReplyToken = String(replyToken || "").trim();
   if (!token || !lineReplyToken) return { ok: false, skipped: true };
-  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+  return fetchLineApiWithTimeout("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       replyToken: lineReplyToken,
       messages: Array.isArray(messages) ? messages : [messages],
     }),
-    signal: AbortSignal.timeout(4500),
   });
-  if (!res.ok) return { ok: false, status: res.status, text: await res.text() };
-  return { ok: true };
 }
 
 async function pushLineMessage(env, userId, messages) {
   const token = getLineChannelAccessToken(env);
   const to = String(userId || "").trim();
   if (!token || !to) return { ok: false, skipped: true };
-  const res = await fetch("https://api.line.me/v2/bot/message/push", {
+  return fetchLineApiWithTimeout("https://api.line.me/v2/bot/message/push", {
     method: "POST",
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       to,
       messages: Array.isArray(messages) ? messages : [messages],
     }),
-    signal: AbortSignal.timeout(4500),
   });
-  if (!res.ok) return { ok: false, status: res.status, text: await res.text() };
-  return { ok: true };
 }
 
 async function deliverLineMessage(env, userId, replyToken, messages) {
@@ -2294,12 +2303,8 @@ async function handleShopKeywordReward(env, ctx, event) {
   const shouldReplyInTask = !replyToken;
   if (replyToken) {
     await writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) });
-    const replyTask = (async () => {
-      const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-      await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-    })();
-    if (ctx) ctx.waitUntil(replyTask);
-    else await replyTask;
+    const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+    await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
   }
   const task = (async () => {
     try {
