@@ -2299,12 +2299,15 @@ async function handleShopKeywordReward(env, ctx, event) {
     updatedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 7 }).catch(() => {});
 
-  await writeDiagnostic({ status: "queued" });
+  if (ctx) ctx.waitUntil(writeDiagnostic({ status: "queued" }));
+  else writeDiagnostic({ status: "queued" }).catch(() => {});
   const shouldReplyInTask = !replyToken;
   if (replyToken) {
-    await writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) });
+    if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) }));
+    else writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) }).catch(() => {});
     const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) }));
+    else await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
   }
   const task = (async () => {
     try {
