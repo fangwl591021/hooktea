@@ -2209,7 +2209,13 @@ function configuredKeywordRewards(settings = {}) {
 }
 
 function normalizeShopKeywordRewardText(value) {
-  return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
+  return String(value || "").normalize("NFKC").trim().replace(/[\s\u200B-\u200D\uFEFF]+/g, "").toLowerCase();
+}
+
+async function deliverKeywordRewardReply(env, lineUid, replyToken, message) {
+  const lineReplyToken = String(replyToken || "").trim();
+  if (lineReplyToken) return replyLineMessage(env, lineReplyToken, message);
+  return pushLineMessage(env, lineUid, message);
 }
 
 async function getKvJsonOnly(env, key, defaultVal = null) {
@@ -2241,10 +2247,32 @@ async function handleShopKeywordReward(env, ctx, event) {
   if (!text || !lineUid) return false;
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const reward = configuredKeywordRewards(settings);
-  if (!reward.points || !reward.keywords.length) return false;
+  if (!reward.points || !reward.keywords.length) {
+    await safePutKV(env, "KEYWORD_REWARD_LAST", {
+      lineUserId: lineUid,
+      text,
+      status: "not_configured",
+      points: reward.points,
+      keywordCount: reward.keywords.length,
+      replyTokenPresent: !!replyToken,
+      updatedAt: new Date().toISOString(),
+    }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return false;
+  }
   const normalizedText = normalizeShopKeywordRewardText(text);
   const matchedKeyword = reward.keywords.find(keyword => normalizeShopKeywordRewardText(keyword) === normalizedText);
-  if (!matchedKeyword) return false;
+  if (!matchedKeyword) {
+    await safePutKV(env, "KEYWORD_REWARD_LAST", {
+      lineUserId: lineUid,
+      text,
+      normalizedText,
+      status: "no_match",
+      configuredKeywords: reward.keywords.slice(0, 20),
+      replyTokenPresent: !!replyToken,
+      updatedAt: new Date().toISOString(),
+    }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return false;
+  }
 
   const nowIso = new Date().toISOString();
   const createdTs = Date.now();
@@ -2263,6 +2291,17 @@ async function handleShopKeywordReward(env, ctx, event) {
   }, { expirationTtl: 86400 * 7 }).catch(() => {});
 
   await writeDiagnostic({ status: "queued" });
+  const existingQuick = replyToken ? await getKvJsonOnly(env, recordKey, null).catch(() => null) : null;
+  if (existingQuick?.claimedAt) {
+    const delivery = await replyLineMessage(env, replyToken, textLineMessage(`這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+    await writeDiagnostic({ status: "duplicate_reply_sent", memberUid: existingQuick.memberUid || "", pointUid: existingQuick.pointUid || "", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    return true;
+  }
+  const shouldReplyInTask = !replyToken;
+  if (replyToken) {
+    const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+    await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+  }
   const task = (async () => {
     try {
       const binding = await safeGetKV(env, `LINE_BIND_${lineUid}`, null, { preferWasabi: false }).catch(() => null);
@@ -2291,7 +2330,7 @@ async function handleShopKeywordReward(env, ctx, event) {
             recoveredAt: nowIso,
           }, { expirationTtl: 86400 * 3650 });
         }
-        const delivery = await deliverLineMessage(env, lineUid, replyToken, textLineMessage(`${namePrefix}這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+        const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`${namePrefix}這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
         await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, pointUid, balance: Number(pointData.balance || 0), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
         return;
       }
@@ -2313,7 +2352,7 @@ async function handleShopKeywordReward(env, ctx, event) {
         source: "local",
         claimedAt: nowIso,
       }, { expirationTtl: 86400 * 3650 });
-      const delivery = await deliverLineMessage(env, lineUid, replyToken, textLineMessage(`${namePrefix}恭喜您獲得 ${numericPoints} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+      const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`${namePrefix}恭喜您獲得 ${numericPoints} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
       await writeDiagnostic({ status: "success", memberUid, pointUid, balance: Number(nextPoints.balance || 0), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
 
       await appendPointsLedger(env, {
@@ -2334,13 +2373,12 @@ async function handleShopKeywordReward(env, ctx, event) {
       }).catch(error => console.error("Keyword reward ledger sync failed", error));
       observeHighRiskDualWrite(env, ctx || null, ["points", "point-ledger"]);
     } catch (error) {
-      const delivery = await deliverLineMessage(env, lineUid, replyToken, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+      const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
       await writeDiagnostic({ status: "error", error: error?.message || String(error), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
       console.error("Keyword Reward Background Error:", error);
     }
   })();
-  if (replyToken) await task;
-  else if (ctx) ctx.waitUntil(task);
+  if (ctx) ctx.waitUntil(task);
   else await task;
   return true;
 }
@@ -7230,6 +7268,19 @@ export default {
           result.data = await getPointsLedger(env, payload.limit || 50, { includeLegacy: payload.includeLegacy === true });
           break;
 
+        case "ADMIN_GET_KEYWORD_REWARD_DEBUG": {
+          if (!access.isAdmin) throw new Error("Admin authorization required");
+          result.data = {
+            webhookText: await safeGetKV(env, "LINE_WEBHOOK_TEXT_LAST", null, { preferWasabi: false }),
+            keywordReward: await safeGetKV(env, "KEYWORD_REWARD_LAST", null, { preferWasabi: false }),
+            settings: {
+              shop_keyword_reward_keywords: String(access.settings?.shop_keyword_reward_keywords || ""),
+              shop_keyword_reward_points: String(access.settings?.shop_keyword_reward_points || ""),
+            },
+            tokenConfigured: !!getLineChannelAccessToken(env),
+          };
+          break;
+        }
         case "ADMIN_GET_AUDIT_LOGS": {
           if (!access.isAdmin) throw new Error("Admin authorization required");
           const auditLogs = await safeGetKV(env, "AUDIT_LOGS", [], { preferWasabi: false });
