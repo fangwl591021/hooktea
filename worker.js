@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Project: HookTea - Backend Engine (Full Integration)
  * Version: 2026.04.26.V17_Bulletproof_KV_Rescue
  * Developer: 勝利團隊 - 小李 (Backend)
@@ -2344,6 +2344,10 @@ async function handleShopKeywordReward(env, ctx, event) {
           const settingsForWp = await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
           const syncPoints = Number(recoveredRecord?.points || reward.points || 0);
           wpRes = await insertWetwPoint(settingsForWp, pointUid, syncPoints, rewardReason, env, member || { userId: pointUid, lineUserId: lineUid }).catch(error => ({ ok: false, error: error?.message || String(error) }));
+          const motherBalanceAfter = extractWetwInsertBalance(wpRes);
+          const localAlign = motherBalanceAfter !== null
+            ? await alignLocalPointsToMotherBalance(env, ctx || null, pointUid, motherBalanceAfter, "母站關鍵字補同步後同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }))
+            : null;
           await putKvJsonOnly(env, recordKey, {
             ...(recoveredRecord || {}),
             lineUserId: lineUid,
@@ -2353,6 +2357,8 @@ async function handleShopKeywordReward(env, ctx, event) {
             points: syncPoints,
             claimedAt: recoveredRecord?.claimedAt || priorRewardLog?.createdAt || nowIso,
             wpSync: wpRes,
+            motherBalanceAfter,
+            localAlign,
             wpSyncedAt: wpRes?.ok ? new Date().toISOString() : "",
           }, { expirationTtl: 86400 * 3650 });
         }
@@ -2399,7 +2405,11 @@ async function handleShopKeywordReward(env, ctx, event) {
       }).catch(error => console.error("Keyword reward ledger sync failed", error));
       const settingsForWp = await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
       const wpRes = await insertWetwPoint(settingsForWp, pointUid, numericPoints, rewardReason, env, member || { userId: pointUid, lineUserId: lineUid }).catch(error => ({ ok: false, error: error?.message || String(error) }));
-      await writeDiagnostic({ status: "success_synced", memberUid, pointUid, balance: Number(nextPoints.balance || 0), wpSync: wpRes, tokenConfigured: !!getLineChannelAccessToken(env) });
+      const motherBalanceAfter = extractWetwInsertBalance(wpRes);
+      const localAlign = motherBalanceAfter !== null
+        ? await alignLocalPointsToMotherBalance(env, ctx || null, pointUid, motherBalanceAfter, "母站關鍵字贈點後同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }))
+        : null;
+      await writeDiagnostic({ status: "success_synced", memberUid, pointUid, balance: Number(nextPoints.balance || 0), motherBalanceAfter, localAlign, wpSync: wpRes, tokenConfigured: !!getLineChannelAccessToken(env) });
       observeHighRiskDualWrite(env, ctx || null, ["points", "point-ledger"]);
     } catch (error) {
       const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
@@ -3038,6 +3048,55 @@ async function insertWetwPoint(settings, uid, amount, reason, env = {}, member =
   return { ok: true, data };
 }
 
+function extractWetwInsertBalance(wpRes) {
+  const value = wpRes?.data?.data?.insert_row?.point_balance
+    ?? wpRes?.data?.data?.point_balance
+    ?? wpRes?.data?.point_balance;
+  const balance = Number(value);
+  return Number.isFinite(balance) ? balance : null;
+}
+
+async function alignLocalPointsToMotherBalance(env, ctx, pointUid, motherBalance, reason = "母站點數餘額同步") {
+  const uid = String(pointUid || "").trim();
+  const balance = Number(motherBalance);
+  if (!uid || !Number.isFinite(balance)) return null;
+  const current = await safeGetKV(env, `POINTS_${uid}`, { balance: 0, logs: [] });
+  const currentBalance = Number(current?.balance || 0);
+  if (currentBalance === balance) return { changed: false, balance };
+  const delta = balance - currentBalance;
+  const createdTs = Date.now();
+  const createdAt = new Date(createdTs).toLocaleString();
+  const logEntry = {
+    logId: crypto.randomUUID ? crypto.randomUUID() : String(createdTs),
+    amount: Math.abs(delta),
+    reason,
+    createdAt,
+    type: delta >= 0 ? "EARN" : "SPEND",
+    source: "mother_balance_align",
+  };
+  const next = {
+    ...current,
+    balance,
+    logs: [logEntry, ...(Array.isArray(current?.logs) ? current.logs : [])].slice(0, 50),
+    motherAlignedAt: new Date().toISOString(),
+  };
+  await putPointKV(env, ctx, uid, next);
+  await appendPointsLedger(env, {
+    logId: logEntry.logId,
+    uid,
+    type: logEntry.type,
+    amount: delta,
+    points: Math.abs(delta),
+    reason,
+    balanceAfter: balance,
+    createdAt,
+    createdTs,
+    source: "mother_balance_align",
+    operatorUid: "system",
+    operatorName: "HookTea Worker",
+  }).catch(error => console.error("Mother balance align ledger failed", error));
+  return { changed: true, oldBalance: currentBalance, balance, delta };
+}
 async function fetchWpLegacyPoints(settings, member) {
   const endpoint = getWpApiUrl(settings);
   if (!endpoint) return { ok: false, reason: "missing_endpoint", message: "缺少 WordPress API URL，無法確認外站點數。" };
@@ -7923,12 +7982,15 @@ export default {
           const dryRun = payload?.dryRun === true;
           const reason = String(payload?.reason || "HookTea 子母站點數一次性補差額").trim();
           const maxUsers = Math.max(1, Math.min(200, Number(payload?.limit || (targetUid ? 1 : 50)) || 50));
-          const candidates = targetUid
+          const offset = Math.max(0, Number(payload?.offset || 0) || 0);
+          const allCandidates = targetUid
             ? [await safeGetKV(env, `USER_${targetUid}`, null)]
-            : (await listUserRecords(env)).slice(0, maxUsers);
+            : await listUserRecords(env);
+          const candidates = targetUid ? allCandidates : allCandidates.slice(offset, offset + maxUsers);
           const rows = [];
           let checked = 0;
           let synced = 0;
+          let alignedLocal = 0;
           let skipped = 0;
           let totalDiff = 0;
           for (const rawMember of candidates) {
@@ -7953,15 +8015,28 @@ export default {
             }
             const motherBalance = Number(shared.balance || 0);
             const diff = Math.floor(localBalance - motherBalance);
-            if (diff <= 0) {
+            if (diff < 0) {
+              let localAlign = null;
+              if (!dryRun) {
+                localAlign = await alignLocalPointsToMotherBalance(env, ctx || null, pointUid, motherBalance, "母站餘額較高，同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }));
+              }
+              alignedLocal += localAlign?.changed ? 1 : 0;
+              rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: true, dryRun, localBalance, motherBalance, diff, reason: "mother_balance_higher", localAlign });
+              continue;
+            }
+            if (diff === 0) {
               skipped += 1;
-              rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: true, skipped: true, localBalance, motherBalance, diff, reason: "no_positive_diff" });
+              rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: true, skipped: true, localBalance, motherBalance, diff, reason: "already_aligned" });
               continue;
             }
             let wpSync = { ok: true, dryRun: true };
             if (!dryRun) {
               wpSync = await insertWetwPoint(access.settings, pointUid, diff, reason, env, member).catch(error => ({ ok: false, error: error?.message || String(error) }));
             }
+            const motherBalanceAfter = extractWetwInsertBalance(wpSync);
+            const localAlign = motherBalanceAfter !== null && !dryRun
+              ? await alignLocalPointsToMotherBalance(env, ctx || null, pointUid, motherBalanceAfter, "母站補差額後同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }))
+              : null;
             if (wpSync?.ok) {
               synced += 1;
               totalDiff += diff;
@@ -7971,19 +8046,21 @@ export default {
                 lineUid,
                 localBalance,
                 motherBalance,
+                motherBalanceAfter,
                 diff,
                 reason,
                 dryRun,
                 wpSync,
+                localAlign,
                 reconciledAt: new Date().toISOString(),
                 operatorUid: userId,
               }, { expirationTtl: 86400 * 3650 }).catch(() => {});
             } else {
               skipped += 1;
             }
-            rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: !!wpSync?.ok, dryRun, localBalance, motherBalance, diff, wpSync });
+            rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: !!wpSync?.ok, dryRun, localBalance, motherBalance, motherBalanceAfter, diff, localAlign, wpSync });
           }
-          result.data = { success: true, dryRun, checked, synced, skipped, totalDiff, rows };
+          result.data = { success: true, dryRun, offset, limit: maxUsers, nextOffset: targetUid ? null : offset + checked, totalCandidates: targetUid ? candidates.length : allCandidates.length, checked, synced, alignedLocal, skipped, totalDiff, rows };
           break;
         }
         case "ADMIN_SYNC_WP_POINTS":
@@ -8356,6 +8433,10 @@ export default {
         const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const memberForWp = await safeGetKV(env, `USER_${pointUid}`, null).catch(() => null);
         const wpRes = await insertWetwPoint(settings, pointUid, numericAmount, reason, env, memberForWp);
+        const motherBalanceAfter = extractWetwInsertBalance(wpRes);
+        if (motherBalanceAfter !== null) {
+          await alignLocalPointsToMotherBalance(env, null, pointUid, motherBalanceAfter, "母站點數異動後同步子站餘額").catch(error => console.error("Mother Balance Align Error", error));
+        }
         if (!wpRes.ok && !wpRes.skipped) console.error("WordPress Points Sync Error", wpRes);
       })());
     }
