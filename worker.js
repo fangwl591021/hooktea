@@ -2291,12 +2291,6 @@ async function handleShopKeywordReward(env, ctx, event) {
   }, { expirationTtl: 86400 * 7 }).catch(() => {});
 
   await writeDiagnostic({ status: "queued" });
-  const existingQuick = replyToken ? await getKvJsonOnly(env, recordKey, null).catch(() => null) : null;
-  if (existingQuick?.claimedAt) {
-    const delivery = await replyLineMessage(env, replyToken, textLineMessage(`這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({ status: "duplicate_reply_sent", memberUid: existingQuick.memberUid || "", pointUid: existingQuick.pointUid || "", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-    return true;
-  }
   const shouldReplyInTask = !replyToken;
   if (replyToken) {
     const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
