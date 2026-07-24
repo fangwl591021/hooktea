@@ -7917,6 +7917,75 @@ export default {
           result.data = { success: true, log: healthLogNew };
           break;
 
+        case "ADMIN_RECONCILE_WP_POINT_DIFF": {
+          if (!access.isAdmin) throw new Error("Admin authorization required");
+          const targetUid = String(payload?.targetUid || payload?.uid || "").trim();
+          const dryRun = payload?.dryRun === true;
+          const reason = String(payload?.reason || "HookTea 子母站點數一次性補差額").trim();
+          const maxUsers = Math.max(1, Math.min(200, Number(payload?.limit || (targetUid ? 1 : 50)) || 50));
+          const candidates = targetUid
+            ? [await safeGetKV(env, `USER_${targetUid}`, null)]
+            : (await listUserRecords(env)).slice(0, maxUsers);
+          const rows = [];
+          let checked = 0;
+          let synced = 0;
+          let skipped = 0;
+          let totalDiff = 0;
+          for (const rawMember of candidates) {
+            const member = rawMember && rawMember.userId ? rawMember : null;
+            if (!member) continue;
+            checked += 1;
+            const uid = String(member.userId || "").trim();
+            const lineUid = getMemberLineUid(member);
+            if (!uid || !lineUid) {
+              skipped += 1;
+              rows.push({ uid, name: member.name || member.displayName || "", ok: false, skipped: true, reason: "missing_line_uid" });
+              continue;
+            }
+            const pointLookup = await getPointDataForUid(env, uid, { balance: 0, logs: [] });
+            const pointUid = pointLookup.pointUid || uid;
+            const localBalance = Number(pointLookup.data?.balance || 0);
+            const shared = await queryWetwPointList(access.settings, member, env).catch(error => ({ ok: false, reason: "wp_query_error", message: error?.message || String(error) }));
+            if (!shared.ok) {
+              skipped += 1;
+              rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: false, skipped: true, localBalance, reason: shared.reason, message: shared.message || "母站點數查詢失敗" });
+              continue;
+            }
+            const motherBalance = Number(shared.balance || 0);
+            const diff = Math.floor(localBalance - motherBalance);
+            if (diff <= 0) {
+              skipped += 1;
+              rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: true, skipped: true, localBalance, motherBalance, diff, reason: "no_positive_diff" });
+              continue;
+            }
+            let wpSync = { ok: true, dryRun: true };
+            if (!dryRun) {
+              wpSync = await insertWetwPoint(access.settings, pointUid, diff, reason, env, member).catch(error => ({ ok: false, error: error?.message || String(error) }));
+            }
+            if (wpSync?.ok) {
+              synced += 1;
+              totalDiff += diff;
+              await safePutKV(env, `WP_RECONCILE_DIFF_${pointUid}`, {
+                uid,
+                pointUid,
+                lineUid,
+                localBalance,
+                motherBalance,
+                diff,
+                reason,
+                dryRun,
+                wpSync,
+                reconciledAt: new Date().toISOString(),
+                operatorUid: userId,
+              }, { expirationTtl: 86400 * 3650 }).catch(() => {});
+            } else {
+              skipped += 1;
+            }
+            rows.push({ uid, pointUid, lineUid, name: member.name || member.displayName || "", ok: !!wpSync?.ok, dryRun, localBalance, motherBalance, diff, wpSync });
+          }
+          result.data = { success: true, dryRun, checked, synced, skipped, totalDiff, rows };
+          break;
+        }
         case "ADMIN_SYNC_WP_POINTS":
           const syncUidNew = String(payload.targetUid || "").trim();
           if (!syncUidNew) throw new Error("缺少會員 UID，無法補登舊點數");
