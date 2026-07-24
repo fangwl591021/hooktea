@@ -2325,8 +2325,9 @@ async function handleShopKeywordReward(env, ctx, event) {
       const priorRewardLog = logs.find(log => String(log?.reason || "") === rewardReason);
 
       if (existing?.claimedAt || priorRewardLog) {
+        let recoveredRecord = existing || null;
         if (!existing?.claimedAt && priorRewardLog) {
-          await putKvJsonOnly(env, recordKey, {
+          recoveredRecord = {
             lineUserId: lineUid,
             memberUid,
             pointUid,
@@ -2335,10 +2336,28 @@ async function handleShopKeywordReward(env, ctx, event) {
             recoveredFromPointLog: true,
             claimedAt: priorRewardLog.createdAt || nowIso,
             recoveredAt: nowIso,
+          };
+          await putKvJsonOnly(env, recordKey, recoveredRecord, { expirationTtl: 86400 * 3650 });
+        }
+        let wpRes = recoveredRecord?.wpSync || null;
+        if (!recoveredRecord?.wpSyncedAt) {
+          const settingsForWp = await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
+          const syncPoints = Number(recoveredRecord?.points || reward.points || 0);
+          wpRes = await insertWetwPoint(settingsForWp, pointUid, syncPoints, rewardReason, env, member || { userId: pointUid, lineUserId: lineUid }).catch(error => ({ ok: false, error: error?.message || String(error) }));
+          await putKvJsonOnly(env, recordKey, {
+            ...(recoveredRecord || {}),
+            lineUserId: lineUid,
+            memberUid,
+            pointUid,
+            keyword: matchedKeyword,
+            points: syncPoints,
+            claimedAt: recoveredRecord?.claimedAt || priorRewardLog?.createdAt || nowIso,
+            wpSync: wpRes,
+            wpSyncedAt: wpRes?.ok ? new Date().toISOString() : "",
           }, { expirationTtl: 86400 * 3650 });
         }
         const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`${namePrefix}這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
-        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, pointUid, balance: Number(pointData.balance || 0), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate_synced" : "duplicate_synced", memberUid, pointUid, balance: Number(pointData.balance || 0), delivery, wpSync: wpRes, tokenConfigured: !!getLineChannelAccessToken(env) });
         return;
       }
 
@@ -2378,6 +2397,9 @@ async function handleShopKeywordReward(env, ctx, event) {
         operatorName: "",
         targetName: "",
       }).catch(error => console.error("Keyword reward ledger sync failed", error));
+      const settingsForWp = await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
+      const wpRes = await insertWetwPoint(settingsForWp, pointUid, numericPoints, rewardReason, env, member || { userId: pointUid, lineUserId: lineUid }).catch(error => ({ ok: false, error: error?.message || String(error) }));
+      await writeDiagnostic({ status: "success_synced", memberUid, pointUid, balance: Number(nextPoints.balance || 0), wpSync: wpRes, tokenConfigured: !!getLineChannelAccessToken(env) });
       observeHighRiskDualWrite(env, ctx || null, ["points", "point-ledger"]);
     } catch (error) {
       const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
