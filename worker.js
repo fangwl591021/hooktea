@@ -812,6 +812,24 @@ async function putPointKV(env, ctx, uid, pointData) {
   await updatePointsIndexRecord(env, uid, pointData || { balance: 0, logs: [] });
 }
 
+async function resolvePointUid(env, uid) {
+  const rawUid = String(uid || "").trim();
+  if (!rawUid) return "";
+  const alias = await safeGetKV(env, `POINTS_ALIAS_${rawUid}`, null, { preferWasabi: false }).catch(() => null);
+  if (alias?.targetUid) return String(alias.targetUid).trim() || rawUid;
+  if (rawUid.startsWith("U")) {
+    const binding = await safeGetKV(env, `LINE_BIND_${rawUid}`, null, { preferWasabi: false }).catch(() => null);
+    if (binding?.legacyUserId) return String(binding.legacyUserId).trim() || rawUid;
+  }
+  return rawUid;
+}
+
+async function getPointDataForUid(env, uid, defaultVal = { balance: 0, logs: [] }) {
+  const pointUid = await resolvePointUid(env, uid);
+  const data = await safeGetKV(env, `POINTS_${pointUid || uid}`, defaultVal);
+  return { pointUid: pointUid || uid, data: data || defaultVal };
+}
+
 function normalizeMemberPhone(value) {
   const digits = String(value || "").replace(/\.0$/, "").replace(/\D+/g, "");
   if (digits && !digits.startsWith("0") && digits.length === 9) return `0${digits}`;
@@ -1001,24 +1019,38 @@ async function listLineBindReviewCases(env) {
 }
 
 async function mergePointDataForLineBind(env, ctx, legacyUid, lineUid) {
-  if (!legacyUid || !lineUid || legacyUid === lineUid) return null;
-  const linePoints = await safeGetKV(env, `POINTS_${lineUid}`, null);
-  if (!linePoints) return null;
-  const legacyPoints = await safeGetKV(env, `POINTS_${legacyUid}`, { balance: 0, logs: [] });
-  const lineBalance = Number(linePoints.balance || 0);
+  const targetUid = String(legacyUid || "").trim();
+  const sourceUid = String(lineUid || "").trim();
+  if (!targetUid || !sourceUid || targetUid === sourceUid) return null;
+  const existingAlias = await safeGetKV(env, `POINTS_ALIAS_${sourceUid}`, null, { preferWasabi: false }).catch(() => null);
+  const linePoints = await safeGetKV(env, `POINTS_${sourceUid}`, null);
+  const legacyPoints = await safeGetKV(env, `POINTS_${targetUid}`, { balance: 0, logs: [] });
+  const lineBalance = Number(linePoints?.balance || 0);
   const legacyBalance = Number(legacyPoints.balance || 0);
+  const alreadyMigrated = existingAlias?.targetUid && String(existingAlias.targetUid) === targetUid
+    ? Number(existingAlias.migratedBalance || 0)
+    : 0;
+  const balanceToMerge = lineBalance - alreadyMigrated;
+  if (existingAlias?.targetUid && String(existingAlias.targetUid) === targetUid && balanceToMerge === 0) {
+    return legacyPoints;
+  }
+  const lineLogs = Array.isArray(linePoints?.logs) ? linePoints.logs : [];
+  const migratedLogCount = existingAlias?.targetUid && String(existingAlias.targetUid) === targetUid
+    ? Number(existingAlias.migratedLogs || 0)
+    : 0;
+  const logsToMerge = migratedLogCount > 0 ? lineLogs.slice(0, Math.max(0, lineLogs.length - migratedLogCount)) : lineLogs;
   const merged = {
     ...legacyPoints,
-    balance: legacyBalance + lineBalance,
+    balance: legacyBalance + balanceToMerge,
     logs: [
-      ...(Array.isArray(linePoints.logs) ? linePoints.logs.map(log => ({ ...log, migratedFromLineUid: lineUid })) : []),
+      ...logsToMerge.map(log => ({ ...log, migratedFromLineUid: sourceUid })),
       ...(Array.isArray(legacyPoints.logs) ? legacyPoints.logs : []),
     ].slice(0, 100),
-    linkedLineUid: lineUid,
+    linkedLineUid: sourceUid,
     updatedAt: new Date().toISOString(),
   };
-  await putPointKV(env, ctx, legacyUid, merged);
-  await safePutKV(env, `POINTS_ALIAS_${lineUid}`, { targetUid: legacyUid, movedAt: new Date().toISOString() });
+  await putPointKV(env, ctx, targetUid, merged);
+  await safePutKV(env, `POINTS_ALIAS_${sourceUid}`, { targetUid, movedAt: new Date().toISOString(), migratedBalance: lineBalance, migratedLogs: lineLogs.length });
   return merged;
 }
 
@@ -4532,8 +4564,11 @@ async function handleHuaxuMemberProfile(request, env) {
   }
   const memberUid = resolved.memberUid || lineUid;
   const member = resolved.member || null;
+  if (member && memberUid !== lineUid) await mergePointDataForLineBind(env, null, memberUid, lineUid).catch(() => null);
   const registeredShipping = registeredShippingFromMember(member || {});
-  const localPoints = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] });
+  const pointLookup = await getPointDataForUid(env, memberUid, { balance: 0, logs: [] });
+  const pointUid = pointLookup.pointUid;
+  const localPoints = pointLookup.data;
   const orders = await getHuaxuShopOrders(env);
   const memberOrders = orders.filter(order => {
     const ids = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId].map(value => String(value || "").trim());
@@ -4909,7 +4944,10 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       if (autoBound?.bound) resolvedForPoints = { memberUid: autoBound.userId, member: autoBound.member, binding: { legacyUserId: autoBound.userId }, source: autoBound.source };
     }
     memberUidForPoints = resolvedForPoints.memberUid || lineProfile.userId;
-    const localPointData = await safeGetKV(env, `POINTS_${memberUidForPoints}`, { balance: 0, logs: [] });
+    if (resolvedForPoints.member && memberUidForPoints !== lineProfile.userId) await mergePointDataForLineBind(env, ctx, memberUidForPoints, lineProfile.userId).catch(() => null);
+    const pointLookupForOrder = await getPointDataForUid(env, memberUidForPoints, { balance: 0, logs: [] });
+    memberUidForPoints = pointLookupForOrder.pointUid;
+    const localPointData = pointLookupForOrder.data;
     const memberForPoints = resolvedForPoints.member || { userId: memberUidForPoints, lineUserId: lineProfile.userId };
     const pointSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
     const sharedPointData = await queryWetwPointList(pointSettings, memberForPoints, env).catch(error => ({
@@ -8110,8 +8148,10 @@ export default {
   },
 
   async updatePoints(env, ctx, uid, amount, reason, options = {}) {
-    const key = `POINTS_${uid}`;
-    let data = await safeGetKV(env, key, { balance: 0, logs: [] });
+    const sourceUid = String(uid || "").trim();
+    const pointLookup = await getPointDataForUid(env, sourceUid, { balance: 0, logs: [] });
+    const pointUid = pointLookup.pointUid || sourceUid;
+    let data = pointLookup.data || { balance: 0, logs: [] };
     const numericAmount = Number(amount || 0);
     data.balance = Number(data.balance || 0) + numericAmount;
     const typeStr = numericAmount >= 0 ? "EARN" : "SPEND";
@@ -8120,11 +8160,12 @@ export default {
     const logId = crypto.randomUUID ? crypto.randomUUID() : createdTs.toString();
     data.logs.unshift({ logId, amount: Math.abs(numericAmount), reason, createdAt, type: typeStr });
     data.logs = data.logs.slice(0, 50);
-    await putPointKV(env, ctx, uid, data);
+    await putPointKV(env, ctx, pointUid, data);
     try {
       await appendPointsLedger(env, {
         logId,
-        uid,
+        uid: pointUid,
+        sourceUid,
         type: typeStr,
         amount: numericAmount,
         points: Math.abs(numericAmount),
@@ -8146,7 +8187,7 @@ export default {
     if (env.GAS_URL && ctx) {
         ctx.waitUntil(fetch(env.GAS_URL, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "MANAGE_POINTS", payload: { uid, amount: Math.abs(numericAmount), type: typeStr, reason, operator: "System" } }),
+            body: JSON.stringify({ action: "MANAGE_POINTS", payload: { uid: pointUid, sourceUid, amount: Math.abs(numericAmount), type: typeStr, reason, operator: "System" } }),
             redirect: "follow"
         }).catch(e => console.error("GAS Points Sync Error", e)));
     }
@@ -8154,8 +8195,8 @@ export default {
     if (!options.skipWpSync && ctx) {
       ctx.waitUntil((async () => {
         const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-        const memberForWp = await safeGetKV(env, `USER_${uid}`, null).catch(() => null);
-        const wpRes = await insertWetwPoint(settings, uid, numericAmount, reason, env, memberForWp);
+        const memberForWp = await safeGetKV(env, `USER_${pointUid}`, null).catch(() => null);
+        const wpRes = await insertWetwPoint(settings, pointUid, numericAmount, reason, env, memberForWp);
         if (!wpRes.ok && !wpRes.skipped) console.error("WordPress Points Sync Error", wpRes);
       })());
     }
@@ -8622,4 +8663,3 @@ export default {
     return new Response("OK", { status: 200 });
   }
 };
-
