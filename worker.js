@@ -2293,8 +2293,13 @@ async function handleShopKeywordReward(env, ctx, event) {
   await writeDiagnostic({ status: "queued" });
   const shouldReplyInTask = !replyToken;
   if (replyToken) {
-    const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    await writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) });
+    const replyTask = (async () => {
+      const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+      await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    })();
+    if (ctx) ctx.waitUntil(replyTask);
+    else await replyTask;
   }
   const task = (async () => {
     try {
