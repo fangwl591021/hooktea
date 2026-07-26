@@ -2302,6 +2302,8 @@ async function handleShopKeywordReward(env, ctx, event) {
   if (ctx) ctx.waitUntil(writeDiagnostic({ status: "queued" }));
   else writeDiagnostic({ status: "queued" }).catch(() => {});
   const shouldReplyInTask = true;
+  // Fixed rule: duplicate keyword rewards must reply before CRM/WP lookups.
+  // Do not move this behind member or point queries; those can timeout and leave LINE without a reply.
   const earlyExisting = await getKvJsonOnly(env, recordKey, null);
   if (earlyExisting) {
     const duplicateMessage = "這組活動關鍵字已領取過，不能重複領取。";
