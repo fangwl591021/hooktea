@@ -2301,13 +2301,10 @@ async function handleShopKeywordReward(env, ctx, event) {
 
   if (ctx) ctx.waitUntil(writeDiagnostic({ status: "queued" }));
   else writeDiagnostic({ status: "queued" }).catch(() => {});
-  const shouldReplyInTask = !replyToken;
+  const shouldReplyInTask = true;
   if (replyToken) {
-    if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) }));
-    else writeDiagnostic({ status: "reply_attempting", tokenConfigured: !!getLineChannelAccessToken(env) }).catch(() => {});
-    const delivery = await replyLineMessage(env, replyToken, textLineMessage(`恭喜您獲得 ${reward.points} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) }));
-    else await writeDiagnostic({ status: "reply_sent_pending_points", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_deferred_until_duplicate_check", tokenConfigured: !!getLineChannelAccessToken(env) }));
+    else writeDiagnostic({ status: "reply_deferred_until_duplicate_check", tokenConfigured: !!getLineChannelAccessToken(env) }).catch(() => {});
   }
   const task = (async () => {
     try {
@@ -2324,7 +2321,7 @@ async function handleShopKeywordReward(env, ctx, event) {
       const logs = Array.isArray(pointData.logs) ? pointData.logs : [];
       const priorRewardLog = logs.find(log => String(log?.reason || "") === rewardReason);
 
-      if (existing?.claimedAt || priorRewardLog) {
+      if (existing || priorRewardLog) {
         let recoveredRecord = existing || null;
         if (!existing?.claimedAt && priorRewardLog) {
           recoveredRecord = {
@@ -2336,34 +2333,14 @@ async function handleShopKeywordReward(env, ctx, event) {
             recoveredFromPointLog: true,
             claimedAt: priorRewardLog.createdAt || nowIso,
             recoveredAt: nowIso,
+            wpSync: { ok: false, skipped: true, reason: "duplicate_no_wp_resync" },
+            wpSyncedAt: existing?.wpSyncedAt || "",
           };
           await putKvJsonOnly(env, recordKey, recoveredRecord, { expirationTtl: 86400 * 3650 });
         }
-        let wpRes = recoveredRecord?.wpSync || null;
-        if (!recoveredRecord?.wpSyncedAt) {
-          const settingsForWp = await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
-          const syncPoints = Number(recoveredRecord?.points || reward.points || 0);
-          wpRes = await insertWetwPoint(settingsForWp, pointUid, syncPoints, rewardReason, env, member || { userId: pointUid, lineUserId: lineUid }).catch(error => ({ ok: false, error: error?.message || String(error) }));
-          const motherBalanceAfter = extractWetwInsertBalance(wpRes);
-          const localAlign = motherBalanceAfter !== null
-            ? await alignLocalPointsToMotherBalance(env, ctx || null, pointUid, motherBalanceAfter, "母站關鍵字補同步後同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }))
-            : null;
-          await putKvJsonOnly(env, recordKey, {
-            ...(recoveredRecord || {}),
-            lineUserId: lineUid,
-            memberUid,
-            pointUid,
-            keyword: matchedKeyword,
-            points: syncPoints,
-            claimedAt: recoveredRecord?.claimedAt || priorRewardLog?.createdAt || nowIso,
-            wpSync: wpRes,
-            motherBalanceAfter,
-            localAlign,
-            wpSyncedAt: wpRes?.ok ? new Date().toISOString() : "",
-          }, { expirationTtl: 86400 * 3650 });
-        }
-        const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`${namePrefix}這組活動關鍵字已領取過。`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
-        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate_synced" : "duplicate_synced", memberUid, pointUid, balance: Number(pointData.balance || 0), delivery, wpSync: wpRes, tokenConfigured: !!getLineChannelAccessToken(env) });
+        const duplicateMessage = `${namePrefix}這組活動關鍵字已領取過，不能重複領取。`;
+        const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(duplicateMessage)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
+        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, pointUid, balance: Number(pointData.balance || 0), delivery, wpSync: recoveredRecord?.wpSync || { ok: false, skipped: true, reason: "duplicate_no_wp_resync" }, tokenConfigured: !!getLineChannelAccessToken(env) });
         return;
       }
 
@@ -2374,6 +2351,15 @@ async function handleShopKeywordReward(env, ctx, event) {
         balance: Number(pointData.balance || 0) + numericPoints,
         logs: [logEntry, ...logs].slice(0, 50),
       };
+      await putKvJsonOnly(env, recordKey, {
+        lineUserId: lineUid,
+        memberUid,
+        pointUid,
+        keyword: matchedKeyword,
+        points: numericPoints,
+        source: "local_pending",
+        pendingAt: nowIso,
+      }, { expirationTtl: 86400 * 3650 });
       await putPointKV(env, ctx || null, pointUid, nextPoints);
       await putKvJsonOnly(env, recordKey, {
         lineUserId: lineUid,
@@ -2382,6 +2368,7 @@ async function handleShopKeywordReward(env, ctx, event) {
         keyword: matchedKeyword,
         points: numericPoints,
         source: "local",
+        pendingAt: nowIso,
         claimedAt: nowIso,
       }, { expirationTtl: 86400 * 3650 });
       const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`${namePrefix}恭喜您獲得 ${numericPoints} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
@@ -2417,7 +2404,8 @@ async function handleShopKeywordReward(env, ctx, event) {
       console.error("Keyword Reward Background Error:", error);
     }
   })();
-  if (ctx) ctx.waitUntil(task);
+  if (replyToken) await task;
+  else if (ctx) ctx.waitUntil(task);
   else await task;
   return true;
 }
