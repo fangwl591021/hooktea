@@ -2302,6 +2302,21 @@ async function handleShopKeywordReward(env, ctx, event) {
   if (ctx) ctx.waitUntil(writeDiagnostic({ status: "queued" }));
   else writeDiagnostic({ status: "queued" }).catch(() => {});
   const shouldReplyInTask = true;
+  const earlyExisting = await getKvJsonOnly(env, recordKey, null);
+  if (earlyExisting) {
+    const duplicateMessage = "這組活動關鍵字已領取過，不能重複領取。";
+    const delivery = await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(duplicateMessage)).catch(e => ({ ok: false, error: e?.message || String(e) }));
+    await writeDiagnostic({
+      status: earlyExisting.claimedAt ? "duplicate_early" : "duplicate_pending_early",
+      memberUid: earlyExisting.memberUid || "",
+      pointUid: earlyExisting.pointUid || "",
+      balance: null,
+      delivery,
+      wpSync: earlyExisting.wpSync || { ok: false, skipped: true, reason: "duplicate_no_wp_resync" },
+      tokenConfigured: !!getLineChannelAccessToken(env),
+    });
+    return true;
+  }
   if (replyToken) {
     if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_deferred_until_duplicate_check", tokenConfigured: !!getLineChannelAccessToken(env) }));
     else writeDiagnostic({ status: "reply_deferred_until_duplicate_check", tokenConfigured: !!getLineChannelAccessToken(env) }).catch(() => {});
