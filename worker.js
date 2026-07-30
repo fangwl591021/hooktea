@@ -812,6 +812,65 @@ async function putPointKV(env, ctx, uid, pointData) {
   await updatePointsIndexRecord(env, uid, pointData || { balance: 0, logs: [] });
 }
 
+const SHOP_CART_ACTIVITY_KEY = "SHOP_CART_ACTIVITY_LOGS";
+const SHOP_CART_ACTIVITY_LIMIT = 600;
+
+function summarizeShopCartItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, 8)
+    .map(item => {
+      const name = String(item?.name || item?.productName || item?.id || "").trim();
+      const quantity = Math.max(1, Number(item?.quantity || item?.qty || 1));
+      return name ? `${name} x ${quantity}` : "";
+    })
+    .filter(Boolean)
+    .join("、");
+}
+
+async function appendShopCartActivity(env, ctx, rawEvent = {}) {
+  const now = new Date();
+  const lineUid = String(rawEvent.lineUserId || rawEvent.userId || rawEvent.lineProfile?.userId || "").trim();
+  const resolved = lineUid ? await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid, member: null })) : { memberUid: "", member: null };
+  const member = resolved?.member || {};
+  const items = Array.isArray(rawEvent.items) ? rawEvent.items : [];
+  const event = {
+    id: `CART_${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
+    eventType: String(rawEvent.eventType || "cart_event").slice(0, 40),
+    status: String(rawEvent.status || rawEvent.eventType || "active").slice(0, 40),
+    stage: String(rawEvent.stage || "").slice(0, 80),
+    lineUserId: lineUid,
+    memberUid: String(rawEvent.memberUid || resolved?.memberUid || "").trim(),
+    legacyMemberId: String(member.legacyMemberId || member.oldMemberId || "").trim(),
+    displayName: String(rawEvent.displayName || rawEvent.lineProfile?.displayName || member.name || member.displayName || "").slice(0, 80),
+    pictureUrl: String(rawEvent.pictureUrl || rawEvent.lineProfile?.pictureUrl || member.pictureUrl || "").slice(0, 500),
+    cartItems: items.slice(0, 30).map(item => ({
+      id: String(item?.id || "").slice(0, 80),
+      name: String(item?.name || item?.productName || "").slice(0, 120),
+      quantity: Math.max(1, Number(item?.quantity || item?.qty || 1)),
+      price: Math.max(0, Number(item?.price || 0)),
+    })),
+    itemsCount: Math.max(0, Math.floor(Number(rawEvent.itemsCount || items.reduce((sum, item) => sum + Math.max(1, Number(item?.quantity || item?.qty || 1)), 0)) || 0)),
+    itemsSummary: String(rawEvent.itemsSummary || summarizeShopCartItems(items)).slice(0, 500),
+    subtotal: Math.max(0, Number(rawEvent.subtotal || 0)),
+    payable: Math.max(0, Number(rawEvent.payable || 0)),
+    pointsUsed: Math.max(0, Number(rawEvent.pointsUsed || 0)),
+    paymentMethod: String(rawEvent.paymentMethod || "").slice(0, 30),
+    orderId: String(rawEvent.orderId || "").slice(0, 80),
+    errorMessage: String(rawEvent.errorMessage || rawEvent.message || "").slice(0, 300),
+    href: String(rawEvent.href || "").slice(0, 1000),
+    userAgent: String(rawEvent.userAgent || "").slice(0, 300),
+    createdAt: now.toLocaleString("zh-TW", { timeZone: "Asia/Taipei" }),
+    createdAtIso: now.toISOString(),
+    createdTs: now.getTime(),
+  };
+  const current = await safeGetKV(env, SHOP_CART_ACTIVITY_KEY, [], { preferWasabi: false });
+  const next = [event, ...(Array.isArray(current) ? current : [])].slice(0, SHOP_CART_ACTIVITY_LIMIT);
+  const write = safePutKV(env, SHOP_CART_ACTIVITY_KEY, next);
+  if (ctx) ctx.waitUntil(write.catch(error => console.error("[ShopCartActivity] write failed", error)));
+  else await write;
+  return event;
+}
+
 async function resolvePointUid(env, uid) {
   const rawUid = String(uid || "").trim();
   if (!rawUid) return "";
@@ -5375,6 +5434,65 @@ async function handleHuaxuLiffDebug(request, env) {
   return json({ ok: true });
 }
 
+async function handleHuaxuCartActivity(request, env, ctx) {
+  const payload = await request.json().catch(() => ({}));
+  const event = await appendShopCartActivity(env, ctx, {
+    ...payload,
+    userAgent: request.headers.get("user-agent") || payload.userAgent || "",
+    href: payload.href || request.headers.get("referer") || "",
+  });
+  return json({ ok: true, eventId: event.id });
+}
+
+async function buildShopCartActivityAdminData(env, payload = {}) {
+  const searchForUid = String(payload.search || "").trim();
+  const lineUid = String(payload.lineUserId || payload.uid || (/^(U[0-9a-f]{20,}|[0-9a-f]{20,})$/i.test(searchForUid) ? searchForUid : "")).trim();
+  const search = String(payload.search || "").trim().toLowerCase();
+  const status = String(payload.status || "ALL").trim().toUpperCase();
+  const limit = Math.min(500, Math.max(1, Number.parseInt(payload.limit || "200", 10) || 200));
+  const rows = await safeGetKV(env, SHOP_CART_ACTIVITY_KEY, [], { preferWasabi: false });
+  const logs = (Array.isArray(rows) ? rows : []).filter(row => {
+    if (!row) return false;
+    if (lineUid && ![row.lineUserId, row.memberUid, row.legacyMemberId].map(v => String(v || "")).includes(lineUid)) return false;
+    if (status !== "ALL" && String(row.status || row.eventType || "").toUpperCase() !== status) return false;
+    if (search) {
+      const haystack = [row.lineUserId, row.memberUid, row.legacyMemberId, row.displayName, row.itemsSummary, row.orderId, row.errorMessage, row.eventType, row.status]
+        .map(v => String(v || "").toLowerCase()).join(" ");
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  }).slice(0, limit);
+  let diagnostic = null;
+  if (lineUid) {
+    const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid, member: null }));
+    const orders = await safeGetKV(env, "ORDERS", [], { preferWasabi: false });
+    const ids = [lineUid, resolved?.memberUid, resolved?.member?.userId, resolved?.member?.lineUserId, resolved?.member?.linkedLineUid]
+      .map(v => String(v || "").trim()).filter(Boolean);
+    diagnostic = {
+      queryUid: lineUid,
+      memberUid: resolved?.memberUid || "",
+      member: resolved?.member ? {
+        userId: resolved.member.userId || "",
+        lineUserId: resolved.member.lineUserId || resolved.member.linkedLineUid || "",
+        name: resolved.member.name || resolved.member.displayName || "",
+        phone: resolved.member.phone || resolved.member.mobile || "",
+      } : null,
+      orders: (Array.isArray(orders) ? orders : []).filter(order => {
+        const orderIds = [order?.userId, order?.memberUid, order?.memberId, order?.pointsMemberUid, order?.lineProfile?.userId]
+          .map(v => String(v || "").trim()).filter(Boolean);
+        return orderIds.some(id => ids.includes(id));
+      }).slice(0, 20).map(order => ({
+        orderId: order.orderId,
+        createdAt: order.createdAt || order.createdAtIso || "",
+        productName: order.productName || order.courseName || "",
+        amount: order.amount,
+        status: order.status,
+        paymentMethod: order.paymentMethod,
+      })),
+    };
+  }
+  return { logs, count: logs.length, diagnostic };
+}
 async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   const url = new URL(request.url);
   if (url.pathname === "/api/huaxu/config" && request.method === "GET") return json(await getHuaxuShopConfig(env));
@@ -5384,6 +5502,7 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/member" && request.method === "PUT") return handleHuaxuUpdateMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/checkin" && request.method === "POST") return handleHuaxuMemberCheckin(request, env, ctx);
   if (url.pathname === "/api/huaxu/liff-debug" && request.method === "POST") return handleHuaxuLiffDebug(request, env);
+  if (url.pathname === "/api/huaxu/cart-activity" && request.method === "POST") return handleHuaxuCartActivity(request, env, ctx);
   if (url.pathname === "/api/huaxu/orders/remittance" && request.method === "POST") return handleHuaxuReportRemittance(request, env, ctx);
   if (url.pathname === "/api/huaxu/orders/cancel" && request.method === "POST") return handleHuaxuCancelOrder(request, env, ctx, apiHandler);
   if (url.pathname === "/api/huaxu/orders" && request.method === "POST") return handleHuaxuCreateOrder(request, env, ctx, apiHandler);
@@ -5572,6 +5691,47 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         });
       } catch (error) {}
     }
+    function cartActivityItems(){
+      return cart.map(item => {
+        const p = products.find(product => product.id === item.id) || {};
+        return { id: item.id, name: p.name || item.id, quantity: item.quantity || 1, price: Number(p.price || 0) };
+      });
+    }
+    function cartActivityPayload(eventType, extra){
+      let totals = { subtotal: 0, payable: 0, used: 0 };
+      try { totals = cartTotals(); } catch (error) {}
+      return Object.assign({
+        eventType,
+        status: eventType,
+        stage: eventType,
+        lineUserId: lineProfile.userId || "",
+        displayName: lineProfile.displayName || "",
+        pictureUrl: lineProfile.pictureUrl || "",
+        memberUid: memberData && memberData.memberUid ? memberData.memberUid : "",
+        items: cartActivityItems(),
+        itemsCount: cart.reduce((sum, item) => sum + Math.max(1, Number(item.quantity || 1)), 0),
+        subtotal: totals.subtotal || 0,
+        payable: totals.payable || 0,
+        pointsUsed: totals.used || pointDeduction || 0,
+        paymentMethod,
+        href: location.href,
+        userAgent: navigator.userAgent || ""
+      }, extra || {});
+    }
+    function logCartActivity(eventType, extra){
+      try {
+        const payload = cartActivityPayload(eventType, extra);
+        const body = JSON.stringify(payload);
+        if (navigator.sendBeacon && ["cart_abandoned","cart_close"].includes(eventType)) {
+          const blob = new Blob([body], { type: "application/json" });
+          navigator.sendBeacon("/api/huaxu/cart-activity", blob);
+          return Promise.resolve();
+        }
+        return fetch("/api/huaxu/cart-activity", { method:"POST", headers:{ "content-type":"application/json" }, body, keepalive: true }).catch(() => {});
+      } catch (error) {
+        return Promise.resolve();
+      }
+    }
     async function initLineIdentity(forceLogin){
       if (!window.liff) {
         await logShopLiff("no_sdk", "LIFF SDK not available");
@@ -5679,7 +5839,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     function addToCart(id){
       const found = cart.find(item => item.id === id);
       if (found) found.quantity += 1; else cart.push({ id, quantity: 1 });
-      saveCart(); toast("已加入購物車");
+      saveCart(); logCartActivity("cart_add", { productId: id }); toast("已加入購物車");
     }
     function saveCart(){ localStorage.setItem("huaxu_cart", JSON.stringify(cart)); clampPointDeduction(); renderCart(); }
     function setPaymentMethod(method){
@@ -5815,7 +5975,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       document.getElementById("cartItems").innerHTML = rows || '<div class="empty">購物車目前是空的</div>';
       renderOrderSummary();
     }
-    function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); }
+    function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); logCartActivity("cart_remove", { productId: id }); }
     function buildClientOrderKey(customer){
       const cartKey = cart.map(item => String(item.id || "") + ":" + Number(item.quantity || 1)).sort().join("|");
       return [lineProfile.userId || "guest", paymentMethod, pointDeduction, customer.shippingCarrier, customer.shippingStoreInfo, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
@@ -5950,25 +6110,30 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       setField("address", customer.address);
       entryContext = restoreEntryContext();
       setCheckoutBusy(true);
+      await logCartActivity("checkout_start", { status: "active" });
       let keepBusy = false;
       try {
         const clientOrderKey = buildClientOrderKey(customer);
         const currentCart = cart.map(item => ({ id: item.id, quantity: item.quantity }));
         const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, pointsUsed: totals.used, shippingCarrier: customer.shippingCarrier, sameAsRegistered, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
         if (!res.ok) {
+          await logCartActivity("checkout_error", { status: "failed", errorMessage: res.message || "訂單送出失敗" });
           toast(res.message || "訂單送出失敗");
           return;
         }
         if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
+          await logCartActivity("payment_redirect", { status: "redirecting", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
           keepBusy = true;
           location.href = res.payment.redirectUrl;
           return;
         }
         if (res.payment && res.payment.GatewayUrl) {
+          await logCartActivity("payment_redirect", { status: "redirecting", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
           keepBusy = true;
           submitPaymentForm(res.payment);
           return;
         }
+        await logCartActivity("order_created", { status: "submitted", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
         cart = []; pointDeduction = 0; localStorage.setItem("huaxu_points_used", "0"); saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
         if (res.order && Number(res.order.amount || 0) <= 0 && Number(res.order.pointsUsed || 0) > 0) {
           alert("訂單已成立：" + res.order.orderId + "\\n已使用點數折抵：" + money(res.order.pointsUsed) + " 點\\n本筆不需付款。");
@@ -5989,6 +6154,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           openMember();
         }
       } catch (error) {
+        await logCartActivity("checkout_error", { status: "failed", errorMessage: error && error.message ? error.message : "訂單送出失敗" });
         toast("訂單送出失敗，請稍後再試");
       } finally {
         if (!keepBusy) setCheckoutBusy(false);
@@ -6012,7 +6178,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       form.submit();
     }
     function toggleDrawer(open){ document.getElementById("drawer").classList.toggle("open", open); }
-    function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); }
+    function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); if (open) logCartActivity("cart_open", { status: "active" }); else if (cart.length) logCartActivity("cart_close", { status: "abandoned" }); }
+    window.addEventListener("pagehide", () => { if (cart && cart.length) logCartActivity("cart_abandoned", { status: "abandoned" }); });
     function restoreEntryContext(){
       let current = new URL(location.href);
       const state = current.searchParams.get("liff.state");
@@ -7256,6 +7423,10 @@ export default {
           await safePutProducts(env, nextWpProducts);
           ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(e => console.error("[Products] SYS_LAST_UPDATE 寫入失敗", e)));
           result.data = { success: true, count: nextWpProducts.length, imported: importedProducts, errors: importErrors };
+          break;
+
+        case "ADMIN_GET_CART_ACTIVITY":
+          result.data = await buildShopCartActivityAdminData(env, payload || {});
           break;
 
         // ==============================================

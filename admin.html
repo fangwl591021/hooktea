@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -89,6 +89,7 @@
                             <div @click="switchView('products')" class="nav-item" :class="{'nav-active': view === 'products'}"><i class="fas fa-store w-6 text-center"></i>商城商品</div>
                             <div v-if="false" @click="switchView('consultation')" class="nav-item" :class="{'nav-active': view === 'consultation' || view === 'sys_config'}"><i class="fas fa-calendar-check w-6 text-center"></i>預約設定</div>
                             <div v-if="canViewFinance" @click="switchView('orders')" class="nav-item" :class="{'nav-active': view === 'orders' || view === 'order_edit'}"><i class="fas fa-receipt w-6 text-center"></i>訂單維護</div>
+                            <div v-if="canViewFinance" @click="switchView('cart_activity')" class="nav-item" :class="{'nav-active': view === 'cart_activity'}"><i class="fas fa-shopping-cart w-6 text-center"></i>購物車紀錄</div>
                             <div v-if="false" @click="switchView('booking_report')" class="nav-item" :class="{'nav-active': view === 'booking_report'}"><i class="fas fa-clipboard-list w-6 text-center"></i>預約報表</div>
                             <div v-if="canViewFinance" @click="switchView('points_ledger')" class="nav-item" :class="{'nav-active': view === 'points_ledger'}"><i class="fas fa-coins w-6 text-center"></i>點數總表</div>
                             <div v-if="canViewFinance" @click="switchView('payment_logs')" class="nav-item" :class="{'nav-active': view === 'payment_logs'}"><i class="fas fa-credit-card w-6 text-center"></i>刷卡紀錄</div>
@@ -365,6 +366,48 @@
                     </div>
                 </div>
 
+                <div v-if="canViewFinance && view === 'cart_activity'" class="animate-fade-in">
+                    <div class="p-6 bg-white border-b border-slate-100">
+                        <div class="flex items-center justify-between gap-3 mb-4">
+                            <div>
+                                <h2 class="text-xl font-black text-slate-800"><i class="fas fa-shopping-cart text-emerald-500 mr-2"></i>購物車紀錄</h2>
+                                <p class="text-sm text-slate-500 font-bold mt-1">追蹤會員進入購物車、結帳開始、失敗、付款跳轉與放棄紀錄。</p>
+                            </div>
+                            <button @click="loadCartActivity" class="btn-outline" :disabled="isLoadingCartActivity"><i class="fas fa-sync-alt mr-2" :class="{'fa-spin': isLoadingCartActivity}"></i>重新整理</button>
+                        </div>
+                        <div class="grid grid-cols-3 gap-3">
+                            <div class="relative col-span-2"><i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i><input type="text" v-model="cartActivitySearch" @keyup.enter="loadCartActivity" placeholder="搜尋姓名、LINE UID、舊站編號、商品、單號、錯誤訊息" class="w-full border border-slate-200 rounded px-9 py-2 text-sm font-bold outline-none focus:border-[#06C755]"></div>
+                            <select v-model="cartActivityStatus" @change="loadCartActivity" class="btn-outline bg-white font-bold text-slate-700">
+                                <option value="ALL">全部狀態</option>
+                                <option value="ACTIVE">進行中</option>
+                                <option value="ABANDONED">放棄/關閉</option>
+                                <option value="FAILED">送出失敗</option>
+                                <option value="SUBMITTED">已成立訂單</option>
+                                <option value="REDIRECTING">付款跳轉</option>
+                            </select>
+                        </div>
+                        <div v-if="cartActivityDiagnostic" class="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm">
+                            <div class="font-black text-blue-900">UID 診斷：{{ cartActivityDiagnostic.queryUid }}</div>
+                            <div class="text-blue-800 mt-1">會員：{{ cartActivityDiagnostic.member?.name || '未找到 CRM 會員' }} / 會員編號：{{ cartActivityDiagnostic.memberUid || '-' }} / 相關訂單：{{ cartActivityDiagnostic.orders?.length || 0 }} 筆</div>
+                        </div>
+                    </div>
+                    <div class="admin-table-container !mt-0 !mx-0 !border-x-0 !border-t-0 shadow-none">
+                        <table class="admin-table">
+                            <thead><tr><th>時間</th><th>會員</th><th>狀態</th><th>商品 / 金額</th><th>錯誤 / 單號</th><th>裝置</th></tr></thead>
+                            <tbody>
+                                <tr v-for="row in cartActivityLogs" :key="row.id">
+                                    <td><div class="font-mono text-[12px] text-slate-500">{{ row.createdAt || row.createdAtIso }}</div><div class="text-[11px] text-slate-400">{{ row.eventType }}</div></td>
+                                    <td><div class="font-black text-slate-800">{{ row.displayName || '-' }}</div><div class="font-mono text-[11px] text-slate-500 mt-1">LINE: {{ row.lineUserId || '-' }}</div><div class="font-mono text-[11px] text-slate-400">會員: {{ row.memberUid || '-' }}</div></td>
+                                    <td><span class="status-badge" :class="cartActivityStatusClass(row)">{{ cartActivityStatusText(row) }}</span></td>
+                                    <td><div class="font-bold text-slate-700 max-w-[360px] leading-relaxed">{{ cartActivitySummaryText(row) }}</div><div class="text-[12px] text-slate-500 mt-1">小計 ${{ formatPrice(row.subtotal) }} / 實付 ${{ formatPrice(row.payable) }} / 折 {{ formatPrice(row.pointsUsed) }} 點</div></td>
+                                    <td><div class="font-mono text-[12px] text-blue-600">{{ row.orderId || '-' }}</div><div class="text-[12px] text-red-600 font-bold max-w-[300px] mt-1">{{ row.errorMessage || '-' }}</div></td>
+                                    <td><div class="text-[11px] text-slate-400 max-w-[260px] break-words">{{ row.userAgent || '-' }}</div></td>
+                                </tr>
+                                <tr v-if="!cartActivityLogs.length"><td colspan="6" class="text-center py-20 text-slate-300 font-bold">目前沒有購物車紀錄</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
                 <div v-if="canViewFinance && view === 'booking_report'" class="animate-fade-in">
                     <div class="p-6 bg-white border-b border-slate-100">
                         <div class="grid grid-cols-5 gap-4 mb-5">
@@ -1837,6 +1880,11 @@
                     const orderTypeFilter = ref('ALL');
                     const productSearchQuery = ref('');
                     const orderSearch = ref('');
+                    const cartActivitySearch = ref('');
+                    const cartActivityStatus = ref('ALL');
+                    const cartActivityLogs = ref([]);
+                    const cartActivityDiagnostic = ref(null);
+                    const isLoadingCartActivity = ref(false);
                     const pointsLedgerSearch = ref('');
                     const auditLogSearch = ref('');
                     const flexRuleSearch = ref('');
@@ -1992,7 +2040,7 @@
                         if (!user || user.isDeleted === true || !user.userId) return false;
                         return user.isTeacher === true || user.role === 'teacher' || user.crmRole === 'teacher' || String(user.memberTier || '').includes('導師');
                     }));
-                    const adminOnlyViews = new Set(['dashboard', 'orders', 'booking_report', 'points_ledger', 'payment_logs', 'audit_logs', 'paid_broadcast', 'richmenu', 'settings', 'flex_rules', 'shop_modules']);
+                    const adminOnlyViews = new Set(['dashboard', 'orders', 'cart_activity', 'booking_report', 'points_ledger', 'payment_logs', 'audit_logs', 'paid_broadcast', 'richmenu', 'settings', 'flex_rules', 'shop_modules']);
                     const hiddenFeatureViews = new Set(['courses', 'course_edit', 'course_enrollments', 'booking_report', 'consultation', 'sys_config']);
                     const systemAllowedViews = new Set(['richmenu']);
                     const systemAllowedActions = new Set(['ADMIN_GET_DATA', 'ADMIN_GET_SLOTS', 'ADMIN_MANAGE_POINTS', 'GET_USER_POINTS', 'UPLOAD_IMAGE', 'DEPLOY_RICH_MENU', 'LOG_ADMIN_EVENT']);
@@ -2126,6 +2174,37 @@
                         }
                     };
 
+                    const loadCartActivity = async () => {
+                        if (!isAdminRole.value) return;
+                        isLoadingCartActivity.value = true;
+                        try {
+                            const data = await callApi('ADMIN_GET_CART_ACTIVITY', { search: cartActivitySearch.value, status: cartActivityStatus.value, limit: 300 }, true);
+                            cartActivityLogs.value = data?.logs || [];
+                            cartActivityDiagnostic.value = data?.diagnostic || null;
+                        } catch (error) {
+                            alert(`購物車紀錄讀取失敗：${error.message}`);
+                        } finally {
+                            isLoadingCartActivity.value = false;
+                        }
+                    };
+                    const cartActivityStatusText = (row) => {
+                        const value = String(row?.status || row?.eventType || '').toUpperCase();
+                        const map = { ACTIVE: '進行中', CART_OPEN: '進入購物車', CART_ADD: '加入商品', CART_REMOVE: '移除商品', ABANDONED: '放棄/關閉', CART_CLOSE: '關閉購物車', CART_ABANDONED: '離開頁面', FAILED: '送出失敗', CHECKOUT_ERROR: '送出失敗', SUBMITTED: '已成立訂單', ORDER_CREATED: '已成立訂單', REDIRECTING: '付款跳轉', PAYMENT_REDIRECT: '付款跳轉', CHECKOUT_START: '開始結帳' };
+                        return map[value] || value || '-';
+                    };
+                    const cartActivityStatusClass = (row) => {
+                        const value = String(row?.status || row?.eventType || '').toUpperCase();
+                        if (['FAILED','CHECKOUT_ERROR'].includes(value)) return 'bg-red-100 text-red-700';
+                        if (['ABANDONED','CART_CLOSE','CART_ABANDONED'].includes(value)) return 'bg-amber-100 text-amber-700';
+                        if (['SUBMITTED','ORDER_CREATED'].includes(value)) return 'bg-green-100 text-green-700';
+                        if (['REDIRECTING','PAYMENT_REDIRECT'].includes(value)) return 'bg-blue-100 text-blue-700';
+                        return 'bg-slate-100 text-slate-700';
+                    };
+                    const cartActivitySummaryText = (row) => {
+                        if (row?.itemsSummary) return row.itemsSummary;
+                        const items = Array.isArray(row?.cartItems) ? row.cartItems : [];
+                        return items.map(item => `${item.name || item.id || '商品'} x ${item.quantity || 1}`).join('、') || '-';
+                    };
                     const autoLineLogin = async () => {
                         try {
                             const data = await callApi('GET_SETTINGS', {}, true);
@@ -2266,6 +2345,7 @@
                         if (viewName === 'points_ledger' && !pointsLedger.value.length) loadPointsLedger();
                         if (viewName === 'audit_logs' && !auditLogs.value.length) loadAuditLogs();
                         if (viewName === 'paid_broadcast' && !broadcastTags.value.length && !broadcastCampaigns.value.length) loadBroadcastData();
+                        if (viewName === 'cart_activity') loadCartActivity();
                         if (isAuthenticated.value) {
                             callApi('LOG_ADMIN_EVENT', { view: viewName, message: `切換後台頁面：${viewName}` }, true).catch(() => {});
                         }
@@ -2276,7 +2356,7 @@
                         if (view.value === 'paid_broadcast') return '付費推播';
                         const map = {
                             dashboard: '營運統計中心', calendar: '日曆檢視', members: '客戶 CRM', courses: '課程 / 預約服務', products: '商城商品',
-                            consultation: '預約設定', orders: '訂單維護', booking_report: '預約報表', points_ledger: '點數進出總表', payment_logs: '刷卡紀錄', richmenu: '圖文選單管理', settings: '系統參數設定', flex_rules: '機器人與專區卡片', shop_modules: '商城模組', wasabi_migration: 'Wasabi 遷移檢查'
+                            consultation: '預約設定', orders: '訂單維護', cart_activity: '購物車紀錄', booking_report: '預約報表', points_ledger: '點數進出總表', payment_logs: '刷卡紀錄', richmenu: '圖文選單管理', settings: '系統參數設定', flex_rules: '機器人與專區卡片', shop_modules: '商城模組', wasabi_migration: 'Wasabi 遷移檢查'
                         };
                         return map[view.value] || '管理站';
                     });
@@ -4552,14 +4632,14 @@
 
                     return {
                         isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
-                        users, teachers, courses, products, orders, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
+                        users, teachers, courses, products, orders, cartActivityLogs, cartActivityDiagnostic, isLoadingCartActivity, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
                         adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
                         memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
-                        orderSearch, orderTypeFilter, filteredOrders, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
+                        orderSearch, orderTypeFilter, filteredOrders, cartActivitySearch, cartActivityStatus, loadCartActivity, cartActivityStatusText, cartActivityStatusClass, cartActivitySummaryText, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
                         flexRuleSearch, flexRuleTypeFilter, flexRuleStatusFilter, flexRulePage, flexRuleTotalPages, filteredFlexRules, pagedFlexRules,
                         newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastSelectedModuleIds, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, audienceTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount, broadcastModuleOptions, broadcastMessageCount,
                         approveForm, teacherApprovalCandidates, wpImportForm, isImageUploading, editingCourse, editingProduct,
