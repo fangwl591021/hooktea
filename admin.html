@@ -104,6 +104,7 @@
                             <div v-if="isAdminRole" @click="switchView('paid_broadcast')" class="nav-item" :class="{'nav-active': view === 'paid_broadcast'}"><i class="fas fa-bullhorn w-6 text-center"></i>付費推播</div>
                             <div v-if="isAdminRole" @click="switchView('flex_rules')" class="nav-item" :class="{'nav-active': view === 'flex_rules'}"><i class="fas fa-robot w-6 text-center"></i>機器人與專區卡片</div>
                             <div v-if="isAdminRole" @click="switchView('shop_modules')" class="nav-item" :class="{'nav-active': view === 'shop_modules'}"><i class="fas fa-th-large w-6 text-center"></i>商城模組</div>
+                            <div v-if="canViewFinance" @click="switchView('cart_activity')" class="nav-item" :class="{'nav-active': view === 'cart_activity'}"><i class="fas fa-shopping-cart w-6 text-center"></i>購物車紀錄</div>
                             <div v-if="isAdminRole" @click="switchView('wasabi_migration')" class="nav-item" :class="{'nav-active': view === 'wasabi_migration'}"><i class="fas fa-database w-6 text-center"></i>Wasabi 遷移檢查</div>
                             <div v-if="isAdminRole" @click="switchView('audit_logs')" class="nav-item" :class="{'nav-active': view === 'audit_logs'}"><i class="fas fa-clipboard-check w-6 text-center"></i>操作紀錄</div>
                             <div v-if="isAdminRole" @click="switchView('settings')" class="nav-item" :class="{'nav-active': view === 'settings'}"><i class="fas fa-cog w-6 text-center"></i>系統設定</div>
