@@ -830,7 +830,7 @@ function summarizeShopCartItems(items = []) {
 async function appendShopCartActivity(env, ctx, rawEvent = {}) {
   const now = new Date();
   const lineUid = String(rawEvent.lineUserId || rawEvent.userId || rawEvent.lineProfile?.userId || "").trim();
-  const resolved = lineUid ? await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid, member: null })) : { memberUid: "", member: null };
+  const resolved = lineUid ? await findHuaxuMemberByLineUidFast(env, lineUid).catch(() => ({ memberUid: lineUid, member: null })) : { memberUid: "", member: null };
   const member = resolved?.member || {};
   const items = Array.isArray(rawEvent.items) ? rawEvent.items : [];
   const event = {
@@ -4712,6 +4712,67 @@ async function findHuaxuMemberByLineUid(env, lineUid) {
   return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data, binding };
 }
 
+async function findHuaxuMemberByLineUidFast(env, lineUid) {
+  const uid = String(lineUid || "").trim();
+  if (!uid) return { memberUid: "", member: null, binding: null };
+  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false }).catch(() => null);
+  const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
+  for (const candidateId of candidateIds) {
+    const member = await safeGetKV(env, `USER_${candidateId}`, null).catch(() => null);
+    if (member && (member.userId || candidateId)) return { memberUid: member.userId || candidateId, member, binding };
+  }
+  return { memberUid: uid, member: null, binding };
+}
+
+async function scanHuaxuLegacyMemberByLineUid(env, lineUid) {
+  const uid = String(lineUid || "").trim();
+  if (!uid) return { memberUid: "", member: null };
+  const users = await listKVRecords(env, "USER_");
+  const found = users.find(row => {
+    const keyUid = String(row?.key || "").replace(/^USER_/, "").trim();
+    if (!keyUid || keyUid === uid) return false;
+    const member = row?.data || {};
+    return [member.lineUserId, member.linkedLineUid, member.lineUid]
+      .map(value => String(value || "").trim())
+      .includes(uid);
+  });
+  if (!found?.data) return { memberUid: "", member: null };
+  return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data };
+}
+async function repairHuaxuLineBindingInBackground(env, ctx, lineUid, profile = null) {
+  const uid = String(lineUid || "").trim();
+  if (!uid || !uid.startsWith("U")) return null;
+  let resolved = await findHuaxuMemberByLineUidFast(env, uid).catch(() => ({ memberUid: uid, member: null }));
+  const legacyResolved = await scanHuaxuLegacyMemberByLineUid(env, uid).catch(() => ({ memberUid: "", member: null }));
+  if (legacyResolved?.member) resolved = { ...legacyResolved, binding: resolved?.binding || null };
+  if (resolved?.member) {
+    const memberUid = String(resolved.memberUid || resolved.member.userId || uid).trim();
+    const member = {
+      ...resolved.member,
+      lineUserId: resolved.member.lineUserId || uid,
+      linkedLineUid: resolved.member.linkedLineUid || uid,
+      lineDisplayName: resolved.member.lineDisplayName || profile?.name || profile?.displayName || "",
+      pictureUrl: resolved.member.pictureUrl || profile?.picture || profile?.pictureUrl || "",
+      updatedAt: new Date().toISOString(),
+    };
+    if (memberUid && memberUid !== uid) {
+      await putUserKV(env, ctx, memberUid, member).catch(() => {});
+      await safePutKV(env, `LINE_BIND_${uid}`, {
+        lineUserId: uid,
+        legacyUserId: memberUid,
+        name: member.name || member.displayName || member.lineDisplayName || profile?.name || profile?.displayName || "",
+        source: resolved.binding?.source || "background_line_uid_scan",
+        linkedAt: resolved.binding?.linkedAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }, { expirationTtl: 86400 * 3650 }).catch(() => {});
+      await mergeLineMonitorThread(env, uid, memberUid).catch(() => {});
+      await mergePointDataForLineBind(env, ctx, memberUid, uid).catch(() => {});
+    }
+    return { memberUid, member };
+  }
+  await bindUniqueLegacyMemberByLineName(env, ctx, uid, profile || {}).catch(() => null);
+  return null;
+}
 async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source = "line_interaction") {
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return null;
@@ -4747,7 +4808,7 @@ async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source
   return member;
 }
 
-async function handleHuaxuMemberProfile(request, env) {
+async function handleHuaxuMemberProfile(request, env, ctx = null) {
   const payload = await request.json().catch(() => ({}));
   let verifiedProfile = null;
   try {
@@ -4757,14 +4818,19 @@ async function handleHuaxuMemberProfile(request, env) {
   }
   const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
   if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  let resolved = await findHuaxuMemberByLineUid(env, lineUid);
-  if (!resolved.member) {
-    const autoBound = await bindUniqueLegacyMemberByLineName(env, null, lineUid, verifiedProfile || payload.lineProfile || {}).catch(() => null);
-    if (autoBound?.bound) resolved = { memberUid: autoBound.userId, member: autoBound.member, binding: { legacyUserId: autoBound.userId }, source: autoBound.source };
+  let resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
+  if (ctx) ctx.waitUntil(repairHuaxuLineBindingInBackground(env, ctx, lineUid, verifiedProfile || payload.lineProfile || {}).catch(error => console.error("Huaxu LINE binding repair failed", error)));
+  let memberUid = resolved.memberUid || lineUid;
+  let member = resolved.member || null;
+  if (!member) {
+    const lineOnlyMember = await ensureFastLineCheckinMember(env, ctx, lineUid, verifiedProfile || payload.lineProfile || {}, "huaxu_shop_liff_fast").catch(() => null);
+    if (lineOnlyMember?.member) {
+      member = lineOnlyMember.member;
+      memberUid = lineOnlyMember.memberUid || lineOnlyMember.member.userId || lineUid;
+      resolved = { ...resolved, memberUid, member };
+    }
   }
-  const memberUid = resolved.memberUid || lineUid;
-  const member = resolved.member || null;
-  if (member && memberUid !== lineUid) await mergePointDataForLineBind(env, null, memberUid, lineUid).catch(() => null);
+  if (member && memberUid !== lineUid) await mergePointDataForLineBind(env, ctx, memberUid, lineUid).catch(() => null);
   const registeredShipping = registeredShippingFromMember(member || {});
   const pointLookup = await getPointDataForUid(env, memberUid, { balance: 0, logs: [] });
   const pointUid = pointLookup.pointUid;
@@ -4812,12 +4878,29 @@ async function handleHuaxuMemberProfile(request, env) {
     pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
   };
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const sharedPoints = await queryWetwPointList(settings, safeMember, env).catch(error => ({
-    ok: false,
-    reason: "wp_query_exception",
-    message: error?.message || String(error),
-  }));
-  const displayPoints = resolveDisplayPointData(localPoints, sharedPoints, 10);
+  const localBalance = Math.max(0, Math.floor(Number(localPoints?.balance || 0)));
+  let sharedPoints = { ok: false, reason: localBalance > 0 ? "wp_query_deferred" : "wp_query_pending" };
+  let displayPoints = resolveDisplayPointData(localPoints, sharedPoints, 10);
+  const refreshMotherPoints = async () => {
+    const freshSharedPoints = await queryWetwPointList(settings, safeMember, env).catch(error => ({
+      ok: false,
+      reason: "wp_query_exception",
+      message: error?.message || String(error),
+    }));
+    if (freshSharedPoints?.ok) {
+      const motherBalance = Math.max(0, Math.floor(Number(freshSharedPoints.balance || 0)));
+      if (motherBalance > localBalance && pointUid) {
+        await alignLocalPointsToMotherBalance(env, null, pointUid, motherBalance, "母站餘額較高，同步前台會員點數").catch(error => console.error("Huaxu member point align failed", error));
+      }
+    }
+    return freshSharedPoints;
+  };
+  if (localBalance > 0 && ctx) {
+    ctx.waitUntil(refreshMotherPoints());
+  } else {
+    sharedPoints = await refreshMotherPoints();
+    displayPoints = resolveDisplayPointData(localPoints, sharedPoints, 10);
+  }
   return json({
     ok: true,
     bound: !!member,
@@ -4865,7 +4948,7 @@ async function handleHuaxuReportRemittance(request, env, ctx) {
   if (remittance.length !== 5) return json({ ok: false, message: "\u8acb\u8f38\u5165\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc" }, 400);
   const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
   if (!lineUid) return json({ ok: false, message: "\u5c1a\u672a\u53d6\u5f97 LINE \u8eab\u5206" }, 401);
-  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
   const memberUid = resolved.memberUid || lineUid;
   const orders = await safeGetKV(env, "ORDERS", []);
   const list = Array.isArray(orders) ? orders : [];
@@ -4905,7 +4988,7 @@ async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
   }
   const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
   if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
   const memberUid = resolved.memberUid || lineUid;
   const profile = payload.profile || payload.member || {};
   const phone = normalizeMemberPhone(profile.phone || profile.mobile || profile.tel || profile.memberPhone || "");
@@ -5096,7 +5179,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   };
   if (sameAsRegistered) {
     if (!lineProfile.userId) return json({ ok: false, message: "尚未取得 LINE 身分，無法套用註冊人資料" }, 401);
-    const resolvedMember = await findHuaxuMemberByLineUid(env, lineProfile.userId);
+    const resolvedMember = await findHuaxuMemberByLineUidFast(env, lineProfile.userId);
     if (!resolvedMember.member) return json({ ok: false, message: "尚未找到註冊會員資料，請改用手填收件資料" }, 400);
     const registeredCustomer = registeredShippingFromMember(resolvedMember.member);
     customer = {
@@ -5138,10 +5221,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   }
   if (pointsUsed > 0) {
     if (!lineProfile.userId) return json({ ok: false, message: "請先完成 LINE 登入，才能使用點數折抵" }, 401);
-    let resolvedForPoints = await findHuaxuMemberByLineUid(env, lineProfile.userId);
-    if (!resolvedForPoints.member) {
-      const autoBound = await bindUniqueLegacyMemberByLineName(env, ctx, lineProfile.userId, lineProfile).catch(() => null);
-      if (autoBound?.bound) resolvedForPoints = { memberUid: autoBound.userId, member: autoBound.member, binding: { legacyUserId: autoBound.userId }, source: autoBound.source };
+    let resolvedForPoints = await findHuaxuMemberByLineUidFast(env, lineProfile.userId);
+    if (!resolvedForPoints.member && ctx) {
+      ctx.waitUntil(repairHuaxuLineBindingInBackground(env, ctx, lineProfile.userId, lineProfile).catch(error => console.error("Huaxu checkout binding repair failed", error)));
     }
     memberUidForPoints = resolvedForPoints.memberUid || lineProfile.userId;
     if (resolvedForPoints.member && memberUidForPoints !== lineProfile.userId) await mergePointDataForLineBind(env, ctx, memberUidForPoints, lineProfile.userId).catch(() => null);
@@ -5364,7 +5446,7 @@ async function handleHuaxuCancelOrder(request, env, ctx, apiHandler) {
   if (!orderId) return json({ ok: false, message: "缺少訂單編號" }, 400);
   const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
   if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  const resolved = await findHuaxuMemberByLineUid(env, lineUid);
+  const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
   const memberUid = resolved.memberUid || lineUid;
   const orders = await safeGetKV(env, "ORDERS", []);
   const list = Array.isArray(orders) ? orders : [];
@@ -5464,7 +5546,7 @@ async function buildShopCartActivityAdminData(env, payload = {}) {
   }).slice(0, limit);
   let diagnostic = null;
   if (lineUid) {
-    const resolved = await findHuaxuMemberByLineUid(env, lineUid).catch(() => ({ memberUid: lineUid, member: null }));
+    const resolved = await findHuaxuMemberByLineUidFast(env, lineUid).catch(() => ({ memberUid: lineUid, member: null }));
     const orders = await safeGetKV(env, "ORDERS", [], { preferWasabi: false });
     const ids = [lineUid, resolved?.memberUid, resolved?.member?.userId, resolved?.member?.lineUserId, resolved?.member?.linkedLineUid]
       .map(v => String(v || "").trim()).filter(Boolean);
@@ -5498,7 +5580,7 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/api/huaxu/config" && request.method === "GET") return json(await getHuaxuShopConfig(env));
   if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
   if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
-  if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env);
+  if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/member" && request.method === "PUT") return handleHuaxuUpdateMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/checkin" && request.method === "POST") return handleHuaxuMemberCheckin(request, env, ctx);
   if (url.pathname === "/api/huaxu/liff-debug" && request.method === "POST") return handleHuaxuLiffDebug(request, env);
