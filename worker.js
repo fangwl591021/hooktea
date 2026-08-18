@@ -2371,6 +2371,15 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   };
 
   queueDiagnostic({ status: "matched_entered" });
+  const immediateDelivery = await deliverKeywordRewardReplyFast(
+    env,
+    lineUid,
+    replyToken,
+    textLineMessage(`簽到成功，已贈送 ${points} K點。點數餘額同步中。`),
+    1800
+  );
+  queueDiagnostic({ status: "immediate_reply_sent", delivery: immediateDelivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+
   const existing = await getKvJsonOnly(env, recordKey, null);
   if (existing?.status === "claimed") {
     const balanceText = Number.isFinite(Number(existing.balanceAfter)) ? ` 點數餘額 ${Number(existing.balanceAfter)} K點。` : "";
