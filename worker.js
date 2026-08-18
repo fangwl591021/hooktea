@@ -2291,6 +2291,18 @@ async function deliverKeywordRewardReply(env, lineUid, replyToken, message) {
   return pushLineMessage(env, lineUid, message);
 }
 
+async function deliverKeywordRewardReplyFast(env, lineUid, replyToken, message, timeoutMs = 2200) {
+  let timeoutId = null;
+  const timeout = new Promise(resolve => {
+    timeoutId = setTimeout(() => resolve({ ok: false, timeout: true, timeoutMs }), timeoutMs);
+  });
+  const delivery = deliverKeywordRewardReply(env, lineUid, replyToken, message)
+    .catch(error => ({ ok: false, error: error?.message || String(error) }));
+  const result = await Promise.race([delivery, timeout]);
+  if (timeoutId) clearTimeout(timeoutId);
+  return result;
+}
+
 async function getKvJsonOnly(env, key, defaultVal = null) {
   try {
     const raw = await Promise.race([
@@ -2352,12 +2364,18 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     updatedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 14 }).catch(() => {});
 
-  await writeDiagnostic({ status: "matched_entered" });
+  const queueDiagnostic = data => {
+    const task = writeDiagnostic(data);
+    if (ctx?.waitUntil) ctx.waitUntil(task);
+    return task;
+  };
+
+  queueDiagnostic({ status: "matched_entered" });
   const existing = await getKvJsonOnly(env, recordKey, null);
   if (existing?.status === "claimed") {
     const balanceText = Number.isFinite(Number(existing.balanceAfter)) ? ` 點數餘額 ${Number(existing.balanceAfter)} K點。` : "";
-    const delivery = await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`今天已領取虎克茶簽到贈點，不能重複領取。${balanceText}`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({ status: "duplicate", balanceAfter: existing.balanceAfter ?? null, delivery });
+    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`今天已領取虎克茶簽到贈點，不能重複領取。${balanceText}`));
+    queueDiagnostic({ status: "duplicate", balanceAfter: existing.balanceAfter ?? null, delivery });
     return true;
   }
 
@@ -2390,8 +2408,8 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     claimedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 45 });
 
-  const delivery = await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} K點。點數餘額 ${balanceAfter} K點。`)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-  await writeDiagnostic({ status: "reply_sent", memberUid, pointUid, balanceAfter, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+  const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} K點。點數餘額 ${balanceAfter} K點。`));
+  queueDiagnostic({ status: "reply_sent", memberUid, pointUid, balanceAfter, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
 
   const syncTask = (async () => {
     try {
