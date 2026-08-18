@@ -2375,7 +2375,7 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
 
   const existing = await getKvJsonOnly(env, recordKey, null);
   if (existing?.status === "claimed") {
-    const balanceText = Number.isFinite(Number(existing.balanceAfter)) ? ` 點數餘額 ${Number(existing.balanceAfter)} K點。` : "";
+    const balanceText = Number.isFinite(Number(existing.balanceAfter)) ? ` 點數餘額 ${Number(existing.balanceAfter)} 點數。` : "";
     const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`今天已領取虎克茶簽到贈點，不能重複領取。${balanceText}`));
     queueDiagnostic({ status: "duplicate", balanceAfter: existing.balanceAfter ?? null, delivery });
     return true;
@@ -2463,7 +2463,7 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     claimedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 45 }).catch(() => {});
 
-  const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} K點。點數餘額 ${balanceAfter} K點。`));
+  const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} 點數。點數餘額 ${balanceAfter} 點數。`));
   queueDiagnostic({ status: "success_synced_before_reply", memberUid, pointUid, balanceAfter, motherBalanceAfter, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
   return true;
 }
