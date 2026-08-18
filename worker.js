@@ -2382,33 +2382,30 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     return true;
   }
   if (existing?.status === "pending") {
-    const fallbackBalance = Number(existing.balanceAfter);
-    const directMember = { userId: existing.pointUid || existing.memberUid || lineUid, lineUserId: lineUid, linkedLineUid: lineUid };
-    const sharedPending = await Promise.race([
-      queryWetwPointList(settings, directMember, env),
-      timeout(2500, { ok: false, timeout: true, message: "母站餘額查詢逾時" }),
-    ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
-    const recoveredBalance = sharedPending?.ok && Number.isFinite(Number(sharedPending.balance))
-      ? Math.max(0, Math.floor(Number(sharedPending.balance)))
-      : (Number.isFinite(fallbackBalance) ? Math.max(0, Math.floor(fallbackBalance)) : null);
-    if (recoveredBalance !== null) {
-      await putKvJsonOnly(env, recordKey, {
-        ...existing,
-        lineUserId: lineUid,
-        keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-        points,
-        rewardDate,
-        status: "claimed",
-        balanceAfter: recoveredBalance,
-        recoveredFromPending: true,
-        recoveredAt: new Date().toISOString(),
-      }, { expirationTtl: 86400 * 45 }).catch(() => {});
-      const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`今天已領取虎克茶簽到贈點，不能重複領取。 點數餘額 ${recoveredBalance} 點數。`));
-      queueDiagnostic({ status: "pending_recovered_as_duplicate", balanceAfter: recoveredBalance, sharedPending, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-      return true;
-    }
-    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("今天的簽到正在確認中，請稍後再查詢點數。"));
-    queueDiagnostic({ status: "pending_unresolved", sharedPending, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("今天已領取虎克茶簽到贈點，不能重複領取。點數餘額請至會員專區查詢。"), 1800);
+    queueDiagnostic({ status: "pending_duplicate_replied", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    const recoverTask = (async () => {
+      try {
+        const directMember = { userId: existing.pointUid || existing.memberUid || lineUid, lineUserId: lineUid, linkedLineUid: lineUid };
+        const sharedPending = await queryWetwPointList(settings, directMember, env).catch(error => ({ ok: false, error: error?.message || String(error) }));
+        const recoveredBalance = sharedPending?.ok && Number.isFinite(Number(sharedPending.balance)) ? Math.max(0, Math.floor(Number(sharedPending.balance))) : null;
+        await putKvJsonOnly(env, recordKey, {
+          ...existing,
+          lineUserId: lineUid,
+          keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+          points,
+          rewardDate,
+          status: "claimed",
+          balanceAfter: recoveredBalance,
+          recoveredFromPending: true,
+          recoveredAt: new Date().toISOString(),
+        }, { expirationTtl: 86400 * 45 }).catch(() => {});
+        await writeDiagnostic({ status: "pending_background_recovered", balanceAfter: recoveredBalance, sharedPending });
+      } catch (error) {
+        await writeDiagnostic({ status: "pending_background_error", error: error?.message || String(error) });
+      }
+    })();
+    if (ctx?.waitUntil) ctx.waitUntil(recoverTask);
     return true;
   }
 
