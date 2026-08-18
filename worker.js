@@ -2371,14 +2371,7 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   };
 
   queueDiagnostic({ status: "matched_entered" });
-  const immediateDelivery = await deliverKeywordRewardReplyFast(
-    env,
-    lineUid,
-    replyToken,
-    textLineMessage(`簽到成功，已贈送 ${points} K點。點數餘額同步中。`),
-    1800
-  );
-  queueDiagnostic({ status: "immediate_reply_sent", delivery: immediateDelivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+  const timeout = (ms, value) => new Promise(resolve => setTimeout(() => resolve(value), ms));
 
   const existing = await getKvJsonOnly(env, recordKey, null);
   if (existing?.status === "claimed") {
@@ -2388,23 +2381,75 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     return true;
   }
 
-  const timeout = (ms, value) => new Promise(resolve => setTimeout(() => resolve(value), ms));
   const matched = await Promise.race([
     ensureFastLineCheckinMember(env, ctx, lineUid, null, "hooktea_daily_signin_fast"),
-    timeout(900, { memberUid: lineUid, member: null, timedOut: true }),
+    timeout(1200, { memberUid: lineUid, member: null, timedOut: true }),
   ]).catch(() => ({ memberUid: lineUid, member: null }));
   const memberUid = String(matched?.memberUid || lineUid).trim();
   const member = matched?.member || null;
   const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
   const pointLookup = await Promise.race([
     getPointDataForUid(env, memberUid, { balance: 0, logs: [] }),
-    timeout(900, { pointUid: memberUid, data: { balance: 0, logs: [] }, timedOut: true }),
+    timeout(1200, { pointUid: memberUid, data: { balance: 0, logs: [] }, timedOut: true }),
   ]).catch(() => ({ pointUid: memberUid, data: { balance: 0, logs: [] } }));
   const pointUid = String(pointLookup?.pointUid || memberUid || lineUid).trim();
   const pointData = pointLookup?.data || { balance: 0, logs: [] };
-  const balanceAfter = Math.max(0, Math.floor(Number(pointData.balance || 0))) + points;
   const rewardReason = `虎克茶簽到贈點 ${rewardDate}`;
+  const memberForWp = { ...(member || {}), userId: pointUid, lineUserId: getMemberLineUid(member || {}, lineUid) || lineUid, name: memberName };
 
+  const wpRes = await Promise.race([
+    insertWetwPoint(settings, pointUid, points, rewardReason, env, memberForWp),
+    timeout(4700, { ok: false, timeout: true, message: "母站點數 API 逾時" }),
+  ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
+  let motherBalanceAfter = extractWetwInsertBalance(wpRes);
+  if (motherBalanceAfter === null && wpRes?.ok) {
+    const sharedAfter = await Promise.race([
+      queryWetwPointList(settings, memberForWp, env),
+      timeout(3000, { ok: false, timeout: true, message: "母站餘額查詢逾時" }),
+    ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
+    if (sharedAfter?.ok && Number.isFinite(Number(sharedAfter.balance))) motherBalanceAfter = Number(sharedAfter.balance);
+  }
+
+  if (motherBalanceAfter === null) {
+    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("簽到失敗，母站點數暫時無法同步，請稍後再試。"));
+    queueDiagnostic({ status: "mother_sync_failed", memberUid, pointUid, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
+    return true;
+  }
+
+  const balanceAfter = Math.max(0, Math.floor(Number(motherBalanceAfter || 0)));
+  const createdTs = Date.now();
+  const createdAt = new Date(createdTs).toLocaleString();
+  const logEntry = {
+    logId: crypto.randomUUID ? crypto.randomUUID() : String(createdTs),
+    amount: points,
+    reason: rewardReason,
+    createdAt,
+    type: "EARN",
+    source: "hooktea_daily_signin",
+  };
+  const nextPoints = {
+    ...pointData,
+    balance: balanceAfter,
+    logs: [logEntry, ...(Array.isArray(pointData.logs) ? pointData.logs : [])].slice(0, 50),
+  };
+
+  await putPointKV(env, ctx || null, pointUid, nextPoints).catch(() => {});
+  await appendPointsLedger(env, {
+    logId: logEntry.logId,
+    uid: pointUid,
+    sourceUid: memberUid,
+    type: "EARN",
+    amount: points,
+    points,
+    reason: rewardReason,
+    balanceAfter,
+    createdAt,
+    createdTs,
+    source: "hooktea_daily_signin",
+    operatorUid: "",
+    operatorName: "",
+    targetName: memberName,
+  }).catch(() => {});
   await putKvJsonOnly(env, recordKey, {
     lineUserId: lineUid,
     memberUid,
@@ -2414,71 +2459,12 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     rewardDate,
     status: "claimed",
     balanceAfter,
+    wpSync: wpRes,
     claimedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 45 });
+  }, { expirationTtl: 86400 * 45 }).catch(() => {});
 
   const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} K點。點數餘額 ${balanceAfter} K點。`));
-  queueDiagnostic({ status: "reply_sent", memberUid, pointUid, balanceAfter, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-
-  const syncTask = (async () => {
-    try {
-      const createdTs = Date.now();
-      const createdAt = new Date(createdTs).toLocaleString();
-      const nextPoints = {
-        ...pointData,
-        balance: balanceAfter,
-        logs: [{
-          logId: crypto.randomUUID ? crypto.randomUUID() : String(createdTs),
-          amount: points,
-          reason: rewardReason,
-          createdAt,
-          type: "EARN",
-          source: "hooktea_daily_signin",
-        }, ...(Array.isArray(pointData.logs) ? pointData.logs : [])].slice(0, 50),
-      };
-      await putPointKV(env, ctx || null, pointUid, nextPoints);
-      await appendPointsLedger(env, {
-        logId: nextPoints.logs[0].logId,
-        uid: pointUid,
-        sourceUid: memberUid,
-        type: "EARN",
-        amount: points,
-        points,
-        reason: rewardReason,
-        balanceAfter,
-        createdAt,
-        createdTs,
-        source: "hooktea_daily_signin",
-        operatorUid: "",
-        operatorName: "",
-        targetName: memberName,
-      }).catch(() => {});
-      const memberForWp = { ...(member || {}), userId: pointUid, lineUserId: getMemberLineUid(member || {}, lineUid) || lineUid, name: memberName };
-      const wpRes = await insertWetwPoint(settings, pointUid, points, rewardReason, env, memberForWp).catch(error => ({ ok: false, error: error?.message || String(error) }));
-      const motherBalanceAfter = extractWetwInsertBalance(wpRes);
-      const localAlign = motherBalanceAfter !== null
-        ? await alignLocalPointsToMotherBalance(env, null, pointUid, motherBalanceAfter, "母站虎克茶簽到贈點後同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }))
-        : null;
-      await putKvJsonOnly(env, recordKey, {
-        lineUserId: lineUid,
-        memberUid,
-        pointUid,
-        keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-        points,
-        rewardDate,
-        status: "claimed",
-        balanceAfter: motherBalanceAfter !== null ? motherBalanceAfter : balanceAfter,
-        wpSync: wpRes,
-        localAlign,
-        claimedAt: new Date().toISOString(),
-      }, { expirationTtl: 86400 * 45 });
-      await writeDiagnostic({ status: "background_synced", memberUid, pointUid, balanceAfter, motherBalanceAfter, wpSync: wpRes, localAlign });
-    } catch (error) {
-      await writeDiagnostic({ status: "background_error", memberUid, pointUid, balanceAfter, error: error?.message || String(error) });
-    }
-  })();
-  if (ctx) ctx.waitUntil(syncTask);
-  else syncTask.catch(() => {});
+  queueDiagnostic({ status: "success_synced_before_reply", memberUid, pointUid, balanceAfter, motherBalanceAfter, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
   return true;
 }
 async function handleShopKeywordReward(env, ctx, event) {
@@ -3278,6 +3264,7 @@ async function insertWetwPoint(settings, uid, amount, reason, env = {}, member =
       child_shop_renew: 0,
       shop_remark: "HookTea Cloudflare Worker",
     }),
+    signal: AbortSignal.timeout(4500),
   });
   const text = await res.text();
   let data = null;
