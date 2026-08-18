@@ -2315,7 +2315,9 @@ async function putKvJsonOnly(env, key, value, options = undefined) {
 const HOOKTEA_DAILY_SIGNIN_KEYWORD = "虎克茶簽到贈點";
 
 function isHookTeaDailySigninKeyword(text) {
-  return normalizeShopKeywordRewardText(text) === normalizeShopKeywordRewardText(HOOKTEA_DAILY_SIGNIN_KEYWORD);
+  const normalized = normalizeShopKeywordRewardText(text);
+  const expected = normalizeShopKeywordRewardText(HOOKTEA_DAILY_SIGNIN_KEYWORD);
+  return normalized === expected || (/虎克茶/.test(normalized) && /簽到/.test(normalized) && /贈點/.test(normalized));
 }
 
 function hookTeaDailySigninPoints(settings = {}, env = {}) {
@@ -2327,10 +2329,20 @@ function hookTeaDailySigninPoints(settings = {}, env = {}) {
 async function handleHookTeaDailySigninReward(env, ctx, event) {
   if (event?.type !== "message" || event?.message?.type !== "text") return false;
   const text = String(event.message.text || "").trim();
+  const normalizedText = normalizeShopKeywordRewardText(text);
   if (!isHookTeaDailySigninKeyword(text)) return false;
   const lineUid = String(event?.source?.userId || "").trim();
   const replyToken = String(event?.replyToken || "").trim();
   if (!lineUid) return false;
+  await safePutKV(env, "HOOKTEA_DAILY_SIGNIN_LAST", {
+    lineUserId: lineUid,
+    keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+    text,
+    normalizedText,
+    status: "matched_entered",
+    replyTokenPresent: !!replyToken,
+    receivedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 14 }).catch(() => {});
 
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const rewardDate = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
@@ -4610,6 +4622,23 @@ async function handleHookTeaMonitorApi(request, env) {
   const auth = await requireHookTeaMonitorAdmin(request, env);
   if (!auth.ok) return auth.response;
   const url = new URL(request.url);
+  if (url.pathname === "/api/line-oa/keyword-diagnostics" && request.method === "GET") {
+    const keys = [
+      "LINE_WEBHOOK_LAST",
+      "LINE_WEBHOOK_TEXT_LAST",
+      "HOOKTEA_DAILY_SIGNIN_LAST",
+      "KEYWORD_REWARD_LAST",
+      "WEBHOOK_FORWARD_DECISION_LAST",
+      "WEBHOOK_FORWARD_ATTEMPT_LAST",
+      "WEBHOOK_FORWARD_LAST",
+      "LINE_WEBHOOK_REJECT_LAST",
+    ];
+    const values = {};
+    await Promise.all(keys.map(async key => {
+      values[key] = await safeGetKV(env, key, null).catch(error => ({ error: error?.message || String(error) }));
+    }));
+    return json({ success: true, generatedAt: new Date().toISOString(), diagnostics: values });
+  }
   if (url.pathname === "/api/line-oa/audience" && request.method === "GET") {
     let rows = await buildHookTeaMonitorRows(env);
     if (url.searchParams.get("lineOnly") === "1") rows = filterLineMonitorRows(rows);
@@ -9046,6 +9075,14 @@ export default {
           }, { expirationTtl: 86400 * 7 }).catch(() => {});
           handled = await handleHookTeaDailySigninReward(env, ctx, event).catch(e => {
             console.error("HookTea Daily Signin Reward Error:", e);
+            safePutKV(env, "HOOKTEA_DAILY_SIGNIN_LAST", {
+              lineUserId: uid,
+              keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+              text,
+              status: "handler_exception",
+              error: e?.message || String(e),
+              updatedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 * 14 }).catch(() => {});
             return false;
           });
           if (!handled) handled = await handleShopKeywordReward(env, ctx, event, this.updatePoints.bind(this)).catch(e => {
