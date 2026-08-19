@@ -9044,7 +9044,7 @@ export default {
         })).slice(0, 10),
       }, { expirationTtl: 86400 });
 
-      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text));
+      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text));
       if (motherKeywordEvents.length) {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
