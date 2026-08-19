@@ -4873,6 +4873,8 @@ async function getHuaxuShopProducts(env) {
       subtitle: String(p.subtitle || p.description || p.storeName || "HookTea 商城精選"),
       price: Math.max(0, Number(p.price || 0)),
       originalPrice: Math.max(0, Number(p.originalPrice || p.original_price || p.price || 0)),
+      pointsPrice: Math.max(0, Number(p.pointsPrice ?? p.pointPrice ?? p.maxPoints ?? p.max_points ?? p.price ?? 0)),
+      pointPrice: Math.max(0, Number(p.pointsPrice ?? p.pointPrice ?? p.maxPoints ?? p.max_points ?? p.price ?? 0)),
       badge: String(p.badge || p.code || p.storeName || "HookTea"),
       image: String(p.image || "https://images.unsplash.com/photo-1583947215259-38e31be8751f?auto=format&fit=crop&w=900&q=80"),
       code: String(p.code || ""),
