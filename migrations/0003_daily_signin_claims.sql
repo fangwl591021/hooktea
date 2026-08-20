@@ -1,3 +1,4 @@
+-- Atomic daily sign-in claims prevent duplicate rewards from LINE webhook redelivery.
 CREATE TABLE IF NOT EXISTS daily_signin_claims (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   line_user_id TEXT NOT NULL,
