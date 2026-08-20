@@ -9432,7 +9432,11 @@ export default {
             messageType: event?.message?.type || "",
             receivedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 * 7 }).catch(() => {});
-          handled = await handleHookTeaDailySigninReward(env, ctx, event).catch(e => {
+          handled = await maybeReplyHookTeaCheckinTemplate(env, event, text).catch(e => {
+            console.error("HookTea Checkin Template Reply Error:", e);
+            return false;
+          });
+          if (!handled) handled = await handleHookTeaDailySigninReward(env, ctx, event).catch(e => {
             console.error("HookTea Daily Signin Reward Error:", e);
             safePutKV(env, "HOOKTEA_DAILY_SIGNIN_LAST", {
               lineUserId: uid,
@@ -9446,10 +9450,6 @@ export default {
           });
           if (!handled) handled = await handleShopKeywordReward(env, ctx, event, this.updatePoints.bind(this)).catch(e => {
             console.error("Keyword Reward Error:", e);
-            return false;
-          });
-          if (!handled) handled = await maybeReplyHookTeaCheckinTemplate(env, event, text).catch(e => {
-            console.error("HookTea Checkin Template Reply Error:", e);
             return false;
           });
           if (!handled && isReferralInviteKeyword(text)) {
