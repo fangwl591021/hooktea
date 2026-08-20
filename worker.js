@@ -9312,8 +9312,10 @@ export default {
       }, { expirationTtl: 86400 }).catch(() => {});
       return new Response("HookTea LINE webhook endpoint", { status: 200 });
     }
-    const rawText = await request.text();
     const signature = request.headers.get("x-line-signature") || "";
+    await env.ACTION_DATA?.put("LINE_WEBHOOK_ENTRY_DIRECT_LAST", JSON.stringify({ receivedAt: new Date().toISOString(), method: request.method, url: request.url, signaturePresent: !!signature }), { expirationTtl: 86400 }).catch(() => {});
+    const rawText = await request.text();
+    await env.ACTION_DATA?.put("LINE_WEBHOOK_RAW_DIRECT_LAST", JSON.stringify({ receivedAt: new Date().toISOString(), rawLength: rawText.length, rawHead: rawText.slice(0, 500) }), { expirationTtl: 86400 }).catch(() => {});
     try {
       let parsedPayload = {};
       if (rawText) parsedPayload = JSON.parse(rawText);
