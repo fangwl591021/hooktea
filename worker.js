@@ -3854,8 +3854,8 @@ async function handleHookTeaCheckinTemplateRoute(request, env, corsHeaders) {
 }
 
 function getHookTeaCheckinTemplateTriggerState(template, text) {
-  const normalizedText = normalizeTextKeyword(text);
-  const normalizedKeywords = (template?.keywords || []).map(keyword => normalizeTextKeyword(keyword)).filter(Boolean);
+  const normalizedText = normalizeShopKeywordRewardText(text);
+  const normalizedKeywords = (template?.keywords || []).map(keyword => normalizeShopKeywordRewardText(keyword)).filter(Boolean);
   const active = !!template && template.active !== false;
   const hasImage = Array.isArray(template?.pages) && template.pages.some(page => String(page?.imageUrl || "").trim());
   const matchedKeyword = active && hasImage ? normalizedKeywords.find(keyword => keyword === normalizedText || (keyword.length >= 2 && normalizedText.includes(keyword))) || "" : "";
