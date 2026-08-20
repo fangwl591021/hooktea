@@ -3851,6 +3851,7 @@ async function handleHookTeaCheckinTemplateRoute(request, env, corsHeaders) {
 
 function isHookTeaCheckinTemplateTrigger(template, text) {
   if (!template || template.active === false) return false;
+  if (!Array.isArray(template.pages) || !template.pages.some(page => String(page?.imageUrl || "").trim())) return false;
   const normalizedText = normalizeTextKeyword(text);
   return (template.keywords || []).some(keyword => normalizeTextKeyword(keyword) === normalizedText);
 }
