@@ -3783,7 +3783,16 @@ function normalizeHookTeaCheckinTemplate(input) {
 }
 
 async function getHookTeaCheckinTemplate(env) {
-  const data = await safeGetKV(env, HOOKTEA_CHECKIN_TEMPLATE_KEY, null, { preferWasabi: false }).catch(() => null);
+  let data = null;
+  try {
+    const raw = await Promise.race([
+      env.ACTION_DATA?.get(HOOKTEA_CHECKIN_TEMPLATE_KEY),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("checkin_template_kv_timeout")), 1200)),
+    ]);
+    data = raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    console.error("[HookTeaCheckinTemplate] KV read failed", error);
+  }
   return normalizeHookTeaCheckinTemplate(data || DEFAULT_HOOKTEA_CHECKIN_TEMPLATE);
 }
 
