@@ -2409,13 +2409,29 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     return true;
   }
 
+  await putKvJsonOnly(env, recordKey, {
+    lineUserId: lineUid,
+    keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+    text,
+    normalizedText,
+    points,
+    rewardDate,
+    status: "pending",
+    acceptedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 45 }).catch(() => {});
+  queueDiagnostic({ status: "pending_record_created" });
+
+  const memberTask = ensureFastLineCheckinMember(env, ctx, lineUid, null, "hooktea_daily_signin_fast")
+    .catch(error => ({ memberUid: lineUid, member: null, error: error?.message || String(error) }));
+  if (ctx?.waitUntil) ctx.waitUntil(memberTask);
   const matched = await Promise.race([
-    ensureFastLineCheckinMember(env, ctx, lineUid, null, "hooktea_daily_signin_fast"),
-    timeout(1200, { memberUid: lineUid, member: null, timedOut: true }),
+    memberTask,
+    timeout(650, { memberUid: lineUid, member: null, timedOut: true }),
   ]).catch(() => ({ memberUid: lineUid, member: null }));
   const memberUid = String(matched?.memberUid || lineUid).trim();
   const member = matched?.member || null;
   const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
+  queueDiagnostic({ status: "member_resolution_finished", memberUid, memberResolved: !!member, timedOut: !!matched?.timedOut, error: matched?.error || "" });
   const pointLookup = await Promise.race([
     getPointDataForUid(env, memberUid, { balance: 0, logs: [] }),
     timeout(1200, { pointUid: memberUid, data: { balance: 0, logs: [] }, timedOut: true }),
@@ -2446,20 +2462,32 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   queueDiagnostic({ status: "point_record_checked", memberUid, pointUid, localBalance: Number(pointData.balance || 0), hasPriorLog: false });
   const memberForWp = { ...(member || {}), userId: pointUid, lineUserId: getMemberLineUid(member || {}, lineUid) || lineUid, name: memberName };
 
+  queueDiagnostic({ status: "mother_sync_started", memberUid, pointUid });
   const wpRes = await Promise.race([
     insertWetwPoint(settings, pointUid, points, rewardReason, env, memberForWp),
-    timeout(4700, { ok: false, timeout: true, message: "母站點數 API 逾時" }),
+    timeout(2500, { ok: false, timeout: true, message: "母站點數 API 逾時" }),
   ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
   let motherBalanceAfter = extractWetwInsertBalance(wpRes);
   if (motherBalanceAfter === null && wpRes?.ok) {
     const sharedAfter = await Promise.race([
       queryWetwPointList(settings, memberForWp, env),
-      timeout(3000, { ok: false, timeout: true, message: "母站餘額查詢逾時" }),
+      timeout(1500, { ok: false, timeout: true, message: "母站餘額查詢逾時" }),
     ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
     if (sharedAfter?.ok && Number.isFinite(Number(sharedAfter.balance))) motherBalanceAfter = Number(sharedAfter.balance);
   }
 
   if (motherBalanceAfter === null) {
+    await putKvJsonOnly(env, recordKey, {
+      lineUserId: lineUid,
+      memberUid,
+      pointUid,
+      keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+      points,
+      rewardDate,
+      status: "failed",
+      wpSync: wpRes,
+      failedAt: new Date().toISOString(),
+    }, { expirationTtl: 86400 * 7 }).catch(() => {});
     const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("簽到失敗，母站點數暫時無法同步，請稍後再試。"));
     queueDiagnostic({ status: "mother_sync_failed", memberUid, pointUid, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
     return true;
