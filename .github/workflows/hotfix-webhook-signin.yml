@@ -144,39 +144,39 @@ jobs:
             const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} 點數。點數餘額 ${balanceAfter} 點數。`));'''
           replace_once(old, new, 'mark signin claimed')
 
-          old = '''    const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
-              if (!existingCheckin?.localMirrored) {
-                await api.updatePoints(env, null, memberUid, 1, "會員打卡 CRM fallback", { source: "mother_keyword_crm_fallback" });
-                addedPoints = 1;
-                await safePutKV(env, checkinKey, {
-                  lineUserId: lineUid,
-                  memberUid,
-                  pointUid,
-                  keyword,
-                  localMirrored: true,
-                  mirroredAt: new Date().toISOString(),
-                  source: "mother_keyword_crm_fallback",
-                }, { expirationTtl: 86400 * 45 }).catch(() => {});
-              }
-              const points = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0 }));
-              messages = [textLineMessage(addedPoints
-                ? `👍 恭喜您完成會員打卡\n⭐ 打卡贈點 1 點\n💰 目前點數：${Number(points.balance || 0)} 點`
-                : `今天已完成會員打卡。\n💰 目前點數：${Number(points.balance || 0)} 點`
-              )];'''
-          new = '''    const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
-              const points = pointLookup.data || { balance: 0, logs: [] };
+          old = r'''    const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
+            if (!existingCheckin?.localMirrored) {
+              await api.updatePoints(env, null, memberUid, 1, "會員打卡 CRM fallback", { source: "mother_keyword_crm_fallback" });
+              addedPoints = 1;
               await safePutKV(env, checkinKey, {
-                ...(existingCheckin || {}),
                 lineUserId: lineUid,
                 memberUid,
                 pointUid,
                 keyword,
-                localMirrored: false,
-                fallbackNoLocalMutation: true,
-                checkedAt: new Date().toISOString(),
-                source: "mother_keyword_crm_fallback_no_local_points",
+                localMirrored: true,
+                mirroredAt: new Date().toISOString(),
+                source: "mother_keyword_crm_fallback",
               }, { expirationTtl: 86400 * 45 }).catch(() => {});
-              messages = [textLineMessage(`會員打卡目前由母站處理；本地 fallback 不會自行補點，以避免重複贈點。\n💰 本地顯示點數：${Number(points.balance || 0)} 點`)];'''
+            }
+            const points = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0 }));
+            messages = [textLineMessage(addedPoints
+              ? `👍 恭喜您完成會員打卡\n⭐ 打卡贈點 1 點\n💰 目前點數：${Number(points.balance || 0)} 點`
+              : `今天已完成會員打卡。\n💰 目前點數：${Number(points.balance || 0)} 點`
+            )];'''
+          new = r'''    const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
+            const points = pointLookup.data || { balance: 0, logs: [] };
+            await safePutKV(env, checkinKey, {
+              ...(existingCheckin || {}),
+              lineUserId: lineUid,
+              memberUid,
+              pointUid,
+              keyword,
+              localMirrored: false,
+              fallbackNoLocalMutation: true,
+              checkedAt: new Date().toISOString(),
+              source: "mother_keyword_crm_fallback_no_local_points",
+            }, { expirationTtl: 86400 * 45 }).catch(() => {});
+            messages = [textLineMessage(`會員打卡目前由母站處理；本地 fallback 不會自行補點，以避免重複贈點。\n💰 本地顯示點數：${Number(points.balance || 0)} 點`)];'''
           replace_once(old, new, 'disable local mother fallback points')
 
           replace_once(
