@@ -3659,6 +3659,7 @@ const STATIC_HTML_FILES = new Set([
   "videos.html",
   "line-oa-monitor.html",
   "mylittlesys_free.html",
+  "checkin-template.html",
 ]);
 
 async function serveStaticHtml(request, env, corsHeaders) {
@@ -3704,6 +3705,223 @@ async function serveStaticHtml(request, env, corsHeaders) {
   return new Response(request.method === "HEAD" ? null : object.body, { headers });
 }
 
+
+const HOOKTEA_CHECKIN_TEMPLATE_KEY = "HOOKTEA_CHECKIN_TEMPLATE";
+const HOOKTEA_CHECKIN_TEMPLATE_ROTATION_KEY = "HOOKTEA_CHECKIN_TEMPLATE_ROTATION";
+const HOOKTEA_CHECKIN_TEMPLATE_ASSET_PREFIX = "checkin-template/";
+const HOOKTEA_CHECKIN_TEMPLATE_MAX_BYTES = 1024 * 1024;
+const DEFAULT_HOOKTEA_CHECKIN_TEMPLATE = {
+  active: true,
+  keywords: ["簽到贈點活動"],
+  altText: "簽到贈點活動",
+  rotationMode: "random",
+  pages: [
+    {
+      imageUrl: "",
+      imageLink: "",
+      bubbleSize: "nano",
+      imageAspectRatio: "400:600",
+      imageAspectMode: "cover",
+      buttons: [{ label: "簽到贈點", type: "message", text: "會員打卡", uri: "", color: "" }],
+    },
+  ],
+};
+
+function normalizeHookTeaFlexBubbleSize(value) {
+  const allowed = new Set(["nano", "micro", "deca", "hecto", "kilo", "mega", "giga"]);
+  const size = String(value || "nano").trim().toLowerCase();
+  return allowed.has(size) ? size : "nano";
+}
+
+function normalizeHookTeaFlexAspectRatio(value) {
+  const ratio = String(value || "400:600").trim().replace(/[：]/g, ":");
+  return /^\d{1,4}:\d{1,4}$/.test(ratio) ? ratio : "400:600";
+}
+
+function normalizeHookTeaFlexAspectMode(value) {
+  const mode = String(value || "cover").trim().toLowerCase();
+  return mode === "fit" ? "fit" : "cover";
+}
+
+function normalizeHookTeaCheckinTemplate(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const keywords = Array.isArray(source.keywords)
+    ? source.keywords
+    : String(source.keyword || source.trigger || "簽到贈點活動").split(/[\n,，]/);
+  const pages = Array.isArray(source.pages) ? source.pages : [];
+  const normalizedPages = pages.map(page => {
+    const raw = page && typeof page === "object" ? page : {};
+    const buttons = Array.isArray(raw.buttons) ? raw.buttons : [];
+    return {
+      imageUrl: String(raw.imageUrl || raw.image_url || raw.url || "").trim(),
+      imageLink: String(raw.imageLink || raw.image_link || "").trim(),
+      bubbleSize: normalizeHookTeaFlexBubbleSize(raw.bubbleSize || raw.bubble_size || raw.size),
+      imageAspectRatio: normalizeHookTeaFlexAspectRatio(raw.imageAspectRatio || raw.image_aspect_ratio || raw.aspectRatio || raw.aspect_ratio),
+      imageAspectMode: normalizeHookTeaFlexAspectMode(raw.imageAspectMode || raw.image_aspect_mode || raw.aspectMode || raw.aspect_mode),
+      buttons: buttons.map(button => {
+        const rawButton = button && typeof button === "object" ? button : {};
+        const type = String(rawButton.type || "message").trim().toLowerCase() === "uri" ? "uri" : "message";
+        const color = /^#[0-9a-f]{6}$/i.test(String(rawButton.color || "")) ? String(rawButton.color).toUpperCase() : "";
+        return {
+          label: String(rawButton.label || "按鈕").slice(0, 40),
+          type,
+          text: String(rawButton.text || rawButton.message || "").slice(0, 300),
+          uri: String(rawButton.uri || rawButton.url || "").trim(),
+          color,
+        };
+      }).filter(button => button.label && (button.type === "uri" ? button.uri : button.text)).slice(0, 4),
+    };
+  }).filter(page => page.imageUrl).slice(0, 12);
+  return {
+    active: source.active !== false,
+    keywords: Array.from(new Set(keywords.map(item => String(item || "").trim()).filter(Boolean))).slice(0, 12),
+    altText: String(source.altText || source.alt_text || "簽到贈點活動").slice(0, 400),
+    rotationMode: String(source.rotationMode || source.rotation_mode || "random").trim().toLowerCase() === "sequential" ? "sequential" : "random",
+    pages: normalizedPages.length ? normalizedPages : DEFAULT_HOOKTEA_CHECKIN_TEMPLATE.pages.map(page => ({ ...page, buttons: page.buttons.map(button => ({ ...button })) })),
+  };
+}
+
+async function getHookTeaCheckinTemplate(env) {
+  const data = await safeGetKV(env, HOOKTEA_CHECKIN_TEMPLATE_KEY, null, { preferWasabi: false }).catch(() => null);
+  return normalizeHookTeaCheckinTemplate(data || DEFAULT_HOOKTEA_CHECKIN_TEMPLATE);
+}
+
+async function saveHookTeaCheckinTemplate(env, input) {
+  const data = normalizeHookTeaCheckinTemplate(input);
+  await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_KEY, data, { preferWasabi: false });
+  return data;
+}
+
+function hookTeaPublicBaseUrl(env) {
+  return String(env.PUBLIC_BASE_URL || env.WORKER_URL || env.HOOKTEA_PUBLIC_URL || "https://hooktea.fangwl591021.workers.dev").replace(/\/+$/, "");
+}
+async function handleHookTeaCheckinTemplateUpload(request, env) {
+  if (!env["act-image"]) throw new Error("尚未綁定圖片儲存空間 act-image。");
+  const form = await request.formData();
+  const file = form.get("image");
+  if (!file || typeof file.arrayBuffer !== "function") throw new Error("請上傳圖片檔。");
+  const mimeType = String(file.type || "image/jpeg").toLowerCase();
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+  if (!allowed.has(mimeType)) throw new Error("圖片格式僅支援 JPG、PNG、WEBP、GIF。");
+  const buffer = await file.arrayBuffer();
+  if (buffer.byteLength > HOOKTEA_CHECKIN_TEMPLATE_MAX_BYTES) throw new Error("圖片檔案過大，請壓到 1MB 以內。");
+  const ext = mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : mimeType === "image/gif" ? "gif" : "jpg";
+  const id = `${Date.now().toString(36)}-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}.${ext}`;
+  await env["act-image"].put(`${HOOKTEA_CHECKIN_TEMPLATE_ASSET_PREFIX}${id}`, buffer, { httpMetadata: { contentType: mimeType } });
+  return { id, url: `${hookTeaPublicBaseUrl(env)}/assets/checkin-template/${encodeURIComponent(id)}`, mimeType, size: buffer.byteLength };
+}
+
+async function serveHookTeaCheckinTemplateAsset(env, pathname, corsHeaders) {
+  const id = decodeURIComponent(String(pathname || "").split("/").pop() || "");
+  if (!id || id.includes("..") || id.includes("/")) return new Response("Invalid image id", { status: 400, headers: corsHeaders });
+  const object = await env["act-image"]?.get(`${HOOKTEA_CHECKIN_TEMPLATE_ASSET_PREFIX}${id}`);
+  if (!object) return new Response("Image not found", { status: 404, headers: corsHeaders });
+  const headers = new Headers(corsHeaders);
+  object.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "public, max-age=31536000");
+  return new Response(object.body, { headers });
+}
+
+async function handleHookTeaCheckinTemplateRoute(request, env, corsHeaders) {
+  const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname.startsWith("/assets/checkin-template/")) return serveHookTeaCheckinTemplateAsset(env, url.pathname, corsHeaders);
+  if (url.pathname === "/api/checkin-template" && request.method === "GET") {
+    const auth = await requireHookTeaMonitorAdmin(request, env);
+    if (!auth.ok) return auth.response;
+    return json({ success: true, status: "success", data: await getHookTeaCheckinTemplate(env) });
+  }
+  if (url.pathname === "/api/checkin-template" && request.method === "POST") {
+    const auth = await requireHookTeaMonitorAdmin(request, env);
+    if (!auth.ok) return auth.response;
+    const body = await request.json().catch(() => ({}));
+    return json({ success: true, status: "success", data: await saveHookTeaCheckinTemplate(env, body) });
+  }
+  if (url.pathname === "/api/checkin-template/upload-image" && request.method === "POST") {
+    const auth = await requireHookTeaMonitorAdmin(request, env);
+    if (!auth.ok) return auth.response;
+    try {
+      return json({ success: true, status: "success", data: await handleHookTeaCheckinTemplateUpload(request, env) });
+    } catch (error) {
+      return json({ success: false, status: "error", message: error?.message || String(error) }, 400);
+    }
+  }
+  return null;
+}
+
+function isHookTeaCheckinTemplateTrigger(template, text) {
+  if (!template || template.active === false) return false;
+  const normalizedText = normalizeTextKeyword(text);
+  return (template.keywords || []).some(keyword => normalizeTextKeyword(keyword) === normalizedText);
+}
+
+async function rotateHookTeaCheckinTemplatePages(env, pages, rotationMode) {
+  const list = Array.isArray(pages) ? pages.slice(0, 12) : [];
+  if (list.length <= 1) return list;
+  if (String(rotationMode || "random") !== "sequential") return list.sort(() => Math.random() - 0.5);
+  const state = await safeGetKV(env, HOOKTEA_CHECKIN_TEMPLATE_ROTATION_KEY, { offset: 0 }, { preferWasabi: false }).catch(() => ({ offset: 0 }));
+  const offset = Math.max(0, Math.floor(Number(state.offset || 0) || 0)) % list.length;
+  await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_ROTATION_KEY, { offset: (offset + 1) % list.length, pageCount: list.length, updatedAt: new Date().toISOString() }, { preferWasabi: false }).catch(() => {});
+  return list.slice(offset).concat(list.slice(0, offset));
+}
+
+async function buildHookTeaCheckinTemplateFlex(env, template) {
+  const data = normalizeHookTeaCheckinTemplate(template);
+  const pages = await rotateHookTeaCheckinTemplatePages(env, data.pages, data.rotationMode);
+  return {
+    type: "flex",
+    altText: data.altText || "簽到贈點活動",
+    contents: { type: "carousel", contents: pages.map(buildHookTeaCheckinTemplateBubble) },
+  };
+}
+
+function buildHookTeaCheckinTemplateBubble(page) {
+  const bubble = {
+    type: "bubble",
+    size: normalizeHookTeaFlexBubbleSize(page.bubbleSize),
+    body: {
+      type: "box",
+      layout: "vertical",
+      contents: [{
+        type: "image",
+        url: page.imageUrl,
+        size: "full",
+        aspectMode: normalizeHookTeaFlexAspectMode(page.imageAspectMode),
+        aspectRatio: normalizeHookTeaFlexAspectRatio(page.imageAspectRatio),
+        gravity: "top",
+        ...(page.imageLink ? { action: { type: "uri", uri: page.imageLink } } : {}),
+      }],
+      paddingAll: "0px",
+    },
+  };
+  const buttons = (page.buttons || []).filter(button => button.label && (button.type === "uri" ? button.uri : button.text)).slice(0, 4);
+  if (buttons.length) {
+    bubble.footer = {
+      type: "box",
+      layout: "vertical",
+      spacing: "sm",
+      contents: buttons.map(button => ({
+        type: "button",
+        action: button.type === "uri" ? { type: "uri", label: button.label, uri: button.uri } : { type: "message", label: button.label, text: button.text },
+        height: "sm",
+        style: "primary",
+        ...(button.color ? { color: button.color } : {}),
+      })),
+    };
+  }
+  return bubble;
+}
+
+async function maybeReplyHookTeaCheckinTemplate(env, event, text) {
+  const uid = String(event?.source?.userId || "").trim();
+  const replyToken = String(event?.replyToken || "").trim();
+  if (!uid || !replyToken || !text) return false;
+  const template = await getHookTeaCheckinTemplate(env);
+  if (!isHookTeaCheckinTemplateTrigger(template, text)) return false;
+  const message = await buildHookTeaCheckinTemplateFlex(env, template);
+  const delivery = await deliverLineMessage(env, uid, replyToken, [message]).catch(error => ({ ok: false, error: error?.message || String(error) }));
+  await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_REPLY_LAST", { uid, text, delivery, repliedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+  return true;
+}
 function getLinePayConfig(env, settings = {}) {
   const mode = String(envValue(env, ["LINEPAY_ENV", "LINE_PAY_ENV", "Line Pay Env", "LinePay Env"]) || settings.linepay_env || "sandbox").toLowerCase();
   const channelId = String(envValue(env, ["LINEPAY_CHANNEL_ID", "LINE_PAY_CHANNEL_ID", "Line Pay Channel ID", "LinePay Channel ID"]) || settings.linepay_channel_id || "").trim();
@@ -7005,6 +7223,15 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/checkin-template") {
+      url.pathname = "/checkin-template.html";
+      const staticResponse = await serveStaticHtml(new Request(url.toString(), request), env, corsHeaders);
+      if (staticResponse) return staticResponse;
+    }
+    if (url.pathname === "/api/checkin-template" || url.pathname === "/api/checkin-template/upload-image" || url.pathname.startsWith("/assets/checkin-template/")) {
+      const templateResponse = await handleHookTeaCheckinTemplateRoute(request, env, corsHeaders);
+      if (templateResponse) return templateResponse;
+    }
     if (url.pathname === "/referral" && request.method === "GET") {
       return new Response(await renderReferralHtml(env, request.url), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
@@ -9155,6 +9382,10 @@ export default {
           });
           if (!handled) handled = await handleShopKeywordReward(env, ctx, event, this.updatePoints.bind(this)).catch(e => {
             console.error("Keyword Reward Error:", e);
+            return false;
+          });
+          if (!handled) handled = await maybeReplyHookTeaCheckinTemplate(env, event, text).catch(e => {
+            console.error("HookTea Checkin Template Reply Error:", e);
             return false;
           });
           if (!handled && isReferralInviteKeyword(text)) {
