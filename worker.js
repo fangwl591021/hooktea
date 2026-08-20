@@ -3927,7 +3927,14 @@ async function maybeReplyHookTeaCheckinTemplate(env, event, text) {
   const uid = String(event?.source?.userId || "").trim();
   const replyToken = String(event?.replyToken || "").trim();
   if (!uid || !replyToken || !text) return false;
-  const template = await getHookTeaCheckinTemplate(env);
+  await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_ENTRY_LAST", { uid, text, replyTokenPresent: !!replyToken, enteredAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+  let template;
+  try {
+    template = await getHookTeaCheckinTemplate(env);
+  } catch (error) {
+    await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", { uid, text, matched: false, stage: "load_template", error: error?.message || String(error), checkedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return false;
+  }
   const trigger = getHookTeaCheckinTemplateTriggerState(template, text);
   await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", {
     uid,
@@ -9339,7 +9346,8 @@ export default {
         })).slice(0, 10),
       }, { expirationTtl: 86400 });
 
-      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text));
+      const hookTeaCheckinTemplateForWebhook = await getHookTeaCheckinTemplate(env).catch(() => null);
+      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text) && !isHookTeaCheckinTemplateTrigger(hookTeaCheckinTemplateForWebhook, event.message.text));
       if (motherKeywordEvents.length) {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
