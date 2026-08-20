@@ -2432,34 +2432,10 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   const member = matched?.member || null;
   const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
   queueDiagnostic({ status: "member_resolution_finished", memberUid, memberResolved: !!member, timedOut: !!matched?.timedOut, error: matched?.error || "" });
-  const pointLookup = await Promise.race([
-    getPointDataForUid(env, memberUid, { balance: 0, logs: [] }),
-    timeout(1200, { pointUid: memberUid, data: { balance: 0, logs: [] }, timedOut: true }),
-  ]).catch(() => ({ pointUid: memberUid, data: { balance: 0, logs: [] } }));
-  const pointUid = String(pointLookup?.pointUid || memberUid || lineUid).trim();
-  const pointData = pointLookup?.data || { balance: 0, logs: [] };
-  const rewardReason = `虎克茶簽到贈點 ${rewardDate}`;
-  const priorLog = (Array.isArray(pointData.logs) ? pointData.logs : []).find(log => String(log?.reason || "") === rewardReason);
-  if (priorLog) {
-    const balanceAfterPrior = Math.max(0, Math.floor(Number(pointData.balance || existing?.balanceAfter || 0)));
-    await putKvJsonOnly(env, recordKey, {
-      lineUserId: lineUid,
-      memberUid,
-      pointUid,
-      keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-      points,
-      rewardDate,
-      status: "claimed",
-      balanceAfter: balanceAfterPrior,
-      recoveredFromPointLog: true,
-      claimedAt: priorLog.createdAt || new Date().toISOString(),
-      recoveredAt: new Date().toISOString(),
-    }, { expirationTtl: 86400 * 45 }).catch(() => {});
-    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`今天已領取虎克茶簽到贈點，不能重複領取。 點數餘額 ${balanceAfterPrior} 點數。`));
-    queueDiagnostic({ status: "duplicate_recovered_from_point_log", memberUid, pointUid, balanceAfter: balanceAfterPrior, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-    return true;
-  }
-  queueDiagnostic({ status: "point_record_checked", memberUid, pointUid, localBalance: Number(pointData.balance || 0), hasPriorLog: false });
+  const pointUid = memberUid || lineUid;
+  const pointData = { balance: 0, logs: [] };
+  const rewardReason = "虎克茶簽到贈點 " + rewardDate;
+  queueDiagnostic({ status: "point_record_skipped_for_daily_signin", memberUid, pointUid });
   const memberForWp = { ...(member || {}), userId: pointUid, lineUserId: getMemberLineUid(member || {}, lineUid) || lineUid, name: memberName };
 
   queueDiagnostic({ status: "mother_sync_started", memberUid, pointUid });
