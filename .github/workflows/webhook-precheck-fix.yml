@@ -48,3 +48,4 @@ jobs:
           git rm .github/workflows/webhook-precheck-fix.yml
           git commit -m 'chore: remove temporary webhook fix runner'
           git push origin HEAD:${{ github.head_ref }}
+# trigger synchronize
