@@ -17,12 +17,19 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
           p = Path('worker.js')
           s = p.read_text(encoding='utf-8')
-          old = '''          handled = await maybeReplyHookTeaCheckinTemplate(env, event, text).catch(e => {
-            console.error("HookTea Checkin Template Reply Error:", e);
-            return false;
-          });'''
+          pattern = re.compile(
+              r'(?m)^\s*handled\s*=\s*await\s+maybeReplyHookTeaCheckinTemplate\(env,\s*event,\s*text\)\.catch\(e\s*=>\s*\{\s*\n'
+              r'\s*console\.error\("HookTea Checkin Template Reply Error:",\s*e\);\s*\n'
+              r'\s*return\s+false;\s*\n'
+              r'\s*\}\);'
+          )
+          matches = list(pattern.finditer(s))
+          if len(matches) != 1:
+              raise SystemExit(f'target block count={len(matches)}; refusing broad edit')
+          indent = re.match(r'\s*', matches[0].group(0)).group(0).split('\n')[-1]
           new = '''          await safePutKV(env, "WEBHOOK_BEFORE_TEMPLATE_LAST", {
             lineUserId: uid,
             text: text.slice(0, 160),
@@ -47,11 +54,8 @@ jobs:
             console.error("HookTea Checkin Template Reply Error:", e);
             handled = false;
           }'''
-          if old not in s:
-              raise SystemExit('target block not found; refusing broad edit')
-          if s.count(old) != 1:
-              raise SystemExit(f'target block count={s.count(old)}; refusing broad edit')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          s = pattern.sub(new, s, count=1)
+          p.write_text(s, encoding='utf-8')
           PY
       - name: Syntax and scope checks
         run: |
