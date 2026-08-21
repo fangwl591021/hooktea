@@ -2372,38 +2372,6 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
 
   queueDiagnostic({ status: "matched_entered" });
   const timeout = (ms, value) => new Promise(resolve => setTimeout(() => resolve(value), ms));
-  const lineEventId = String(event?.webhookEventId || event?.message?.id || "").trim();
-
-  if (env.DB) {
-    try {
-      const claimInsert = await env.DB.prepare(`
-        INSERT OR IGNORE INTO daily_signin_claims
-          (line_user_id, claim_date, status, line_event_id, reward_points, created_at, updated_at)
-        VALUES (?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `).bind(lineUid, rewardDate, lineEventId || null, points).run();
-      const inserted = Number(claimInsert?.meta?.changes || 0) > 0;
-      const claim = await env.DB.prepare(`
-        SELECT status, mother_balance_after
-        FROM daily_signin_claims
-        WHERE line_user_id = ? AND claim_date = ?
-        LIMIT 1
-      `).bind(lineUid, rewardDate).first();
-      if (!inserted) {
-        const balanceText = Number.isFinite(Number(claim?.mother_balance_after))
-          ? ` 點數餘額 ${Number(claim.mother_balance_after)} 點數。`
-          : "";
-        const duplicateText = claim?.status === "failed"
-          ? "今天簽到狀態待確認，為避免重複贈點，系統不會再次自動加點。請至會員專區確認點數或通知管理員。"
-          : `今天已領取虎克茶簽到贈點，不能重複領取。${balanceText}`;
-        const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(duplicateText), 1800);
-        queueDiagnostic({ status: "d1_duplicate", claimStatus: claim?.status || "unknown", balanceAfter: claim?.mother_balance_after ?? null, delivery });
-        return true;
-      }
-      queueDiagnostic({ status: "d1_claim_created", lineEventId });
-    } catch (error) {
-      queueDiagnostic({ status: "d1_claim_error", error: error?.message || String(error) });
-    }
-  }
 
   const existing = await getKvJsonOnly(env, recordKey, null);
   queueDiagnostic({ status: "daily_record_checked", existingStatus: existing?.status || "none", existingBalance: existing?.balanceAfter ?? null });
@@ -2464,21 +2432,13 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   const member = matched?.member || null;
   const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
   queueDiagnostic({ status: "member_resolution_finished", memberUid, memberResolved: !!member, timedOut: !!matched?.timedOut, error: matched?.error || "" });
-  const pointLookup = await getPointDataForUid(env, memberUid || lineUid, { balance: 0, logs: [] });
-  const pointUid = pointLookup.pointUid || memberUid || lineUid;
-  const pointData = pointLookup.data || { balance: 0, logs: [] };
+  const pointUid = memberUid || lineUid;
+  const pointData = { balance: 0, logs: [] };
   const rewardReason = "虎克茶簽到贈點 " + rewardDate;
-  queueDiagnostic({ status: "point_record_loaded_for_daily_signin", memberUid, pointUid, localBalance: Number(pointData.balance || 0), localLogCount: Array.isArray(pointData.logs) ? pointData.logs.length : 0 });
+  queueDiagnostic({ status: "point_record_skipped_for_daily_signin", memberUid, pointUid });
   const memberForWp = { ...(member || {}), userId: pointUid, lineUserId: getMemberLineUid(member || {}, lineUid) || lineUid, name: memberName };
 
   queueDiagnostic({ status: "mother_sync_started", memberUid, pointUid });
-  if (env.DB) {
-    await env.DB.prepare(`
-      UPDATE daily_signin_claims
-      SET status = 'reconciling', member_uid = ?, point_uid = ?, reward_points = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE line_user_id = ? AND claim_date = ? AND status = 'pending'
-    `).bind(memberUid, pointUid, points, lineUid, rewardDate).run().catch(() => {});
-  }
   const wpRes = await Promise.race([
     insertWetwPoint(settings, pointUid, points, rewardReason, env, memberForWp),
     timeout(2500, { ok: false, timeout: true, message: "母站點數 API 逾時" }),
@@ -2504,14 +2464,7 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
       wpSync: wpRes,
       failedAt: new Date().toISOString(),
     }, { expirationTtl: 86400 * 7 }).catch(() => {});
-    if (env.DB) {
-      await env.DB.prepare(`
-        UPDATE daily_signin_claims
-        SET status = 'failed', member_uid = ?, point_uid = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE line_user_id = ? AND claim_date = ?
-      `).bind(memberUid, pointUid, String(wpRes?.message || wpRes?.error || "mother_balance_unavailable").slice(0, 500), lineUid, rewardDate).run().catch(() => {});
-    }
-    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("簽到失敗，母站點數狀態待確認。為避免重複贈點，今天不會再次自動加點；請至會員專區確認或通知管理員。"));
+    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("簽到失敗，母站點數暫時無法同步，請稍後再試。"));
     queueDiagnostic({ status: "mother_sync_failed", memberUid, pointUid, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
     return true;
   }
@@ -2563,13 +2516,6 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     claimedAt: new Date().toISOString(),
   }, { expirationTtl: 86400 * 45 }).catch(() => {});
 
-  if (env.DB) {
-    await env.DB.prepare(`
-      UPDATE daily_signin_claims
-      SET status = 'claimed', member_uid = ?, point_uid = ?, mother_balance_after = ?, error_message = NULL, updated_at = CURRENT_TIMESTAMP
-      WHERE line_user_id = ? AND claim_date = ?
-    `).bind(memberUid, pointUid, balanceAfter, lineUid, rewardDate).run().catch(() => {});
-  }
   const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} 點數。點數餘額 ${balanceAfter} 點數。`));
   queueDiagnostic({ status: "success_synced_before_reply", memberUid, pointUid, balanceAfter, motherBalanceAfter, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
   return true;
@@ -2958,17 +2904,16 @@ async function handleMotherKeywordFallback(env, ctx, api, event, reason = "fallb
     const pointUid = pointLookup.pointUid || memberUid;
     const existingCheckin = await safeGetKV(env, checkinKey, null).catch(() => null);
     if (!existingCheckin?.localMirrored) {
-      console.warn("[MotherKeywordFallback] skipped local +1 point mutation to avoid duplicate mother-site credit");
-      addedPoints = 0;
+      await api.updatePoints(env, null, memberUid, 1, "會員打卡 CRM fallback", { source: "mother_keyword_crm_fallback" });
+      addedPoints = 1;
       await safePutKV(env, checkinKey, {
         lineUserId: lineUid,
         memberUid,
         pointUid,
         keyword,
-        localMirrored: false,
-        fallbackNoLocalMutation: true,
+        localMirrored: true,
         mirroredAt: new Date().toISOString(),
-        source: "mother_keyword_crm_fallback_no_local_points",
+        source: "mother_keyword_crm_fallback",
       }, { expirationTtl: 86400 * 45 }).catch(() => {});
     }
     const points = await safeGetKV(env, `POINTS_${memberUid}`, { balance: 0, logs: [] }).catch(() => ({ balance: 0 }));
@@ -3853,7 +3798,7 @@ async function getHookTeaCheckinTemplate(env) {
 
 async function saveHookTeaCheckinTemplate(env, input) {
   const data = normalizeHookTeaCheckinTemplate(input);
-  await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_KEY, data, { preferWasabi: false });
+  await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_KEY, data);
   return data;
 }
 
@@ -3936,7 +3881,7 @@ async function rotateHookTeaCheckinTemplatePages(env, pages, rotationMode) {
   if (String(rotationMode || "random") !== "sequential") return list.sort(() => Math.random() - 0.5);
   const state = await safeGetKV(env, HOOKTEA_CHECKIN_TEMPLATE_ROTATION_KEY, { offset: 0 }, { preferWasabi: false }).catch(() => ({ offset: 0 }));
   const offset = Math.max(0, Math.floor(Number(state.offset || 0) || 0)) % list.length;
-  await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_ROTATION_KEY, { offset: (offset + 1) % list.length, pageCount: list.length, updatedAt: new Date().toISOString() }, { preferWasabi: false }).catch(() => {});
+  await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_ROTATION_KEY, { offset: (offset + 1) % list.length, pageCount: list.length, updatedAt: new Date().toISOString() }).catch(() => {});
   return list.slice(offset).concat(list.slice(0, offset));
 }
 
@@ -4489,23 +4434,6 @@ function getLineChannelSecret(env) {
     "CHANNEL_SECRET",
     "LINE_SECRET",
   ]);
-}
-
-async function signLineWebhookBody(env, rawText) {
-  const secret = getLineChannelSecret(env);
-  if (!secret) return "";
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signed = await crypto.subtle.sign("HMAC", key, encoder.encode(String(rawText || "")));
-  let binary = "";
-  for (const byte of new Uint8Array(signed)) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }
 
 async function verifyLineWebhookSignature(env, rawText, signature) {
@@ -9431,7 +9359,7 @@ export default {
 
       const hookTeaCheckinTemplateForWebhook = await getHookTeaCheckinTemplate(env).catch(() => null);
       const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text) && !isHookTeaCheckinTemplateTrigger(hookTeaCheckinTemplateForWebhook, event.message.text));
-      if (motherKeywordEvents.length && motherKeywordEvents.length === events.length) {
+      if (motherKeywordEvents.length) {
         const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         const allEventsAreMotherKeywords = motherKeywordEvents.length === events.length;
@@ -9512,16 +9440,6 @@ export default {
         return new Response("OK", { status: 200 });
       }
       for (const event of events) {
-        const mixedMotherKeywordEvent = event?.type === "message"
-          && event?.message?.type === "text"
-          && isMotherSiteKeyword(event.message.text)
-          && !isHookTeaDailySigninKeyword(event.message.text)
-          && !isHookTeaCheckinTemplateTrigger(hookTeaCheckinTemplateForWebhook, event.message.text);
-        if (mixedMotherKeywordEvent) {
-          await appendLineMonitorEvent(env, ctx, event).catch(e => console.error("LINE Monitor Append Error:", e));
-          unhandledEvents.push(event);
-          continue;
-        }
         let handled = false;
         if (event?.type === "message" && event?.message?.type === "text") {
           const text = String(event?.message?.text || "").trim();
@@ -9603,8 +9521,6 @@ export default {
         const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
         
         if (forwardWebhook && unhandledEvents.length) {
-          const filteredForwardBody = JSON.stringify(forwardPayload);
-          const filteredForwardSignature = await signLineWebhookBody(env, filteredForwardBody).catch(() => "");
           await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
             url: forwardWebhook,
             eventCount: unhandledEvents.length,
@@ -9616,9 +9532,9 @@ export default {
               method: "POST",
             headers: {
               "Content-Type": "application/json",
-              ...(filteredForwardSignature ? { "x-line-signature": filteredForwardSignature } : {})
+              "x-line-signature": signature
             },
-              body: filteredForwardBody,
+              body: rawText,
               redirect: "follow",
               signal: AbortSignal.timeout(8000)
             }).then(async response => {
