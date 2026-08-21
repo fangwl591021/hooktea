@@ -1,0 +1,73 @@
+name: Webhook checkpoint patch
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.head_ref == 'fix/webhook-checkpoint-20260821'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Add diagnostic checkpoints only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('worker.js')
+          s = p.read_text(encoding='utf-8')
+          old = '''          handled = await maybeReplyHookTeaCheckinTemplate(env, event, text).catch(e => {
+            console.error("HookTea Checkin Template Reply Error:", e);
+            return false;
+          });'''
+          new = '''          await safePutKV(env, "WEBHOOK_BEFORE_TEMPLATE_LAST", {
+            lineUserId: uid,
+            text: text.slice(0, 160),
+            replyTokenPresent: !!String(event?.replyToken || "").trim(),
+            reachedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 * 7 }).catch(() => {});
+          try {
+            handled = await maybeReplyHookTeaCheckinTemplate(env, event, text);
+            await safePutKV(env, "WEBHOOK_AFTER_TEMPLATE_LAST", {
+              lineUserId: uid,
+              text: text.slice(0, 160),
+              handled: !!handled,
+              reachedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 * 7 }).catch(() => {});
+          } catch (e) {
+            await safePutKV(env, "WEBHOOK_TEMPLATE_ERROR_LAST", {
+              lineUserId: uid,
+              text: text.slice(0, 160),
+              error: e?.message || String(e),
+              failedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            console.error("HookTea Checkin Template Reply Error:", e);
+            handled = false;
+          }'''
+          if old not in s:
+              raise SystemExit('target block not found; refusing broad edit')
+          if s.count(old) != 1:
+              raise SystemExit(f'target block count={s.count(old)}; refusing broad edit')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Syntax and scope checks
+        run: |
+          node --check worker.js
+          git diff --check
+          git diff -- worker.js
+          test "$(git diff --name-only | tr '\n' ' ')" = "worker.js "
+          grep -q 'WEBHOOK_BEFORE_TEMPLATE_LAST' worker.js
+          grep -q 'WEBHOOK_AFTER_TEMPLATE_LAST' worker.js
+          grep -q 'WEBHOOK_TEMPLATE_ERROR_LAST' worker.js
+      - name: Commit patch and remove runner
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add worker.js
+          git commit -m 'diag: add LINE template handler checkpoints'
+          git rm .github/workflows/webhook-checkpoint.yml
+          git commit -m 'chore: remove temporary checkpoint runner'
+          git push origin HEAD:${{ github.head_ref }}
