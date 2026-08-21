@@ -16,6 +16,7 @@ WP_SHOP_ID = "35"
 WP_POINT_TYPE = "system_point"
 WP_INSERT_POINT_URL = "https://aiwe.cc/index.php/wp-json/wetw-point/v1/insert-user-point"
 WP_QUERY_POINT_URL = "https://aiwe.cc/index.php/wp-json/wetw-point/v1/query-user-point-list"
+HOOKTEA_DAILY_SIGNIN_POINTS = "1"
 REMITTANCE_INFO = """
 永豐銀行 Bank SinoPac
 銀行代號：807
