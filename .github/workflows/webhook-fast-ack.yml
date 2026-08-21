@@ -1,0 +1,105 @@
+name: Webhook fast ack patch
+on:
+  push:
+    branches:
+      - fix/webhook-fast-ack-20260821
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/webhook-fast-ack-20260821
+          fetch-depth: 0
+      - name: Patch webhook wrapper only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('worker.js')
+          s = p.read_text(encoding='utf-8')
+          marker = '  async handleLineWebhook(request, env, ctx) {\n'
+          count = s.count(marker)
+          if count != 1:
+              raise SystemExit(f'handleLineWebhook marker count={count}; refusing broad edit')
+          wrapper = '''  async handleLineWebhook(request, env, ctx) {
+    if (request.method !== "POST") {
+      return this.handleLineWebhookBlocking(request, env, ctx);
+    }
+
+    const signature = request.headers.get("x-line-signature") || "";
+    const rawText = await request.text();
+    let parsedPayload = {};
+    try {
+      if (rawText) parsedPayload = JSON.parse(rawText);
+    } catch (error) {
+      if (ctx) ctx.waitUntil(safePutKV(env, "LINE_WEBHOOK_FAST_ACK_LAST", {
+        ok: false,
+        stage: "parse",
+        error: error?.message || String(error),
+        receivedAt: new Date().toISOString(),
+      }, { expirationTtl: 86400 }).catch(() => {}));
+      return new Response("OK", { status: 200 });
+    }
+
+    const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
+    if (!events.length) return new Response("OK", { status: 200 });
+
+    const signatureCheck = await verifyLineWebhookSignature(env, rawText, signature).catch(error => ({
+      configured: !!getLineChannelSecret(env),
+      valid: false,
+      reason: error?.message || String(error),
+    }));
+    if (signatureCheck.configured && !signatureCheck.valid) {
+      if (ctx) ctx.waitUntil(safePutKV(env, "LINE_WEBHOOK_REJECT_LAST", {
+        receivedAt: new Date().toISOString(),
+        eventCount: events.length,
+        reason: signatureCheck.reason || "invalid_signature",
+        texts: events.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean).slice(0, 10),
+      }, { expirationTtl: 86400 }).catch(() => {}));
+      return new Response("INVALID_SIGNATURE", { status: 403 });
+    }
+
+    const backgroundRequest = new Request(request.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(signature ? { "x-line-signature": signature } : {}),
+      },
+      body: rawText,
+    });
+    const task = this.handleLineWebhookBlocking(backgroundRequest, env, ctx).catch(async error => {
+      console.error("Webhook background processing error:", error);
+      await safePutKV(env, "LINE_WEBHOOK_BACKGROUND_ERROR_LAST", {
+        error: error?.message || String(error),
+        failedAt: new Date().toISOString(),
+      }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    });
+    if (ctx) ctx.waitUntil(task);
+    else task.catch(() => {});
+    console.log(`[LINE webhook] fast ack queued: ${events.length} event(s)`);
+    return new Response("OK", { status: 200 });
+  },
+
+  async handleLineWebhookBlocking(request, env, ctx) {
+'''
+          p.write_text(s.replace(marker, wrapper, 1), encoding='utf-8')
+          PY
+      - name: Verify syntax and scope
+        run: |
+          node --check worker.js
+          git diff --check
+          test "$(git diff --name-only | tr '\n' ' ')" = "worker.js "
+          grep -q 'async handleLineWebhookBlocking' worker.js
+          grep -q '\[LINE webhook\] fast ack queued' worker.js
+          grep -q 'ctx.waitUntil(task)' worker.js
+      - name: Commit patch and remove temporary runner
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add worker.js
+          git commit -m 'fix: acknowledge LINE webhook before background processing'
+          git rm .github/workflows/webhook-fast-ack.yml
+          git commit -m 'chore: remove temporary fast-ack runner'
+          git push origin HEAD:fix/webhook-fast-ack-20260821
