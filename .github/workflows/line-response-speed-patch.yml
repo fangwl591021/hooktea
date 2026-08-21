@@ -1,0 +1,425 @@
+name: LINE response speed patch
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.head_ref == 'fix/line-response-speed-20260821'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply scoped LINE speed patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('worker.js')
+          s = p.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global s
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: target count={count}; refusing broad edit')
+              s = s.replace(old, new, 1)
+
+          # 1) Sync the already-proven fast-ACK wrapper into GitHub main.
+          if 'async handleLineWebhookBlocking(request, env, ctx)' not in s:
+              marker = '  async handleLineWebhook(request, env, ctx) {\n'
+              wrapper = '''  async handleLineWebhook(request, env, ctx) {
+    if (request.method !== "POST") {
+      return this.handleLineWebhookBlocking(request, env, ctx);
+    }
+
+    const signature = request.headers.get("x-line-signature") || "";
+    const rawText = await request.text();
+    let parsedPayload = {};
+    try {
+      if (rawText) parsedPayload = JSON.parse(rawText);
+    } catch (error) {
+      if (ctx) ctx.waitUntil(safePutKV(env, "LINE_WEBHOOK_FAST_ACK_LAST", {
+        ok: false,
+        stage: "parse",
+        error: error?.message || String(error),
+        receivedAt: new Date().toISOString(),
+      }, { expirationTtl: 86400 }).catch(() => {}));
+      return new Response("OK", { status: 200 });
+    }
+
+    const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
+    if (!events.length) return new Response("OK", { status: 200 });
+
+    const signatureCheck = await verifyLineWebhookSignature(env, rawText, signature).catch(error => ({
+      configured: !!getLineChannelSecret(env),
+      valid: false,
+      reason: error?.message || String(error),
+    }));
+    if (signatureCheck.configured && !signatureCheck.valid) {
+      if (ctx) ctx.waitUntil(safePutKV(env, "LINE_WEBHOOK_REJECT_LAST", {
+        receivedAt: new Date().toISOString(),
+        eventCount: events.length,
+        reason: signatureCheck.reason || "invalid_signature",
+        texts: events.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean).slice(0, 10),
+      }, { expirationTtl: 86400 }).catch(() => {}));
+      return new Response("INVALID_SIGNATURE", { status: 403 });
+    }
+
+    const backgroundRequest = new Request(request.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(signature ? { "x-line-signature": signature } : {}),
+      },
+      body: rawText,
+    });
+    const task = this.handleLineWebhookBlocking(backgroundRequest, env, ctx).catch(async error => {
+      console.error("Webhook background processing error:", error);
+      await safePutKV(env, "LINE_WEBHOOK_BACKGROUND_ERROR_LAST", {
+        error: error?.message || String(error),
+        failedAt: new Date().toISOString(),
+      }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    });
+    if (ctx) ctx.waitUntil(task);
+    else task.catch(() => {});
+    console.log(`[LINE webhook] fast ack queued: ${events.length} event(s)`);
+    return new Response("OK", { status: 200 });
+  },
+
+  async handleLineWebhookBlocking(request, env, ctx) {
+'''
+              replace_once(marker, wrapper, 'fast_ack_wrapper')
+
+          # 2) Keep the activity card at the user-approved kilo size.
+          replace_once(
+              '''function buildHookTeaCheckinTemplateBubble(page) {
+  const bubble = {
+    type: "bubble",
+    size: normalizeHookTeaFlexBubbleSize(page.bubbleSize),''',
+              '''function buildHookTeaCheckinTemplateBubble(page) {
+  const bubble = {
+    type: "bubble",
+    size: "kilo",''',
+              'kilo_bubble'
+          )
+
+          # 3) Avoid a template KV read for every normal LINE message.
+          replace_once(
+              '''      const hookTeaCheckinTemplateForWebhook = await getHookTeaCheckinTemplate(env).catch(() => null);
+      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text) && !isHookTeaCheckinTemplateTrigger(hookTeaCheckinTemplateForWebhook, event.message.text));''',
+              '''      const motherKeywordCandidates = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text));
+      let motherKeywordEvents = motherKeywordCandidates;
+      if (motherKeywordCandidates.length) {
+        const hookTeaCheckinTemplateForWebhook = await getHookTeaCheckinTemplate(env).catch(() => null);
+        motherKeywordEvents = motherKeywordCandidates.filter(event => !isHookTeaCheckinTemplateTrigger(hookTeaCheckinTemplateForWebhook, event.message.text));
+      }''',
+              'mother_keyword_precheck'
+          )
+
+          # 4) Template diagnostics should never delay the actual LINE Flex reply.
+          old_template = '''async function maybeReplyHookTeaCheckinTemplate(env, event, text) {
+  const uid = String(event?.source?.userId || "").trim();
+  const replyToken = String(event?.replyToken || "").trim();
+  if (!uid || !replyToken || !text) return false;
+  await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_ENTRY_LAST", { uid, text, replyTokenPresent: !!replyToken, enteredAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+  let template;
+  try {
+    template = await getHookTeaCheckinTemplate(env);
+  } catch (error) {
+    await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", { uid, text, matched: false, stage: "load_template", error: error?.message || String(error), checkedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return false;
+  }
+  const trigger = getHookTeaCheckinTemplateTriggerState(template, text);
+  await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", {
+    uid,
+    text,
+    active: trigger.active,
+    hasImage: trigger.hasImage,
+    matched: trigger.matched,
+    matchedKeyword: trigger.matchedKeyword,
+    normalizedText: trigger.normalizedText,
+    normalizedKeywords: trigger.normalizedKeywords,
+    checkedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 7 }).catch(() => {});
+  if (!trigger.matched) return false;
+  let message;
+  try {
+    message = await buildHookTeaCheckinTemplateFlex(env, template);
+  } catch (error) {
+    await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_REPLY_LAST", { uid, text, ok: false, stage: "build", error: error?.message || String(error), repliedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+    return true;
+  }
+  const delivery = await deliverLineMessage(env, uid, replyToken, [message]).catch(error => ({ ok: false, error: error?.message || String(error) }));
+  await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_REPLY_LAST", { uid, text, ok: !!delivery?.ok, delivery, messageType: message?.type || "", repliedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
+  return true;
+}'''
+          new_template = '''async function maybeReplyHookTeaCheckinTemplate(env, ctx, event, text) {
+  const uid = String(event?.source?.userId || "").trim();
+  const replyToken = String(event?.replyToken || "").trim();
+  if (!uid || !replyToken || !text) return false;
+  const queueTemplateDiagnostic = (key, payload) => {
+    const task = safePutKV(env, key, payload, { expirationTtl: 86400 * 7 }).catch(() => {});
+    if (ctx?.waitUntil) ctx.waitUntil(task);
+    return task;
+  };
+  queueTemplateDiagnostic("HOOKTEA_CHECKIN_TEMPLATE_ENTRY_LAST", { uid, text, replyTokenPresent: !!replyToken, enteredAt: new Date().toISOString() });
+  let template;
+  try {
+    template = await getHookTeaCheckinTemplate(env);
+  } catch (error) {
+    queueTemplateDiagnostic("HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", { uid, text, matched: false, stage: "load_template", error: error?.message || String(error), checkedAt: new Date().toISOString() });
+    return false;
+  }
+  const trigger = getHookTeaCheckinTemplateTriggerState(template, text);
+  queueTemplateDiagnostic("HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", {
+    uid,
+    text,
+    active: trigger.active,
+    hasImage: trigger.hasImage,
+    matched: trigger.matched,
+    matchedKeyword: trigger.matchedKeyword,
+    normalizedText: trigger.normalizedText,
+    normalizedKeywords: trigger.normalizedKeywords,
+    checkedAt: new Date().toISOString(),
+  });
+  if (!trigger.matched) return false;
+  let message;
+  try {
+    message = await buildHookTeaCheckinTemplateFlex(env, template);
+  } catch (error) {
+    queueTemplateDiagnostic("HOOKTEA_CHECKIN_TEMPLATE_REPLY_LAST", { uid, text, ok: false, stage: "build", error: error?.message || String(error), repliedAt: new Date().toISOString() });
+    return true;
+  }
+  const delivery = await deliverLineMessage(env, uid, replyToken, [message]).catch(error => ({ ok: false, error: error?.message || String(error) }));
+  queueTemplateDiagnostic("HOOKTEA_CHECKIN_TEMPLATE_REPLY_LAST", { uid, text, ok: !!delivery?.ok, delivery, messageType: message?.type || "", repliedAt: new Date().toISOString() });
+  return true;
+}'''
+          replace_once(old_template, new_template, 'template_background_diagnostics')
+
+          # 5) Read signin settings and daily claim record in parallel.
+          replace_once(
+              '''  const settings = await getKvJsonOnly(env, "SYSTEM_SETTINGS", {});
+  const rewardDate = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+  const points = hookTeaDailySigninPoints(settings, env);
+  const recordKey = `HOOKTEA_DAILY_SIGNIN_${lineUid}_${rewardDate}`;''',
+              '''  const rewardDate = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+  const recordKey = `HOOKTEA_DAILY_SIGNIN_${lineUid}_${rewardDate}`;
+  const settingsTask = getKvJsonOnly(env, "SYSTEM_SETTINGS", {});
+  const existingTask = getKvJsonOnly(env, recordKey, null);
+  const settings = await settingsTask;
+  const points = hookTeaDailySigninPoints(settings, env);''',
+              'signin_parallel_reads_start'
+          )
+          replace_once(
+              '  const existing = await getKvJsonOnly(env, recordKey, null);',
+              '  const existing = await existingTask;',
+              'signin_parallel_reads_finish'
+          )
+
+          # 6) Once mother-site points are confirmed, reply immediately; local mirrors persist in waitUntil.
+          old_persist = '''  await putPointKV(env, ctx || null, pointUid, nextPoints).catch(() => {});
+  await appendPointsLedger(env, {
+    logId: logEntry.logId,
+    uid: pointUid,
+    sourceUid: memberUid,
+    type: "EARN",
+    amount: points,
+    points,
+    reason: rewardReason,
+    balanceAfter,
+    createdAt,
+    createdTs,
+    source: "hooktea_daily_signin",
+    operatorUid: "",
+    operatorName: "",
+    targetName: memberName,
+  }).catch(() => {});
+  await putKvJsonOnly(env, recordKey, {
+    lineUserId: lineUid,
+    memberUid,
+    pointUid,
+    keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+    points,
+    rewardDate,
+    status: "claimed",
+    balanceAfter,
+    wpSync: wpRes,
+    claimedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 45 }).catch(() => {});
+
+  const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} 點數。點數餘額 ${balanceAfter} 點數。`));'''
+          new_persist = '''  const persistSigninTask = (async () => {
+    await putPointKV(env, ctx || null, pointUid, nextPoints).catch(() => {});
+    await appendPointsLedger(env, {
+      logId: logEntry.logId,
+      uid: pointUid,
+      sourceUid: memberUid,
+      type: "EARN",
+      amount: points,
+      points,
+      reason: rewardReason,
+      balanceAfter,
+      createdAt,
+      createdTs,
+      source: "hooktea_daily_signin",
+      operatorUid: "",
+      operatorName: "",
+      targetName: memberName,
+    }).catch(() => {});
+    await putKvJsonOnly(env, recordKey, {
+      lineUserId: lineUid,
+      memberUid,
+      pointUid,
+      keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+      points,
+      rewardDate,
+      status: "claimed",
+      balanceAfter,
+      wpSync: wpRes,
+      claimedAt: new Date().toISOString(),
+    }, { expirationTtl: 86400 * 45 }).catch(() => {});
+  })().catch(error => console.error("HookTea signin local persistence failed", error));
+  if (ctx?.waitUntil) ctx.waitUntil(persistSigninTask);
+  else await persistSigninTask;
+
+  const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} 點數。點數餘額 ${balanceAfter} 點數。`));'''
+          replace_once(old_persist, new_persist, 'signin_background_persistence')
+
+          # 7) Daily signin gets priority; debug KV writes no longer delay replies.
+          old_loop = '''          await safePutKV(env, "LINE_WEBHOOK_TEXT_LAST", {
+            lineUserId: uid,
+            text: text.slice(0, 160),
+            eventType: event?.type || "",
+            messageType: event?.message?.type || "",
+            receivedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 * 7 }).catch(() => {});
+          await safePutKV(env, "WEBHOOK_BEFORE_TEMPLATE_LAST", {
+  lineUserId: uid,
+  text: text.slice(0, 160),
+  replyTokenPresent: !!String(event?.replyToken || "").trim(),
+  reachedAt: new Date().toISOString(),
+}, { expirationTtl: 86400 * 7 }).catch(() => {});
+try {
+  handled = await maybeReplyHookTeaCheckinTemplate(env, event, text);
+  await safePutKV(env, "WEBHOOK_AFTER_TEMPLATE_LAST", {
+    lineUserId: uid,
+    text: text.slice(0, 160),
+    handled: !!handled,
+    reachedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 7 }).catch(() => {});
+} catch (e) {
+  await safePutKV(env, "WEBHOOK_TEMPLATE_ERROR_LAST", {
+    lineUserId: uid,
+    text: text.slice(0, 160),
+    error: e?.message || String(e),
+    failedAt: new Date().toISOString(),
+  }, { expirationTtl: 86400 * 7 }).catch(() => {});
+  console.error("HookTea Checkin Template Reply Error:", e);
+  handled = false;
+}
+          if (!handled) handled = await handleHookTeaDailySigninReward(env, ctx, event).catch(e => {
+            console.error("HookTea Daily Signin Reward Error:", e);
+            safePutKV(env, "HOOKTEA_DAILY_SIGNIN_LAST", {
+              lineUserId: uid,
+              keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+              text,
+              status: "handler_exception",
+              error: e?.message || String(e),
+              updatedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 * 14 }).catch(() => {});
+            return false;
+          });'''
+          new_loop = '''          const queueWebhookDiagnostic = (key, payload, ttl = 86400 * 7) => {
+            const task = safePutKV(env, key, payload, { expirationTtl: ttl }).catch(() => {});
+            if (ctx?.waitUntil) ctx.waitUntil(task);
+            return task;
+          };
+          queueWebhookDiagnostic("LINE_WEBHOOK_TEXT_LAST", {
+            lineUserId: uid,
+            text: text.slice(0, 160),
+            eventType: event?.type || "",
+            messageType: event?.message?.type || "",
+            receivedAt: new Date().toISOString(),
+          });
+          handled = await handleHookTeaDailySigninReward(env, ctx, event).catch(e => {
+            console.error("HookTea Daily Signin Reward Error:", e);
+            queueWebhookDiagnostic("HOOKTEA_DAILY_SIGNIN_LAST", {
+              lineUserId: uid,
+              keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
+              text,
+              status: "handler_exception",
+              error: e?.message || String(e),
+              updatedAt: new Date().toISOString(),
+            }, 86400 * 14);
+            return false;
+          });
+          if (!handled) {
+            queueWebhookDiagnostic("WEBHOOK_BEFORE_TEMPLATE_LAST", {
+              lineUserId: uid,
+              text: text.slice(0, 160),
+              replyTokenPresent: !!String(event?.replyToken || "").trim(),
+              reachedAt: new Date().toISOString(),
+            });
+            try {
+              handled = await maybeReplyHookTeaCheckinTemplate(env, ctx, event, text);
+              queueWebhookDiagnostic("WEBHOOK_AFTER_TEMPLATE_LAST", {
+                lineUserId: uid,
+                text: text.slice(0, 160),
+                handled: !!handled,
+                reachedAt: new Date().toISOString(),
+              });
+            } catch (e) {
+              queueWebhookDiagnostic("WEBHOOK_TEMPLATE_ERROR_LAST", {
+                lineUserId: uid,
+                text: text.slice(0, 160),
+                error: e?.message || String(e),
+                failedAt: new Date().toISOString(),
+              });
+              console.error("HookTea Checkin Template Reply Error:", e);
+              handled = false;
+            }
+          }'''
+          replace_once(old_loop, new_loop, 'webhook_fast_path')
+
+          # 8) Keep the explicit reservation phrase out of mother/AI fallback.
+          replace_once(
+              '        if (!handled) unhandledEvents.push(event);',
+              '''        if (
+          !handled &&
+          event?.type === "message" &&
+          event?.message?.type === "text" &&
+          String(event.message.text || "").trim() === "我想報名"
+        ) {
+          handled = true;
+        }
+        if (!handled) unhandledEvents.push(event);''',
+              'reserve_phrase_no_ai'
+          )
+
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Verify syntax and scope
+        run: |
+          node --check worker.js
+          git diff --check
+          test "$(git diff --name-only | tr '\n' ' ')" = "worker.js "
+          grep -q 'async handleLineWebhookBlocking' worker.js
+          grep -q 'size: "kilo"' worker.js
+          grep -q 'motherKeywordCandidates' worker.js
+          grep -q 'maybeReplyHookTeaCheckinTemplate(env, ctx, event, text)' worker.js
+          grep -q 'persistSigninTask' worker.js
+          grep -q 'String(event.message.text || "").trim() === "我想報名"' worker.js
+          git diff --stat
+          git diff -- worker.js
+      - name: Commit patch and remove temporary runner
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- worker.js
+          git commit -m 'perf: speed up LINE signin and activity replies'
+          git rm .github/workflows/line-response-speed-patch.yml
+          git commit -m 'chore: remove temporary LINE speed patch runner'
+          git push origin HEAD:${{ github.head_ref }}
