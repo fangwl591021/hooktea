@@ -2,15 +2,23 @@ import assert from "node:assert/strict";
 import { createHmac, webcrypto } from "node:crypto";
 import fs from "node:fs";
 import vm from "node:vm";
+import { execFileSync } from "node:child_process";
 
-const source = fs.readFileSync(new URL("../worker.js", import.meta.url), "utf8");
+const source = process.argv.includes("--baseline")
+  ? execFileSync("git", ["show", "HEAD:worker.js"], { cwd: new URL("../", import.meta.url), encoding: "utf8", maxBuffer: 4 * 1024 * 1024 })
+  : fs.readFileSync(new URL("../worker.js", import.meta.url), "utf8");
 const signatureHelpers = source.slice(source.indexOf("async function verifyLineWebhookSignature("), source.indexOf("function extractResponseText("));
+const keywordHelpers = source.slice(source.indexOf("function configuredKeywordRewards("), source.indexOf("async function deliverKeywordRewardReply("))
+  + source.slice(source.indexOf('const HOOKTEA_DAILY_SIGNIN_KEYWORD ='), source.indexOf('function hookTeaDailySigninPoints('))
+  + source.slice(source.indexOf('function isReferralInviteKeyword('), source.indexOf('function isPlainMotherWebhookAck('))
+  + source.slice(source.indexOf('function getHookTeaCheckinTemplateTriggerState('), source.indexOf('async function rotateHookTeaCheckinTemplatePages('));
 const webhookMethod = source.slice(source.indexOf("  async handleLineWebhook(request, env, ctx) {"), source.indexOf("  async handleLinePayConfirm(request, env, ctx) {"));
 assert.ok(signatureHelpers && webhookMethod, "real Worker webhook code must be loaded");
 
 const secret = "hooktea-test-channel-secret";
 const sign = body => createHmac("sha256", secret).update(body).digest("base64");
-const message = (text, id = text) => ({ type: "message", webhookEventId: id, replyToken: "reply-" + id, source: { userId: "U-" + id }, message: { id, type: "text", text } });
+const actualText = text => ({ daily: "虎克茶簽到贈點", bind: "綁定會員" }[text] || text);
+const message = (text, id = text) => ({ type: "message", webhookEventId: id, replyToken: "reply-" + id, source: { userId: "U-" + id }, message: { id, type: "text", text: actualText(text) } });
 const follow = { type: "follow", webhookEventId: "follow-new", replyToken: "reply-follow", source: { userId: "U-new" } };
 
 function harness(options = {}) {
@@ -20,6 +28,7 @@ function harness(options = {}) {
     const event = args[2] || args[1];
     calls[name].push(event);
     if (options[name] instanceof Error) throw options[name];
+    if (typeof options[name] === "function") return options[name](event);
     return options[name] ?? true;
   };
   const sandbox = {
@@ -27,15 +36,12 @@ function harness(options = {}) {
     console: { error: (...args) => calls.errors.push(args) },
     getLineChannelSecret: env => env.LINE_CHANNEL_SECRET,
     getLineChannelAccessToken: () => "configured",
-    safeGetKV: async () => ({}),
-    safePutKV: async (_, key, value) => calls.diagnostics.set(key, value),
-    getHookTeaCheckinTemplate: async () => ({}),
-    isConfiguredShopKeywordReward: (_, text) => (options.rewardKeywords || ["954e"]).includes(text),
-    isHookTeaCheckinTemplateTrigger: (_, text) => (options.templateKeywords || ["template"]).includes(text),
-    isHookTeaDailySigninKeyword: text => text === "daily",
-    isMotherSiteKeyword: text => ["會員專區", "會員打卡", "分享好友"].includes(text),
-    motherSiteKeywordType: () => "member",
-    isReferralInviteKeyword: text => ["推薦好友", "分享好友"].includes(text),
+    safeGetKV: async () => ({ shop_keyword_reward_points: 100, shop_keyword_reward_keywords: (options.rewardKeywords || ["954e"]).map(actualText).join(",") }),
+    safePutKV: async (_, key, value) => {
+      calls.diagnostics.set(key, value);
+      if (options.diagnosticGate) await options.diagnosticGate;
+    },
+    getHookTeaCheckinTemplate: async () => ({ active: true, keywords: (options.templateKeywords || ["template"]).map(actualText), pages: [{ imageUrl: "https://test.invalid/card.png" }] }),
     handleShopKeywordReward: runLocal("reward"),
     handleHookTeaDailySigninReward: runLocal("daily"),
     maybeReplyHookTeaCheckinTemplate: async (_, event) => {
@@ -46,7 +52,7 @@ function harness(options = {}) {
     handleLineMemberBindText: async (_, __, event) => {
       calls.bind.push(event);
       if (options.bind instanceof Error) throw options.bind;
-      return event.message.text === "bind";
+      return options.bind ?? event.message.text === "綁定會員";
     },
     appendLineMonitorEvent: async (_, __, event) => calls.monitor.push(event),
     buildReferralInviteUrl: () => "https://shop.invalid/invite",
@@ -58,20 +64,22 @@ function harness(options = {}) {
     },
     fetch: async (url, request) => {
       calls.fetch.push({ url, ...request });
+      if (options.forwardGate) await options.forwardGate;
       if (options.forwardError) throw new Error("simulated uncertain forward failure");
       return new Response("mother reply", { status: options.forwardStatus || 200 });
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(signatureHelpers + "\nconst handler = {\n" + webhookMethod + "\n}; globalThis.handler = handler;", sandbox);
+  vm.runInContext(keywordHelpers + signatureHelpers + "\nconst handler = {\n" + webhookMethod + "\n}; globalThis.handler = handler;", sandbox);
   return {
     calls, env, sandbox,
-    async post(events, { raw, signature, noContext = false } = {}) {
+    async post(events, { raw, signature, noContext = false, drain = true } = {}) {
       const body = raw || JSON.stringify({ destination: "test-OA", events });
       const request = new Request("https://hooktea.invalid/webhook", { method: "POST", body, headers: { "x-line-signature": signature === undefined ? sign(body) : signature } });
       const pending = [];
       const response = await sandbox.handler.handleLineWebhook(request, env, noContext ? null : { waitUntil: promise => pending.push(promise) });
-      while (pending.length) await Promise.all(pending.splice(0));
+      if (drain) while (pending.length) await Promise.all(pending.splice(0));
+      else this.pending = pending;
       return response;
     },
   };
@@ -130,14 +138,14 @@ test("configured template false result also retains its reply owner", async () =
   assert.equal(h.calls.daily.length + h.calls.reward.length + h.calls.fetch.length + h.calls.bind.length, 0);
 });
 
-test("local configured reward wins overlaps, template precedes daily, mother owns its referral keyword", async () => {
+test("reserved mother and daily commands win configuration overlaps, both sites keep their own referrals", async () => {
   const h = harness({ rewardKeywords: ["954e", "會員打卡"], templateKeywords: ["template", "daily"] });
-  await h.post([message("會員打卡", "reward-overlap"), message("daily", "template-overlap"), message("分享好友", "mother-referral"), message("推薦好友", "local-referral")]);
-  assert.equal(h.calls.reward.length, 1);
-  assert.equal(h.calls.template.length, 1);
-  assert.equal(h.calls.daily.length, 0);
+  await h.post([message("會員打卡", "reward-overlap"), message("daily", "template-overlap"), message("分享好友", "mother-referral"), message("我的推薦", "local-referral")]);
+  assert.equal(h.calls.reward.length, 0);
+  assert.equal(h.calls.template.length, 0);
+  assert.equal(h.calls.daily.length, 1);
   assert.equal(h.calls.referral.length, 1);
-  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["mother-referral"]);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["reward-overlap", "mother-referral"]);
 });
 
 test("member bind releases only explicit no-match, keeps ownership on exception", async () => {
@@ -202,8 +210,133 @@ test("downstream failure is recorded without blind retry or GAS fallback", async
   }
 });
 
-for (const { name, body } of tests) {
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function until(predicate) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail("independent branch did not progress within one second");
+}
+
+test("all reserved mother commands survive overlapping child reward and template configuration", async () => {
+  const keywords = ["會員專區", "會員中心", "會員註冊", "註冊", "注册", "加入會員", "會員分享", "分享好友", "推薦好友", "邀請好友", "會員打卡", "打卡"];
+  const h = harness({ rewardKeywords: keywords, templateKeywords: keywords });
+  await h.post(keywords.map(text => message(text)));
+  assert.equal(h.calls.reward.length + h.calls.template.length + h.calls.bind.length, 0);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), keywords);
+});
+
+test("exact template, actual daily claim and numeric reward all work in one batch", async () => {
+  const h = harness({ templateKeywords: ["簽到", "簽到贈點活動", "虎克茶簽到贈點"] });
+  await h.post([message("簽到贈點活動", "card"), message("虎克茶簽到贈點", "claim"), message("９５４Ｅ", "gift"), message("會員中心", "member")]);
+  assert.deepEqual(h.calls.template.map(e => e.webhookEventId), ["card"]);
+  assert.deepEqual(h.calls.daily.map(e => e.webhookEventId), ["claim"]);
+  assert.deepEqual(h.calls.reward.map(e => e.webhookEventId), ["gift"]);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["member"]);
+});
+
+test("substring template and pending binding cannot swallow unlisted mother keywords", async () => {
+  const h = harness({ templateKeywords: ["活動", "點數"], bind: true });
+  await h.post([message("母站活動優惠", "custom"), message("查詢點數", "points"), message("虎克茶簽到贈點查詢", "daily-query")]);
+  assert.equal(h.calls.template.length + h.calls.bind.length + h.calls.daily.length, 0);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["custom", "points", "daily-query"]);
+});
+
+test("binding still accepts explicit identity input; a no-match is forwarded exactly once", async () => {
+  const h = harness({ bind: false });
+  await h.post([message("會員專區", "mother"), message("姓名 王小明", "name"), message("0912345678", "phone")]);
+  assert.deepEqual(h.calls.bind.map(e => e.webhookEventId), ["name", "phone"]);
+  assert.deepEqual(h.calls.fetch.flatMap(forwardedIds), ["mother", "name", "phone"]);
+  for (const call of h.calls.fetch) assert.equal(call.headers["x-line-signature"], sign(call.body));
+});
+
+test("production card entry, signup button, daily claim and reward each keep their owner", async () => {
+  const h = harness({ templateKeywords: ["簽到贈點活動"], rewardKeywords: ["954e"], bind: true });
+  await h.post([message("簽到贈點活動", "card"), message("我想報名", "signup"), message("虎克茶簽到贈點", "signin"), message("954e", "gift"), message("會員專區", "member")]);
+  assert.deepEqual(h.calls.template.map(e => e.webhookEventId), ["card"]);
+  assert.deepEqual(h.calls.daily.map(e => e.webhookEventId), ["signin"]);
+  assert.deepEqual(h.calls.reward.map(e => e.webhookEventId), ["gift"]);
+  assert.equal(h.calls.bind.length, 0, "pending identity collection cannot intercept 我想報名");
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["signup", "member"]);
+});
+
+test("slow child reward does not block mother forwarding or webhook acknowledgement", async () => {
+  const gate = deferred();
+  const h = harness({ reward: () => gate.promise });
+  try {
+    const responsePromise = h.post([message("954e"), message("會員專區")], { drain: false });
+    await until(() => h.calls.fetch.length === 1);
+    let acknowledged = false;
+    responsePromise.then(() => { acknowledged = true; });
+    await until(() => acknowledged);
+    assert.equal((await responsePromise).status, 200);
+    assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["會員專區"]);
+  } finally {
+    gate.resolve(true);
+    await Promise.all(h.pending || []);
+  }
+});
+
+test("slow mother does not block child keyword or acknowledgement", async () => {
+  const gate = deferred();
+  const h = harness({ forwardGate: gate.promise });
+  try {
+    const response = await h.post([message("會員專區"), message("954e")], { drain: false });
+    assert.equal(response.status, 200);
+    await until(() => h.calls.reward.length === 1);
+  } finally {
+    gate.resolve();
+    await Promise.all(h.pending || []);
+  }
+});
+
+test("slow diagnostic storage does not block either keyword branch", async () => {
+  const gate = deferred();
+  const h = harness({ diagnosticGate: gate.promise });
+  try {
+    const responsePromise = h.post([message("954e"), message("會員專區")], { drain: false });
+    await until(() => h.calls.reward.length === 1 && h.calls.fetch.length === 1);
+    assert.equal((await responsePromise).status, 200);
+  } finally {
+    gate.resolve();
+    await Promise.all(h.pending || []);
+  }
+});
+
+test("local ordering is retained per member without blocking other members", async () => {
+  const gate = deferred();
+  const h = harness({ reward: e => e.webhookEventId === "first" ? gate.promise : true });
+  const first = message("954e", "first");
+  const next = { ...message("daily", "next"), source: first.source };
+  try {
+    await h.post([first, next, message("954e", "other")], { drain: false });
+    await until(() => h.calls.reward.length === 2);
+    assert.equal(h.calls.daily.length, 0);
+  } finally {
+    gate.resolve(true);
+    await Promise.all(h.pending || []);
+  }
+  assert.equal(h.calls.daily.length, 1);
+});
+
+test("postbacks and non-text events remain mother-owned alongside local keywords", async () => {
+  const postback = { ...follow, type: "postback", webhookEventId: "postback", postback: { data: "member" } };
+  const photo = { ...message("", "photo"), message: { type: "image", id: "photo" } };
+  const h = harness();
+  await h.post([message("954e"), postback, photo, follow]);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["postback", "photo", "follow-new"]);
+  assert.equal(h.calls.reward.length, 1);
+});
+
+const filter = process.argv.find(arg => arg.startsWith("--filter="))?.slice(9);
+const selected = tests.filter(test => !filter || test.name.includes(filter));
+for (const { name, body } of selected) {
   await body();
   console.log("PASS " + name);
 }
-console.log(tests.length + "/" + tests.length + " webhook routing regressions passed (all network/storage mocked).");
+console.log(selected.length + "/" + selected.length + " webhook routing regressions passed (all network/storage mocked).");

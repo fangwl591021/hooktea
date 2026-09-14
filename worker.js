@@ -2260,7 +2260,7 @@ const HOOKTEA_DAILY_SIGNIN_KEYWORD = "虎克茶簽到贈點";
 function isHookTeaDailySigninKeyword(text) {
   const normalized = normalizeShopKeywordRewardText(text);
   const expected = normalizeShopKeywordRewardText(HOOKTEA_DAILY_SIGNIN_KEYWORD);
-  return normalized === expected || (/虎克茶/.test(normalized) && /簽到/.test(normalized) && /贈點/.test(normalized));
+  return normalized === expected;
 }
 
 function hookTeaDailySigninPoints(settings = {}, env = {}) {
@@ -2354,11 +2354,11 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   return true;
 }
 
-async function handleShopKeywordReward(env, ctx, event) {
+async function handleShopKeywordReward(env, ctx, event, settings = null) {
   if (event?.type !== 'message' || event?.message?.type !== 'text') return false;
   const lineUid = String(event?.source?.userId || '').trim();
   const text = normalizeShopKeywordRewardText(event.message.text);
-  const reward = configuredKeywordRewards(await safeGetKV(env, 'SYSTEM_SETTINGS', {}));
+  const reward = configuredKeywordRewards(settings || await safeGetKV(env, 'SYSTEM_SETTINGS', {}));
   const keyword = reward.keywords.find(value => normalizeShopKeywordRewardText(value) === text);
   if (!lineUid || !keyword || !reward.points) return false;
   const hash = await sha256HexBody(text);
@@ -2384,12 +2384,12 @@ function isReferralInviteKeyword(text) {
 }
 
 function isMotherSiteKeyword(text) {
-  const normalized = String(text || "").replace(/\s+/g, "").trim();
+  const normalized = normalizeShopKeywordRewardText(text);
   return /^(會員專區|會員中心|會員註冊|註冊|注册|加入會員|會員分享|分享好友|推薦好友|邀請好友|會員打卡|打卡)$/i.test(normalized);
 }
 
 function motherSiteKeywordType(text) {
-  const normalized = String(text || "").replace(/\s+/g, "").trim();
+  const normalized = normalizeShopKeywordRewardText(text);
   if (/^(會員打卡|打卡)$/i.test(normalized)) return "checkin";
   if (/^(會員分享|分享好友|推薦好友|邀請好友)$/i.test(normalized)) return "share";
   if (/^(會員註冊|註冊|注册|加入會員)$/i.test(normalized)) return "register";
@@ -3584,7 +3584,8 @@ function getHookTeaCheckinTemplateTriggerState(template, text) {
   const normalizedKeywords = (template?.keywords || []).map(keyword => normalizeShopKeywordRewardText(keyword)).filter(Boolean);
   const active = !!template && template.active !== false;
   const hasImage = Array.isArray(template?.pages) && template.pages.some(page => String(page?.imageUrl || "").trim());
-  const matchedKeyword = active && hasImage ? normalizedKeywords.find(keyword => keyword === normalizedText || (keyword.length >= 2 && normalizedText.includes(keyword))) || "" : "";
+  // A campaign-card keyword must not swallow another site's longer command.
+  const matchedKeyword = active && hasImage ? normalizedKeywords.find(keyword => keyword === normalizedText) || "" : "";
   return { active, hasImage, normalizedText, normalizedKeywords, matched: !!matchedKeyword, matchedKeyword };
 }
 
@@ -3649,14 +3650,14 @@ function buildHookTeaCheckinTemplateBubble(page) {
   return bubble;
 }
 
-async function maybeReplyHookTeaCheckinTemplate(env, event, text) {
+async function maybeReplyHookTeaCheckinTemplate(env, event, text, selectedTemplate = null) {
   const uid = String(event?.source?.userId || "").trim();
   const replyToken = String(event?.replyToken || "").trim();
   if (!uid || !replyToken || !text) return false;
   await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_ENTRY_LAST", { uid, text, replyTokenPresent: !!replyToken, enteredAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
   let template;
   try {
-    template = await getHookTeaCheckinTemplate(env);
+    template = selectedTemplate || await getHookTeaCheckinTemplate(env);
   } catch (error) {
     await safePutKV(env, "HOOKTEA_CHECKIN_TEMPLATE_TRIGGER_LAST", { uid, text, matched: false, stage: "load_template", error: error?.message || String(error), checkedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
     return false;
@@ -4185,6 +4186,29 @@ async function buildLineWebhookForwardRequest(env, parsedPayload, rawText, signa
     redirect: "follow",
     signal: AbortSignal.timeout(8000),
   };
+}
+
+function isLineMemberBindInput(text) {
+  const value = String(text || "").normalize("NFKC").trim();
+  // Pending identity collection is not a catch-all for arbitrary mother-site
+  // keywords. The existing bind prompt explicitly asks for a phone or 姓名 名字.
+  return /^(綁定會員|會員綁定|綁定點數)(?:\s*[:：]?\s*.*)?$/.test(value)
+    || value === "我的點數"
+    || /^姓名\s*[:：]?\s*\S+/.test(value)
+    || /^(?:09|\+?886[ -]?9)[\d -]+$/.test(value);
+}
+
+function selectLineWebhookEventOwner(event, settings, template) {
+  if (event?.type !== "message" || event?.message?.type !== "text") return "mother";
+  const text = String(event.message.text || "").trim();
+  // Reserve mother commands and the actual daily claim before configurable
+  // campaign keywords, so configuration overlap cannot replace either flow.
+  if (isMotherSiteKeyword(text)) return "mother_keyword";
+  if (isHookTeaDailySigninKeyword(text)) return "daily_signin";
+  if (isConfiguredShopKeywordReward(settings, text)) return "keyword_reward";
+  if (isHookTeaCheckinTemplateTrigger(template, text)) return "checkin_template";
+  if (isReferralInviteKeyword(text)) return "referral";
+  return isLineMemberBindInput(text) ? "member_bind" : "mother";
 }
 
 function extractResponseText(data) {
@@ -7266,7 +7290,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260914-identity-journal-v1' }),
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260914-keyword-router-v2' }),
         { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
@@ -9280,7 +9304,7 @@ export default {
       return new Response("OK", { status: 200 });
     }
     try {
-      await safePutKV(env, "LINE_WEBHOOK_LAST", {
+      const receiptTask = safePutKV(env, "LINE_WEBHOOK_LAST", {
         receivedAt: new Date().toISOString(),
         eventCount: events.length,
         tokenConfigured: !!getLineChannelAccessToken(env),
@@ -9292,36 +9316,61 @@ export default {
           text: event?.message?.type === "text" ? String(event.message.text || "").slice(0, 80) : "",
         })).slice(0, 10),
       }, { expirationTtl: 86400 }).catch(() => {});
+      if (ctx) ctx.waitUntil(receiptTask);
 
       const webhookSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
       const template = await getHookTeaCheckinTemplate(env).catch(() => null);
-      const unhandledEvents = [];
-      for (const event of events) {
+      const routedEvents = events.map(event => ({ event, owner: selectLineWebhookEventOwner(event, webhookSettings, template) }));
+      const motherEvents = routedEvents.filter(item => item.owner.startsWith("mother")).map(item => item.event);
+      const localEvents = routedEvents.filter(item => !item.owner.startsWith("mother"));
+      const forwardEvents = async (batch) => {
+        if (!batch.length) return;
+        const forwardWebhook = getMotherWebhookUrl(env, webhookSettings);
+        try {
+          const forwardRequest = await buildLineWebhookForwardRequest(env, parsedPayload, rawText, signature, batch);
+          // Dispatch before diagnostic writes. Only this downstream owns these
+          // reply tokens; never mirror them to GAS or blindly retry a timeout.
+          const [response] = await Promise.all([
+            fetch(forwardWebhook, forwardRequest),
+            safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
+              url: forwardWebhook, route: "per_event_owner", eventCount: batch.length,
+              texts: batch.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+              attemptedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 }).catch(() => {}),
+          ]);
+          const responseText = await response.text().catch(() => "");
+          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+            url: forwardWebhook, route: "per_event_owner", status: response.status, ok: response.ok,
+            eventCount: batch.length,
+            texts: batch.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+            response: responseText.slice(0, 300), forwardedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
+        } catch (error) {
+          console.error("Forward Webhook Error:", error);
+          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+            url: forwardWebhook, route: "per_event_owner", ok: false, error: error?.message || String(error),
+            eventCount: batch.length, forwardedAt: new Date().toISOString(),
+          }, { expirationTtl: 86400 }).catch(() => {});
+        }
+      };
+      // Start the mother branch before any local reward, binding, or monitoring
+      // I/O. A stalled child handler must not hold the mother's reply token.
+      const motherTask = forwardEvents(motherEvents);
+      if (ctx) ctx.waitUntil(motherTask);
+      const releasedEvents = new Set();
+      const handleLocalEvent = async ({ event, owner }) => {
         // Selecting an owner is separate from success: a local handler may have
         // spent its reply token or awarded points before returning/throwing.
-        let owner = "mother";
         let handled = false;
         const isText = event?.type === "message" && event?.message?.type === "text";
         const text = isText ? String(event.message.text || "").trim() : "";
         const uid = String(event?.source?.userId || "").trim();
         if (isText) {
-          if (isConfiguredShopKeywordReward(webhookSettings, text)) owner = "keyword_reward";
-          else if (isHookTeaCheckinTemplateTrigger(template, text)) owner = "checkin_template";
-          else if (isHookTeaDailySigninKeyword(text)) owner = "daily_signin";
-          else if (isMotherSiteKeyword(text)) owner = "mother_keyword";
-          else if (isReferralInviteKeyword(text)) owner = "referral";
-          else owner = "member_bind";
-
           try {
-            if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event);
-            else if (owner === "checkin_template") handled = await maybeReplyHookTeaCheckinTemplate(env, event, text);
+            if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event, webhookSettings);
+            else if (owner === "checkin_template") handled = await maybeReplyHookTeaCheckinTemplate(env, event, text, template);
             else if (owner === "daily_signin") handled = await handleHookTeaDailySigninReward(env, ctx, event);
-            else if (owner === "mother_keyword") {
-              await safePutKV(env, `MOTHER_KEYWORD_RECEIVED_${uid}`, {
-                lineUserId: uid, keyword: text, keywordType: motherSiteKeywordType(text),
-                route: "forward_only", receivedAt: new Date().toISOString(),
-              }, { expirationTtl: 86400 * 7 }).catch(() => {});
-            } else if (owner === "referral") {
+            else if (owner === "referral") {
               const inviteUrl = buildReferralInviteUrl("2007674851-lQljb6Cm", uid, uid);
               const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid);
               const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
@@ -9352,8 +9401,23 @@ export default {
             }, { expirationTtl: 86400 * 7 }).catch(() => {});
           }
         }
-        if (owner.startsWith("mother")) unhandledEvents.push(event);
+        if (owner.startsWith("mother")) releasedEvents.add(event);
+      };
+      // Keep local events from the same LINE source ordered, but do not let one
+      // customer's slow claim block another customer's independent keyword.
+      const localChains = new Map();
+      for (const item of localEvents) {
+        const sourceKey = item.event?.source?.userId || item.event?.source?.groupId || item.event?.source?.roomId || "unknown";
+        const previous = localChains.get(sourceKey) || Promise.resolve();
+        localChains.set(sourceKey, previous.then(() => handleLocalEvent(item)));
       }
+      const localTask = Promise.all(localChains.values()).then(async () => {
+        // A bind candidate that explicitly did not match has not consumed its
+        // token. Forward only those released events, never the original batch.
+        const released = events.filter(event => releasedEvents.has(event));
+        await forwardEvents(released);
+      });
+      if (ctx) ctx.waitUntil(localTask);
 
       // Monitoring also establishes LINE-only members for follow events. It has
       // no reply ownership and must not delay the reply/forward critical path.
@@ -9363,48 +9427,24 @@ export default {
       if (ctx) ctx.waitUntil(monitorTask);
       else await monitorTask;
 
-      await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
+      const diagnosticTask = Promise.all([safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
         receivedAt: new Date().toISOString(),
         route: "per_event_owner",
         totalEvents: events.length,
-        unhandledCount: unhandledEvents.length,
-        localHandledCount: events.length - unhandledEvents.length,
+        unhandledCount: motherEvents.length,
+        localAssignedCount: localEvents.length,
         gasMirrorSkipped: !!env.GAS_URL,
-        texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-      }, { expirationTtl: 86400 }).catch(() => {});
-      if (unhandledEvents.length) {
-        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || webhookSettings.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
-        // The verified original signature is valid only for the exact original
-        // bytes. Filtered batches are re-signed for the same OA channel.
-        const forwardRequest = await buildLineWebhookForwardRequest(env, parsedPayload, rawText, signature, unhandledEvents);
-        const forwardTask = (async () => {
-          await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
-            url: forwardWebhook, route: "per_event_owner", eventCount: unhandledEvents.length,
-            texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-            attemptedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
-          try {
-            // A second downstream handler (such as GAS) must not receive these
-            // reply tokens or run another point mutation for the same events.
-            const response = await fetch(forwardWebhook, forwardRequest);
-            const responseText = await response.text().catch(() => "");
-            await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-              url: forwardWebhook, route: "per_event_owner", status: response.status, ok: response.ok,
-              eventCount: unhandledEvents.length,
-              texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-              response: responseText.slice(0, 300), forwardedAt: new Date().toISOString(),
-            }, { expirationTtl: 86400 }).catch(() => {});
-          } catch (error) {
-            console.error("Forward Webhook Error:", error);
-            await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-              url: forwardWebhook, route: "per_event_owner", ok: false, error: error?.message || String(error),
-              eventCount: unhandledEvents.length, forwardedAt: new Date().toISOString(),
-            }, { expirationTtl: 86400 }).catch(() => {});
-          }
-        })();
-        if (ctx) ctx.waitUntil(forwardTask);
-        else await forwardTask;
-      }
+        texts: motherEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+      }, { expirationTtl: 86400 }).catch(() => {}), ...routedEvents.filter(item => item.owner === "mother_keyword").map(({ event }) => {
+        const uid = String(event?.source?.userId || "").trim();
+        const text = String(event?.message?.text || "").trim();
+        return safePutKV(env, `MOTHER_KEYWORD_RECEIVED_${uid}`, {
+          lineUserId: uid, keyword: text, keywordType: motherSiteKeywordType(text),
+          route: "forward_only", receivedAt: new Date().toISOString(),
+        }, { expirationTtl: 86400 * 7 }).catch(() => {});
+      })]);
+      if (ctx) ctx.waitUntil(diagnosticTask);
+      else await Promise.all([receiptTask, motherTask, localTask, diagnosticTask]);
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Webhook processing error:", error);
