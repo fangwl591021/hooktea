@@ -5,6 +5,8 @@
  * 功能：修復游標報錯、全面替換防彈 JSON 解析、加入 GAS 自動降落傘救援機制
  */
 
+import { createPointService } from './point-service.js';
+
 const utils = {
   hexToBytes: (hex) => {
     const bytes = new Uint8Array(hex.length / 2);
@@ -997,36 +999,8 @@ async function findLegacyMemberCandidates(env, query = {}) {
 }
 
 async function bindUniqueLegacyMemberByLineName(env, ctx, lineUid, lineProfile = {}) {
-  const uid = String(lineUid || "").trim();
-  const lineName = normalizeBindName(lineProfile?.name || lineProfile?.displayName || "");
-  if (!uid || !uid.startsWith("U") || !lineName) return { bound: false, reason: "missing_line_name" };
-  const candidates = await findLegacyMemberCandidates(env, { lineName }).catch(() => []);
-  const exact = candidates.filter(item => normalizeBindName(item.name || "") === lineName);
-  if (exact.length !== 1) return { bound: false, reason: exact.length > 1 ? "duplicate_line_name" : "not_found", candidates };
-  const userId = String(exact[0].userId || exact[0].legacyMemberId || "").trim();
-  if (!userId) return { bound: false, reason: "missing_user_id", candidates };
-  const current = await safeGetKV(env, `USER_${userId}`, null);
-  if (!current) return { bound: false, reason: "member_not_found", candidates };
-  const member = {
-    ...current,
-    lineUserId: current.lineUserId || uid,
-    linkedLineUid: current.linkedLineUid || uid,
-    lineDisplayName: current.lineDisplayName || lineName,
-    pictureUrl: current.pictureUrl || lineProfile?.picture || lineProfile?.pictureUrl || "",
-    updatedAt: new Date().toISOString(),
-    legacyLinkedAt: current.legacyLinkedAt || new Date().toISOString(),
-  };
-  await putUserKV(env, ctx, userId, member);
-  await safePutKV(env, `LINE_BIND_${uid}`, {
-    lineUserId: uid,
-    legacyUserId: userId,
-    name: member.name || member.displayName || lineName,
-    source: "exact_line_name",
-    linkedAt: new Date().toISOString(),
-  });
-  await mergeLineMonitorThread(env, uid, userId).catch(() => {});
-  await mergePointDataForLineBind(env, ctx, userId, uid).catch(() => {});
-  return { bound: true, userId, member, source: "exact_line_name" };
+  // LINE display names cannot prove ownership of a legacy account.
+  return { bound: false, reason: "name_match_requires_review" };
 }
 
 async function createLineBindReviewCase(env, ctx, data = {}) {
@@ -1078,39 +1052,16 @@ async function listLineBindReviewCases(env) {
 }
 
 async function mergePointDataForLineBind(env, ctx, legacyUid, lineUid) {
-  const targetUid = String(legacyUid || "").trim();
-  const sourceUid = String(lineUid || "").trim();
-  if (!targetUid || !sourceUid || targetUid === sourceUid) return null;
-  const existingAlias = await safeGetKV(env, `POINTS_ALIAS_${sourceUid}`, null, { preferWasabi: false }).catch(() => null);
-  const linePoints = await safeGetKV(env, `POINTS_${sourceUid}`, null);
-  const legacyPoints = await safeGetKV(env, `POINTS_${targetUid}`, { balance: 0, logs: [] });
-  const lineBalance = Number(linePoints?.balance || 0);
-  const legacyBalance = Number(legacyPoints.balance || 0);
-  const alreadyMigrated = existingAlias?.targetUid && String(existingAlias.targetUid) === targetUid
-    ? Number(existingAlias.migratedBalance || 0)
-    : 0;
-  const balanceToMerge = lineBalance - alreadyMigrated;
-  if (existingAlias?.targetUid && String(existingAlias.targetUid) === targetUid && balanceToMerge === 0) {
-    return legacyPoints;
+  // Historical local balances are evidence for review, never additional spendable points.
+  if (!legacyUid || !lineUid || legacyUid === lineUid) return null;
+  const member = await safeGetKV(env, 'USER_' + legacyUid, null);
+  const binding = await safeGetKV(env, 'LINE_BIND_' + lineUid, null, { preferWasabi: false });
+  if (!isTrustedHuaxuMemberBinding(member, legacyUid, lineUid, binding)) throw new Error('POINT_IDENTITY_CONFLICT');
+  const service = createHookTeaPointService(env);
+  for (const uid of [legacyUid, lineUid]) {
+    await service.snapshot(lineUid, uid, await safeGetKV(env, 'POINTS_' + uid, null));
   }
-  const lineLogs = Array.isArray(linePoints?.logs) ? linePoints.logs : [];
-  const migratedLogCount = existingAlias?.targetUid && String(existingAlias.targetUid) === targetUid
-    ? Number(existingAlias.migratedLogs || 0)
-    : 0;
-  const logsToMerge = migratedLogCount > 0 ? lineLogs.slice(0, Math.max(0, lineLogs.length - migratedLogCount)) : lineLogs;
-  const merged = {
-    ...legacyPoints,
-    balance: legacyBalance + balanceToMerge,
-    logs: [
-      ...logsToMerge.map(log => ({ ...log, migratedFromLineUid: sourceUid })),
-      ...(Array.isArray(legacyPoints.logs) ? legacyPoints.logs : []),
-    ].slice(0, 100),
-    linkedLineUid: sourceUid,
-    updatedAt: new Date().toISOString(),
-  };
-  await putPointKV(env, ctx, targetUid, merged);
-  await safePutKV(env, `POINTS_ALIAS_${sourceUid}`, { targetUid, movedAt: new Date().toISOString(), migratedBalance: lineBalance, migratedLogs: lineLogs.length });
-  return merged;
+  return null;
 }
 
 async function bindLegacyMemberToLine(env, ctx, lineUid, payload = {}, lineProfile = null) {
@@ -1119,32 +1070,15 @@ async function bindLegacyMemberToLine(env, ctx, lineUid, payload = {}, lineProfi
   const existing = await safeGetKV(env, `LINE_BIND_${verifiedLineUid}`, null, { preferWasabi: false });
   if (existing?.legacyUserId) {
     const member = await safeGetKV(env, `USER_${existing.legacyUserId}`, null);
-    if (member) return { bound: true, userId: existing.legacyUserId, member, source: "existing" };
+    if (member && isTrustedHuaxuMemberBinding(member, existing.legacyUserId, verifiedLineUid, existing)) return { bound: true, userId: existing.legacyUserId, member, source: "existing" };
+    return { bound: false, reason: "binding_conflict_requires_review" };
   }
   const phone = payload.phone || payload.mobile || payload.tel || payload.memberPhone;
   const name = payload.name || payload.displayName || lineProfile?.name || "";
   const found = await findLegacyMemberByPhone(env, phone, name);
   if (!found.found) return { bound: false, reason: found.reason, matches: found.matches || 0 };
-  const member = {
-    ...found.member,
-    lineUserId: verifiedLineUid,
-    linkedLineUid: verifiedLineUid,
-    lineDisplayName: lineProfile?.name || found.member.lineDisplayName || "",
-    pictureUrl: found.member.pictureUrl || lineProfile?.picture || "",
-    updatedAt: new Date().toISOString(),
-    legacyLinkedAt: new Date().toISOString(),
-  };
-  await putUserKV(env, ctx, found.userId, member);
-  await safePutKV(env, `LINE_BIND_${verifiedLineUid}`, {
-    lineUserId: verifiedLineUid,
-    legacyUserId: found.userId,
-    phone: normalizeMemberPhone(phone),
-    name: member.name || member.displayName || "",
-    linkedAt: new Date().toISOString(),
-  });
-  await mergeLineMonitorThread(env, verifiedLineUid, found.userId);
-  await mergePointDataForLineBind(env, ctx, found.userId, verifiedLineUid);
-  return { bound: true, userId: found.userId, member, source: found.source };
+  // A typed phone number is not phone verification. Staff can review the match.
+  return { bound: false, reason: "phone_match_requires_review", matches: 1 };
 }
 
 function lineEventMessageText(event) {
@@ -2104,18 +2038,14 @@ async function sendLineMulticast(env, recipients, messages) {
 }
 
 async function fetchLineApiWithTimeout(url, init, timeoutMs = 4500) {
-  let timeoutId = null;
-  const timeout = new Promise(resolve => {
-    timeoutId = setTimeout(() => resolve({ timeout: true }), timeoutMs);
-  });
-  const request = fetch(url, init).then(async res => {
+  try {
+    const res = await fetch(url, { ...init, signal: init?.signal || AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return { ok: false, status: res.status, text: await res.text().catch(() => "") };
     return { ok: true, status: res.status };
-  }).catch(error => ({ ok: false, error: error?.message || String(error) }));
-  const result = await Promise.race([request, timeout]);
-  if (timeoutId) clearTimeout(timeoutId);
-  if (result?.timeout) return { ok: false, timeout: true, timeoutMs };
-  return result;
+  } catch (error) {
+    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+    return { ok: false, timeout: timedOut, timeoutMs: timedOut ? timeoutMs : undefined, error: error?.message || String(error) };
+  }
 }
 
 async function replyLineMessage(env, replyToken, messages) {
@@ -2149,6 +2079,9 @@ async function pushLineMessage(env, userId, messages) {
 async function deliverLineMessage(env, userId, replyToken, messages) {
   const reply = await replyLineMessage(env, replyToken, messages);
   if (reply.ok) return { method: "reply", ...reply };
+  const replyStatus = Number(reply?.status || 0);
+  const definitelyNotDelivered = !!reply?.skipped || (replyStatus >= 400 && replyStatus < 500 && ![408, 425, 429].includes(replyStatus));
+  if (!definitelyNotDelivered) return { method: "reply", reply, ok: false, ambiguous: true };
   const push = await pushLineMessage(env, userId, messages);
   return { method: "push", reply, push, ok: !!push.ok };
 }
@@ -2285,22 +2218,20 @@ function normalizeShopKeywordRewardText(value) {
   return String(value || "").normalize("NFKC").trim().replace(/[\s\u200B-\u200D\uFEFF]+/g, "").toLowerCase();
 }
 
+function isConfiguredShopKeywordReward(settings = {}, text = "") {
+  const reward = configuredKeywordRewards(settings);
+  if (!reward.points || !reward.keywords.length) return false;
+  const normalizedText = normalizeShopKeywordRewardText(text);
+  return reward.keywords.some(keyword => normalizeShopKeywordRewardText(keyword) === normalizedText);
+}
+
 async function deliverKeywordRewardReply(env, lineUid, replyToken, message) {
-  const lineReplyToken = String(replyToken || "").trim();
-  if (lineReplyToken) return replyLineMessage(env, lineReplyToken, message);
-  return pushLineMessage(env, lineUid, message);
+  return deliverLineMessage(env, lineUid, replyToken, message);
 }
 
 async function deliverKeywordRewardReplyFast(env, lineUid, replyToken, message, timeoutMs = 2200) {
-  let timeoutId = null;
-  const timeout = new Promise(resolve => {
-    timeoutId = setTimeout(() => resolve({ ok: false, timeout: true, timeoutMs }), timeoutMs);
-  });
-  const delivery = deliverKeywordRewardReply(env, lineUid, replyToken, message)
-    .catch(error => ({ ok: false, error: error?.message || String(error) }));
-  const result = await Promise.race([delivery, timeout]);
-  if (timeoutId) clearTimeout(timeoutId);
-  return result;
+  return deliverKeywordRewardReply(env, lineUid, replyToken, message)
+    .catch(error => ({ ok: false, error: error?.message || String(error), timeoutMs }));
 }
 
 async function getKvJsonOnly(env, key, defaultVal = null) {
@@ -2338,366 +2269,115 @@ function hookTeaDailySigninPoints(settings = {}, env = {}) {
   return points > 0 ? points : 5;
 }
 
-async function handleHookTeaDailySigninReward(env, ctx, event) {
-  if (event?.type !== "message" || event?.message?.type !== "text") return false;
-  const text = String(event.message.text || "").trim();
-  const normalizedText = normalizeShopKeywordRewardText(text);
-  if (!isHookTeaDailySigninKeyword(text)) return false;
-  const lineUid = String(event?.source?.userId || "").trim();
-  const replyToken = String(event?.replyToken || "").trim();
-  if (!lineUid) return false;
-
-  const settings = await getKvJsonOnly(env, "SYSTEM_SETTINGS", {});
-  const rewardDate = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
-  const points = hookTeaDailySigninPoints(settings, env);
-  const recordKey = `HOOKTEA_DAILY_SIGNIN_${lineUid}_${rewardDate}`;
-  const writeDiagnostic = data => putKvJsonOnly(env, "HOOKTEA_DAILY_SIGNIN_LAST", {
-    lineUserId: lineUid,
-    keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-    text,
-    normalizedText,
-    points,
-    rewardDate,
-    recordKey,
-    replyTokenPresent: !!replyToken,
-    ...data,
-    updatedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 14 }).catch(() => {});
-
-  const queueDiagnostic = data => {
-    const task = writeDiagnostic(data);
-    if (ctx?.waitUntil) ctx.waitUntil(task);
-    return task;
-  };
-
-  queueDiagnostic({ status: "matched_entered" });
-  const timeout = (ms, value) => new Promise(resolve => setTimeout(() => resolve(value), ms));
-
-  const existing = await getKvJsonOnly(env, recordKey, null);
-  queueDiagnostic({ status: "daily_record_checked", existingStatus: existing?.status || "none", existingBalance: existing?.balanceAfter ?? null });
-  if (existing?.status === "claimed") {
-    const balanceText = Number.isFinite(Number(existing.balanceAfter)) ? ` 點數餘額 ${Number(existing.balanceAfter)} 點數。` : "";
-    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`今天已領取虎克茶簽到贈點，不能重複領取。${balanceText}`));
-    queueDiagnostic({ status: "duplicate", balanceAfter: existing.balanceAfter ?? null, delivery });
-    return true;
-  }
-  if (existing?.status === "pending") {
-    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("今天已領取虎克茶簽到贈點，不能重複領取。點數餘額請至會員專區查詢。"), 1800);
-    queueDiagnostic({ status: "pending_duplicate_replied", delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-    const recoverTask = (async () => {
-      try {
-        const directMember = { userId: existing.pointUid || existing.memberUid || lineUid, lineUserId: lineUid, linkedLineUid: lineUid };
-        const sharedPending = await queryWetwPointList(settings, directMember, env).catch(error => ({ ok: false, error: error?.message || String(error) }));
-        const recoveredBalance = sharedPending?.ok && Number.isFinite(Number(sharedPending.balance)) ? Math.max(0, Math.floor(Number(sharedPending.balance))) : null;
-        await putKvJsonOnly(env, recordKey, {
-          ...existing,
-          lineUserId: lineUid,
-          keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-          points,
-          rewardDate,
-          status: "claimed",
-          balanceAfter: recoveredBalance,
-          recoveredFromPending: true,
-          recoveredAt: new Date().toISOString(),
-        }, { expirationTtl: 86400 * 45 }).catch(() => {});
-        await writeDiagnostic({ status: "pending_background_recovered", balanceAfter: recoveredBalance, sharedPending });
-      } catch (error) {
-        await writeDiagnostic({ status: "pending_background_error", error: error?.message || String(error) });
-      }
-    })();
-    if (ctx?.waitUntil) ctx.waitUntil(recoverTask);
-    return true;
-  }
-
-  await putKvJsonOnly(env, recordKey, {
-    lineUserId: lineUid,
-    keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-    text,
-    normalizedText,
-    points,
-    rewardDate,
-    status: "pending",
-    acceptedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 45 }).catch(() => {});
-  queueDiagnostic({ status: "pending_record_created" });
-
-  const memberTask = ensureFastLineCheckinMember(env, ctx, lineUid, null, "hooktea_daily_signin_fast")
-    .catch(error => ({ memberUid: lineUid, member: null, error: error?.message || String(error) }));
-  if (ctx?.waitUntil) ctx.waitUntil(memberTask);
-  const matched = await Promise.race([
-    memberTask,
-    timeout(650, { memberUid: lineUid, member: null, timedOut: true }),
-  ]).catch(() => ({ memberUid: lineUid, member: null }));
-  const memberUid = String(matched?.memberUid || lineUid).trim();
-  const member = matched?.member || null;
-  const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
-  queueDiagnostic({ status: "member_resolution_finished", memberUid, memberResolved: !!member, timedOut: !!matched?.timedOut, error: matched?.error || "" });
-  const pointUid = memberUid || lineUid;
-  const pointData = { balance: 0, logs: [] };
-  const rewardReason = "虎克茶簽到贈點 " + rewardDate;
-  queueDiagnostic({ status: "point_record_skipped_for_daily_signin", memberUid, pointUid });
-  const memberForWp = { ...(member || {}), userId: pointUid, lineUserId: getMemberLineUid(member || {}, lineUid) || lineUid, name: memberName };
-
-  queueDiagnostic({ status: "mother_sync_started", memberUid, pointUid });
-  const wpRes = await Promise.race([
-    insertWetwPoint(settings, pointUid, points, rewardReason, env, memberForWp),
-    timeout(2500, { ok: false, timeout: true, message: "母站點數 API 逾時" }),
-  ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
-  let motherBalanceAfter = extractWetwInsertBalance(wpRes);
-  if (motherBalanceAfter === null && wpRes?.ok) {
-    const sharedAfter = await Promise.race([
-      queryWetwPointList(settings, memberForWp, env),
-      timeout(1500, { ok: false, timeout: true, message: "母站餘額查詢逾時" }),
-    ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
-    if (sharedAfter?.ok && Number.isFinite(Number(sharedAfter.balance))) motherBalanceAfter = Number(sharedAfter.balance);
-  }
-
-  if (motherBalanceAfter === null) {
-    await putKvJsonOnly(env, recordKey, {
-      lineUserId: lineUid,
-      memberUid,
-      pointUid,
-      keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-      points,
-      rewardDate,
-      status: "failed",
-      wpSync: wpRes,
-      failedAt: new Date().toISOString(),
-    }, { expirationTtl: 86400 * 7 }).catch(() => {});
-    const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage("簽到失敗，母站點數暫時無法同步，請稍後再試。"));
-    queueDiagnostic({ status: "mother_sync_failed", memberUid, pointUid, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-    return true;
-  }
-
-  const balanceAfter = Math.max(0, Math.floor(Number(motherBalanceAfter || 0)));
-  const createdTs = Date.now();
-  const createdAt = new Date(createdTs).toLocaleString();
-  const logEntry = {
-    logId: crypto.randomUUID ? crypto.randomUUID() : String(createdTs),
-    amount: points,
-    reason: rewardReason,
-    createdAt,
-    type: "EARN",
-    source: "hooktea_daily_signin",
-  };
-  const nextPoints = {
-    ...pointData,
-    balance: balanceAfter,
-    logs: [logEntry, ...(Array.isArray(pointData.logs) ? pointData.logs : [])].slice(0, 50),
-  };
-
-  await putPointKV(env, ctx || null, pointUid, nextPoints).catch(() => {});
-  await appendPointsLedger(env, {
-    logId: logEntry.logId,
-    uid: pointUid,
-    sourceUid: memberUid,
-    type: "EARN",
-    amount: points,
-    points,
-    reason: rewardReason,
-    balanceAfter,
-    createdAt,
-    createdTs,
-    source: "hooktea_daily_signin",
-    operatorUid: "",
-    operatorName: "",
-    targetName: memberName,
-  }).catch(() => {});
-  await putKvJsonOnly(env, recordKey, {
-    lineUserId: lineUid,
-    memberUid,
-    pointUid,
-    keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-    points,
-    rewardDate,
-    status: "claimed",
-    balanceAfter,
-    wpSync: wpRes,
-    claimedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 45 }).catch(() => {});
-
-  const delivery = await deliverKeywordRewardReplyFast(env, lineUid, replyToken, textLineMessage(`簽到成功，已贈送 ${points} 點數。點數餘額 ${balanceAfter} 點數。`));
-  queueDiagnostic({ status: "success_synced_before_reply", memberUid, pointUid, balanceAfter, motherBalanceAfter, wpSync: wpRes, delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-  return true;
+// Rewards use deterministic journal IDs. Old claim records remain duplicate barriers.
+function createHookTeaPointService(env) {
+  return createPointService({
+    db: env.DB,
+    query: async member => queryWetwPointList(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), member, env),
+    insert: async (member, amount, reason) => {
+      const result = await insertWetwPoint(await safeGetKV(env, 'SYSTEM_SETTINGS', {}),
+        member.userId, amount, reason, env, member);
+      return { ...result, balance: extractWetwInsertBalance(result),
+        transactionId: result?.data?.data?.insert_row?.id || null };
+    },
+  });
 }
-async function handleShopKeywordReward(env, ctx, event) {
-  if (event?.type !== "message" || event?.message?.type !== "text") return false;
-  const text = String(event.message.text || "").trim();
-  const lineUid = String(event?.source?.userId || "").trim();
-  const replyToken = String(event?.replyToken || "").trim();
-  if (!text || !lineUid) return false;
-  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const reward = configuredKeywordRewards(settings);
-  if (!reward.points || !reward.keywords.length) {
-    await safePutKV(env, "KEYWORD_REWARD_LAST", {
-      lineUserId: lineUid,
-      text,
-      status: "not_configured",
-      points: reward.points,
-      keywordCount: reward.keywords.length,
-      replyTokenPresent: !!replyToken,
-      updatedAt: new Date().toISOString(),
-    }, { expirationTtl: 86400 * 7 }).catch(() => {});
-    return false;
-  }
-  const normalizedText = normalizeShopKeywordRewardText(text);
-  const matchedKeyword = reward.keywords.find(keyword => normalizeShopKeywordRewardText(keyword) === normalizedText);
-  if (!matchedKeyword) {
-    await safePutKV(env, "KEYWORD_REWARD_LAST", {
-      lineUserId: lineUid,
-      text,
-      normalizedText,
-      status: "no_match",
-      configuredKeywords: reward.keywords.slice(0, 20),
-      replyTokenPresent: !!replyToken,
-      updatedAt: new Date().toISOString(),
-    }, { expirationTtl: 86400 * 7 }).catch(() => {});
-    return false;
-  }
 
-  const nowIso = new Date().toISOString();
-  const createdTs = Date.now();
-  const createdAt = new Date(createdTs).toLocaleString();
-  const keywordHash = await sha256HexBody(matchedKeyword);
-  const recordKey = `KEYWORD_REWARD_${lineUid}_${keywordHash.slice(0, 24)}`;
-  const writeDiagnostic = data => safePutKV(env, "KEYWORD_REWARD_LAST", {
-    lineUserId: lineUid,
-    text,
-    matchedKeyword,
-    points: reward.points,
-    recordKey,
-    replyTokenPresent: !!replyToken,
-    ...data,
-    updatedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 7 }).catch(() => {});
+async function readAuthoritativePoints(env, lineUid, member, limit = 50) {
+  const service = createHookTeaPointService(env);
+  const local = await getPointDataForUid(env, member.userId || lineUid, { balance: 0, logs: [] });
+  await service.snapshot(lineUid, local.pointUid, local.data);
+  await service.resume(lineUid, member);
+  const result = await service.read(lineUid, member);
+  return { ...result, logs: result.shared.ok ? buildPointDataFromWetw(result.shared, limit).logs : [],
+    shared: { ok: result.shared.ok, reason: result.shared.reason || '', balance: result.balance } };
+}
 
-  if (ctx) ctx.waitUntil(writeDiagnostic({ status: "queued" }));
-  else writeDiagnostic({ status: "queued" }).catch(() => {});
-  const shouldReplyInTask = true;
-  // Fixed rule: duplicate keyword rewards must reply before CRM/WP lookups.
-  // Do not move this behind member or point queries; those can timeout and leave LINE without a reply.
-  const earlyExisting = await getKvJsonOnly(env, recordKey, null);
-  if (earlyExisting) {
-    const duplicateMessage = "這組活動關鍵字已領取過，不能重複領取。";
-    const delivery = await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(duplicateMessage)).catch(e => ({ ok: false, error: e?.message || String(e) }));
-    await writeDiagnostic({
-      status: earlyExisting.claimedAt ? "duplicate_early" : "duplicate_pending_early",
-      memberUid: earlyExisting.memberUid || "",
-      pointUid: earlyExisting.pointUid || "",
-      balance: null,
-      delivery,
-      wpSync: earlyExisting.wpSync || { ok: false, skipped: true, reason: "duplicate_no_wp_resync" },
-      tokenConfigured: !!getLineChannelAccessToken(env),
-    });
-    return true;
-  }
-  if (replyToken) {
-    if (ctx) ctx.waitUntil(writeDiagnostic({ status: "reply_deferred_until_duplicate_check", tokenConfigured: !!getLineChannelAccessToken(env) }));
-    else writeDiagnostic({ status: "reply_deferred_until_duplicate_check", tokenConfigured: !!getLineChannelAccessToken(env) }).catch(() => {});
-  }
-  const task = (async () => {
-    try {
-      const binding = await safeGetKV(env, `LINE_BIND_${lineUid}`, null, { preferWasabi: false }).catch(() => null);
-      const memberUid = String(binding?.legacyUserId || lineUid).trim();
-      const pointLookup = await getPointDataForUid(env, memberUid, { balance: 0, logs: [] });
-      const pointUid = pointLookup.pointUid || memberUid;
-      const member = await safeGetKV(env, `USER_${pointUid}`, null).catch(() => null);
-      const memberName = String(member?.name || member?.displayName || member?.lineDisplayName || "").trim();
-      const namePrefix = memberName ? `${memberName}，` : "";
-      const existing = await getKvJsonOnly(env, recordKey, null);
-      const pointData = pointLookup.data || { balance: 0, logs: [] };
-      const rewardReason = `關鍵字贈點：${matchedKeyword}`;
-      const logs = Array.isArray(pointData.logs) ? pointData.logs : [];
-      const priorRewardLog = logs.find(log => String(log?.reason || "") === rewardReason);
-
-      if (existing || priorRewardLog) {
-        let recoveredRecord = existing || null;
-        if (!existing?.claimedAt && priorRewardLog) {
-          recoveredRecord = {
-            lineUserId: lineUid,
-            memberUid,
-            pointUid,
-            keyword: matchedKeyword,
-            points: reward.points,
-            recoveredFromPointLog: true,
-            claimedAt: priorRewardLog.createdAt || nowIso,
-            recoveredAt: nowIso,
-            wpSync: { ok: false, skipped: true, reason: "duplicate_no_wp_resync" },
-            wpSyncedAt: existing?.wpSyncedAt || "",
-          };
-          await putKvJsonOnly(env, recordKey, recoveredRecord, { expirationTtl: 86400 * 3650 });
-        }
-        const duplicateMessage = `${namePrefix}這組活動關鍵字已領取過，不能重複領取。`;
-        const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(duplicateMessage)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
-        await writeDiagnostic({ status: priorRewardLog && !existing?.claimedAt ? "recovered_duplicate" : "duplicate", memberUid, pointUid, balance: Number(pointData.balance || 0), delivery, wpSync: recoveredRecord?.wpSync || { ok: false, skipped: true, reason: "duplicate_no_wp_resync" }, tokenConfigured: !!getLineChannelAccessToken(env) });
-        return;
-      }
-
-      const numericPoints = Number(reward.points || 0);
-      const logEntry = { logId: crypto.randomUUID ? crypto.randomUUID() : String(createdTs), amount: Math.abs(numericPoints), reason: rewardReason, createdAt, type: numericPoints >= 0 ? "EARN" : "SPEND" };
-      const nextPoints = {
-        ...pointData,
-        balance: Number(pointData.balance || 0) + numericPoints,
-        logs: [logEntry, ...logs].slice(0, 50),
-      };
-      await putKvJsonOnly(env, recordKey, {
-        lineUserId: lineUid,
-        memberUid,
-        pointUid,
-        keyword: matchedKeyword,
-        points: numericPoints,
-        source: "local_pending",
-        pendingAt: nowIso,
-      }, { expirationTtl: 86400 * 3650 });
-      await putPointKV(env, ctx || null, pointUid, nextPoints);
-      await putKvJsonOnly(env, recordKey, {
-        lineUserId: lineUid,
-        memberUid,
-        pointUid,
-        keyword: matchedKeyword,
-        points: numericPoints,
-        source: "local",
-        pendingAt: nowIso,
-        claimedAt: nowIso,
-      }, { expirationTtl: 86400 * 3650 });
-      const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`${namePrefix}恭喜您獲得 ${numericPoints} 點`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
-      await writeDiagnostic({ status: "success", memberUid, pointUid, balance: Number(nextPoints.balance || 0), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-
-      await appendPointsLedger(env, {
-        logId: logEntry.logId,
-        uid: pointUid,
-        sourceUid: memberUid,
-        type: numericPoints >= 0 ? "EARN" : "SPEND",
-        amount: numericPoints,
-        points: Math.abs(numericPoints),
-        reason: rewardReason,
-        balanceAfter: Number(nextPoints.balance || 0),
-        createdAt,
-        createdTs,
-        source: "shop_keyword_reward",
-        operatorUid: "",
-        operatorName: "",
-        targetName: "",
-      }).catch(error => console.error("Keyword reward ledger sync failed", error));
-      const settingsForWp = await safeGetKV(env, "SYSTEM_SETTINGS", {}).catch(() => ({}));
-      const wpRes = await insertWetwPoint(settingsForWp, pointUid, numericPoints, rewardReason, env, member || { userId: pointUid, lineUserId: lineUid }).catch(error => ({ ok: false, error: error?.message || String(error) }));
-      const motherBalanceAfter = extractWetwInsertBalance(wpRes);
-      const localAlign = motherBalanceAfter !== null
-        ? await alignLocalPointsToMotherBalance(env, ctx || null, pointUid, motherBalanceAfter, "母站關鍵字贈點後同步子站餘額").catch(error => ({ ok: false, error: error?.message || String(error) }))
-        : null;
-      await writeDiagnostic({ status: "success_synced", memberUid, pointUid, balance: Number(nextPoints.balance || 0), motherBalanceAfter, localAlign, wpSync: wpRes, tokenConfigured: !!getLineChannelAccessToken(env) });
-      observeHighRiskDualWrite(env, ctx || null, ["points", "point-ledger"]);
-    } catch (error) {
-      const delivery = shouldReplyInTask ? await deliverKeywordRewardReply(env, lineUid, replyToken, textLineMessage(`關鍵字贈點處理失敗，請稍後再試或通知管理員。\n關鍵字：${matchedKeyword}`)).catch(e => ({ ok: false, error: e?.message || String(e) })) : { ok: true, skipped: true, reason: "reply_already_sent" };
-      await writeDiagnostic({ status: "error", error: error?.message || String(error), delivery, tokenConfigured: !!getLineChannelAccessToken(env) });
-      console.error("Keyword Reward Background Error:", error);
+async function claimHookTeaReward(env, ctx, { lineUid, kind, key, amount, reason, recordKey, profile = null, eventId = '' }) {
+  const service = createHookTeaPointService(env);
+  const id = kind + ':' + lineUid + ':' + key;
+  const priorOperation = await service.get(id);
+  // Preserve pre-migration claims and uncertain writes. Never replay them as new rewards.
+  if (!priorOperation) {
+    const old = recordKey ? await getKvJsonOnly(env, recordKey, null) : null;
+    let claim = null;
+    if (kind === 'daily_signin') claim = await env.DB.prepare('SELECT status FROM daily_signin_claims WHERE line_user_id = ? AND claim_date = ?').bind(lineUid, key).first();
+    if (kind === 'keyword_reward') claim = await env.DB.prepare("SELECT status FROM reward_claims WHERE line_user_id = ? AND reward_type = 'keyword' AND reward_key = ?").bind(lineUid, key).first();
+    if (old || claim) {
+      const claimed = !!old?.claimedAt || old?.status === 'claimed' || claim?.status === 'claimed';
+      return { ok: claimed, pending: !claimed, duplicate: true, status: claimed ? 'confirmed' : 'legacy_review', balance: null };
     }
-  })();
-  if (replyToken) await task;
-  else if (ctx) ctx.waitUntil(task);
-  else await task;
+  }
+  const resolved = await ensureFastLineCheckinMember(env, ctx, lineUid, profile, 'hooktea_reward_journal');
+  const member = resolved.member;
+  if (!member) throw new Error('MEMBER_IDENTITY_REVIEW_REQUIRED');
+  const local = await getPointDataForUid(env, resolved.memberUid, { balance: 0, logs: [] });
+  await service.snapshot(lineUid, local.pointUid, local.data);
+  // Existing local historical keyword log is also a duplicate barrier.
+  if (!priorOperation && kind === 'keyword_reward' && (local.data.logs || []).some(log =>
+    normalizeShopKeywordRewardText(log.reason) === normalizeShopKeywordRewardText(reason))) {
+    return { ok: true, duplicate: true, status: 'confirmed', balance: null };
+  }
+  const input = { id, lineUid, memberUid: resolved.memberUid, kind, amount, reason, metadata: { eventId } };
+  let result = priorOperation
+    ? await service.attempt(id, member)
+    : await service.submit(input, member);
+  result = { ...result, duplicate: !!priorOperation };
+  if (recordKey) await putKvJsonOnly(env, recordKey, {
+    lineUserId: lineUid, memberUid: resolved.memberUid, points: amount,
+    status: result.ok ? 'claimed' : 'pending', balanceAfter: result.balance,
+    operationId: id, operationStatus: result.status,
+    claimedAt: result.ok ? new Date().toISOString() : '',
+  }, { expirationTtl: 86400 * 3650 }).catch(() => {});
+  return result;
+}
+
+async function handleHookTeaDailySigninReward(env, ctx, event) {
+  if (event?.type !== 'message' || event?.message?.type !== 'text' || !isHookTeaDailySigninKeyword(event.message.text)) return false;
+  const lineUid = String(event?.source?.userId || '').trim();
+  if (!lineUid) return false;
+  const date = taipeiDateKey();
+  const points = hookTeaDailySigninPoints(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), env);
+  let result;
+  try {
+    result = await claimHookTeaReward(env, ctx, { lineUid, kind: 'daily_signin', key: date, amount: points,
+      reason: '虎克茶簽到贈點 ' + date, recordKey: 'HOOKTEA_DAILY_SIGNIN_' + lineUid + '_' + date,
+      profile: event.hookTeaProfile, eventId: event.webhookEventId || event.message.id || '' });
+  } catch (error) {
+    result = { ok: false, pending: true, status: 'unavailable' };
+    console.error('Daily reward journal unavailable', error);
+  }
+  const message = result.ok
+    ? (result.duplicate ? '今天已經完成簽到，不能重複領取。' : '簽到成功，已贈送 ' + points + ' 點。')
+    : '簽到點數尚待確認，請稍後至會員專區查看；系統不會重複加點。';
+  if (!event.hookTeaSuppressReply) await deliverKeywordRewardReplyFast(env, lineUid, event.replyToken || '', textLineMessage(message), 2200).catch(() => {});
   return true;
 }
+
+async function handleShopKeywordReward(env, ctx, event) {
+  if (event?.type !== 'message' || event?.message?.type !== 'text') return false;
+  const lineUid = String(event?.source?.userId || '').trim();
+  const text = normalizeShopKeywordRewardText(event.message.text);
+  const reward = configuredKeywordRewards(await safeGetKV(env, 'SYSTEM_SETTINGS', {}));
+  const keyword = reward.keywords.find(value => normalizeShopKeywordRewardText(value) === text);
+  if (!lineUid || !keyword || !reward.points) return false;
+  const hash = await sha256HexBody(text);
+  let result;
+  try {
+    result = await claimHookTeaReward(env, ctx, { lineUid, kind: 'keyword_reward', key: hash,
+      amount: Number(reward.points), reason: '關鍵字贈點：' + keyword,
+      recordKey: 'KEYWORD_REWARD_' + lineUid + '_' + hash.slice(0, 24), eventId: event.webhookEventId || event.message.id || '' });
+  } catch (error) {
+    result = { ok: false, pending: true, status: 'unavailable' };
+    console.error('Keyword reward journal unavailable', error);
+  }
+  const message = result.ok
+    ? (result.duplicate ? '這組活動關鍵字已領取過，不能重複領取。' : '恭喜您獲得 ' + reward.points + ' 點。')
+    : '活動點數尚待確認，請稍後至會員專區查看；系統不會重複加點。';
+  await deliverKeywordRewardReply(env, lineUid, event.replyToken || '', textLineMessage(message)).catch(() => {});
+  return true;
+}
+
 function isReferralInviteKeyword(text) {
   const normalized = String(text || "").replace(/\s+/g, "").trim();
   return /^(推薦好友|分享好友|邀請好友|我的推薦|推薦連結|邀請連結|QR碼|QRCode|QR)$/i.test(normalized);
@@ -2774,12 +2454,9 @@ async function sendTelegramNotification(env, text, settings = null) {
 async function ensureFastLineCheckinMember(env, ctx, lineUid, profile = null, source = "mother_keyword_checkin_fast") {
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return { memberUid: "", member: null };
-  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false }).catch(() => null);
-  const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
-  for (const candidateId of candidateIds) {
-    const member = await safeGetKV(env, `USER_${candidateId}`, null).catch(() => null);
-    if (member && (member.userId || candidateId)) return { memberUid: member.userId || candidateId, member, binding };
-  }
+  const resolved = await findHuaxuMemberByLineUidFast(env, uid);
+  if (resolved.identityConflict) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
+  if (resolved.member) return resolved;
   let lineProfile = profile;
   if (!lineProfile || (!lineProfile.displayName && !lineProfile.name && !lineProfile.pictureUrl && !lineProfile.picture)) {
     lineProfile = await fetchLineBotProfile(env, uid).catch(() => profile || {});
@@ -3226,15 +2903,18 @@ async function queryWetwPointList(settings, member, env = {}) {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) {}
-  if (!res.ok || data?.success === false) {
+  if (!res.ok || data?.success !== true) {
     return { ok: false, reason: data?.code || "wp_query_failed", status: res.status, message: data?.message || `WordPress 查詢 API HTTP ${res.status}` };
   }
-  const list = Array.isArray(data?.data?.list) ? data.data.list : [];
+  if (!Array.isArray(data?.data?.list)) return { ok: false, reason: 'invalid_point_response' };
+  const list = data.data.list;
   const latestWithBalance = list.find(item => item?.point_balance !== undefined && item?.point_balance !== null);
-  const balance = latestWithBalance
-    ? Number(latestWithBalance.point_balance)
-    : list.reduce((sum, item) => sum + (Number(item?.get_point) || 0), 0);
-  return { ok: true, balance: Number.isFinite(balance) ? balance : 0, list, raw: data };
+  // A page of transactions is not the complete balance.
+  const rawBalance = latestWithBalance?.point_balance ?? data?.data?.point_balance ?? data?.data?.balance;
+  if (rawBalance == null && list.length) return { ok: false, reason: 'missing_authoritative_balance' };
+  const balance = Number(rawBalance ?? 0);
+  if (!Number.isFinite(balance)) return { ok: false, reason: 'invalid_authoritative_balance' };
+  return { ok: true, balance, list };
 }
 
 function buildPointDataFromWetw(sharedPointData, limit = 50) {
@@ -3271,28 +2951,10 @@ function cleanPointLogs(logs = [], limit = 50) {
 }
 
 function resolveDisplayPointData(localPointData, sharedPointData, limit = 50) {
-  const localData = {
-    balance: Number(localPointData?.balance || 0),
-    logs: cleanPointLogs(localPointData?.logs, limit),
-    source: "local",
-  };
-  if (!sharedPointData?.ok) {
-    return {
-      ...localData,
-      shared: { ok: false, reason: sharedPointData?.reason || "unavailable" },
-    };
-  }
-  const wetwData = buildPointDataFromWetw(sharedPointData, limit);
-  if (localData.balance > wetwData.balance) {
-    return {
-      ...localData,
-      source: "local_ahead",
-      shared: { ok: true, balance: wetwData.balance, count: Array.isArray(sharedPointData.list) ? sharedPointData.list.length : 0 },
-    };
-  }
   return {
-    ...wetwData,
-    shared: { ok: true, count: Array.isArray(sharedPointData.list) ? sharedPointData.list.length : 0 },
+    ...(sharedPointData?.ok ? buildPointDataFromWetw(sharedPointData, limit) : { balance: 0, logs: [] }),
+    source: 'wetw', authority: 'mother', available: !!sharedPointData?.ok,
+    shared: { ok: !!sharedPointData?.ok, reason: sharedPointData?.reason || '' },
   };
 }
 
@@ -3322,7 +2984,7 @@ async function insertWetwPoint(settings, uid, amount, reason, env = {}, member =
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) {}
-  if (!res.ok || data?.success === false) {
+  if (!res.ok || data?.success !== true) {
     return { ok: false, status: res.status, code: data?.code, message: data?.message || text.slice(0, 300) };
   }
   return { ok: true, data };
@@ -3332,6 +2994,7 @@ function extractWetwInsertBalance(wpRes) {
   const value = wpRes?.data?.data?.insert_row?.point_balance
     ?? wpRes?.data?.data?.point_balance
     ?? wpRes?.data?.point_balance;
+  if (value === null || value === undefined || value === '') return null;
   const balance = Number(value);
   return Number.isFinite(balance) ? balance : null;
 }
@@ -3415,19 +3078,7 @@ async function fetchWpLegacyPoints(settings, member) {
 }
 
 function deriveLineClientId(env, settings) {
-  const candidates = [
-    env.LINE_LOGIN_CHANNEL_ID,
-    env.LINE_CHANNEL_ID,
-    env.LIFF_CHANNEL_ID,
-    settings?.line_login_channel_id,
-    settings?.line_channel_id,
-    settings?.liff_channel_id,
-  ];
-  const configured = candidates.map(v => String(v || "").trim()).find(Boolean);
-  if (configured) return configured;
-  const liffId = String(settings?.crm_liff_id || settings?.admin_liff_id || settings?.crm_login_liff_id || settings?.liff_id || DEFAULT_CRM_LIFF_ID).trim();
-  const match = liffId.match(/^(\d+)-/);
-  return match ? match[1] : "";
+  return huaxuLoginClientIds(env, settings)[0] || "";
 }
 
 function getCrmLiffId(env, settings = {}) {
@@ -3470,11 +3121,20 @@ async function verifyLineIdToken(env, idToken, settings) {
   return await res.json();
 }
 
-async function verifyLineAccessToken(accessToken) {
+async function verifyLineAccessToken(accessToken, env = null, settings = {}) {
   const token = String(accessToken || "").trim();
   if (!token) return null;
+  if (env) {
+    const clientIds = huaxuLoginClientIds(env, settings);
+    if (!clientIds.length) throw new Error("LINE login channel is not configured");
+    const tokenRes = await fetch("https://api.line.me/oauth2/v2.1/verify?access_token=" + encodeURIComponent(token), { signal: AbortSignal.timeout(5000) });
+    if (!tokenRes.ok) throw new Error("LINE access token verification failed");
+    const tokenInfo = await tokenRes.json();
+    if (!clientIds.includes(String(tokenInfo.client_id || "")) || Number(tokenInfo.expires_in || 0) <= 0) throw new Error("LINE access token audience mismatch");
+  }
   const res = await fetch("https://api.line.me/v2/profile", {
     headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(5000),
   });
   if (!res.ok) throw new Error("LINE access token verification failed");
   const profile = await res.json();
@@ -3484,6 +3144,60 @@ async function verifyLineAccessToken(accessToken) {
     name: profile.displayName || "",
     picture: profile.pictureUrl || "",
   };
+}
+
+function huaxuLoginClientIds(env, settings = {}) {
+  const explicit = [env.LINE_LOGIN_CHANNEL_ID, env.LIFF_CHANNEL_ID, settings.line_login_channel_id, settings.liff_channel_id]
+    .map(value => String(value || "").trim()).filter(Boolean);
+  if (explicit.length) return [...new Set(explicit)];
+  // Only server-owned LIFF settings are accepted; Messaging API channel IDs are different.
+  return [...new Set([env.SHOP_LIFF_ID, env.LIFF_ID, env.CRM_LIFF_ID, settings.shop_liff_id, settings.liff_id, settings.crm_liff_id]
+    .map(value => String(value || "").trim().match(/^(\d+)-/)?.[1]).filter(Boolean))];
+}
+
+async function requireHuaxuIdentity(request, env, payload = {}) {
+  const bearer = String(request.headers.get("authorization") || "").match(/^Bearer\s+(.+)$/i)?.[1] || "";
+  const token = String(payload?.accessToken || bearer || "").trim();
+  const reject = (status, code, message) => ({ ok: false, response: json({ ok: false, code, message }, status) });
+  if (!token) return reject(401, "LINE_LOGIN_REQUIRED", "請先完成 LINE 登入");
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const clientIds = huaxuLoginClientIds(env, settings);
+  if (!clientIds.length) return reject(503, "LINE_LOGIN_NOT_CONFIGURED", "會員登入設定尚未完成，請聯絡客服");
+  try {
+    const tokenRes = await fetch("https://api.line.me/oauth2/v2.1/verify?access_token=" + encodeURIComponent(token), { signal: AbortSignal.timeout(5000) });
+    if (!tokenRes.ok) return reject(401, "LINE_LOGIN_EXPIRED", "LINE 登入已失效，請重新登入");
+    const tokenInfo = await tokenRes.json();
+    if (!clientIds.includes(String(tokenInfo.client_id || "")) || Number(tokenInfo.expires_in || 0) <= 0) return reject(401, "LINE_LOGIN_INVALID", "LINE 登入驗證失敗，請重新登入");
+    const profile = await verifyLineAccessToken(token);
+    const lineUid = String(profile?.sub || "").trim();
+    if (!/^U[a-f0-9]{32}$/i.test(lineUid)) return reject(401, "LINE_LOGIN_INVALID", "LINE 登入驗證失敗，請重新登入");
+    const claimed = [payload?.lineUserId, payload?.lineProfile?.userId].map(value => String(value || "").trim()).filter(Boolean);
+    if (claimed.some(uid => uid !== lineUid)) return reject(403, "LINE_IDENTITY_MISMATCH", "會員身分不一致，請重新登入");
+    const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
+    if (resolved.identityConflict) return reject(409, "MEMBER_IDENTITY_REVIEW_REQUIRED", "會員綁定資料需要確認，請聯絡客服");
+    return { ok: true, lineUid, profile, memberUid: resolved.memberUid || lineUid, member: resolved.member || null, binding: resolved.binding || null };
+  } catch (error) {
+    return reject(401, "LINE_LOGIN_INVALID", "LINE 登入驗證失敗，請重新登入");
+  }
+}
+
+function isTrustedHuaxuMemberBinding(member, recordId, lineUid, binding = null) {
+  const uid = String(lineUid || "").trim();
+  if (!member || !uid || String(member.userId || recordId || "") !== String(recordId || "")) return false;
+  if (binding?.source === "exact_line_name") return false;
+  if (binding?.lineUserId && String(binding.lineUserId) !== uid) return false;
+  const lineIds = [member.lineUserId, member.linkedLineUid, member.lineUid, member.lineProfile?.userId,
+    /^U[a-f0-9]{32}$/i.test(String(member.userId || recordId || "")) ? member.userId || recordId : ""]
+    .map(value => String(value || "").trim()).filter(Boolean);
+  return lineIds.length > 0 && lineIds.every(value => value === uid);
+}
+
+function huaxuOrderOwnedBy(order, identity) {
+  // An explicit LINE owner always takes precedence over legacy member aliases.
+  const lineOwners = [order?.lineProfile?.userId, order?.lineUserId, /^U[a-f0-9]{32}$/i.test(String(order?.userId || "")) ? order.userId : ""]
+    .map(value => String(value || "").trim()).filter(Boolean);
+  if (lineOwners.length) return lineOwners.every(uid => uid === identity.lineUid);
+  return [order?.userId, order?.memberUid, order?.memberId].map(value => String(value || "").trim()).filter(Boolean).includes(identity.memberUid);
 }
 
 async function fetchLineBotProfile(env, uid) {
@@ -3582,9 +3296,9 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
     "AdminPassword",
     "adminPassword",
     "HOOKTEA_ADMIN_PASSWORD",
-  ]) || String(settings.admin_password || "@1234").trim();
+  ]) || String(settings.admin_password || "").trim();
   const payloadAdminPassword = String(payload?.adminPassword || "").trim();
-  const acceptedAdminPasswords = new Set([adminPassword, "@1234", "Tonyffang123"].filter(Boolean));
+  const acceptedAdminPasswords = new Set([adminPassword].filter(Boolean));
   if (payloadAdminPassword && acceptedAdminPasswords.has(payloadAdminPassword)) {
     return {
       settings,
@@ -3611,7 +3325,7 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   }
   if (!verifiedLineProfile) {
     try {
-      verifiedLineProfile = await verifyLineAccessToken(accessToken);
+      verifiedLineProfile = await verifyLineAccessToken(accessToken, env, settings);
     } catch (e) {
       tokenVerificationError = e;
       verifiedLineProfile = null;
@@ -3621,9 +3335,12 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   const adminUidSet = new Set([...splitCsv(env.ADMIN_UIDS), ...splitCsv(settings.admin_uids)]);
   const crmLoginUidSet = new Set([...splitCsv(env.CRM_LOGIN_UIDS), ...splitCsv(settings.crm_login_uids)]);
   const teacherUidSet = new Set(splitCsv(env.TEACHER_UIDS));
-  const binding = verifiedUserId ? await safeGetKV(env, `LINE_BIND_${verifiedUserId}`, null, { preferWasabi: false }) : null;
-  const userId = binding?.legacyUserId || verifiedUserId || "GUEST";
-  let userData = userId && userId !== "GUEST" ? await safeGetKV(env, `USER_${userId}`, null) : null;
+  const resolvedIdentity = verifiedUserId ? await findHuaxuMemberByLineUidFast(env, verifiedUserId) : null;
+  const binding = resolvedIdentity?.binding || null;
+  const identityConflict = resolvedIdentity?.identityConflict === true;
+  const userId = identityConflict ? "GUEST" : resolvedIdentity?.memberUid || verifiedUserId || "GUEST";
+  const identityMismatch = claimedUserId && claimedUserId !== "GUEST" && verifiedUserId && ![verifiedUserId, userId].includes(claimedUserId);
+  let userData = !identityConflict && !identityMismatch ? resolvedIdentity?.member || null : null;
   if (userData && verifiedLineProfile && ((!String(userData.name || userData.displayName || "").trim() && verifiedLineProfile.name) || (!String(userData.pictureUrl || userData.avatar || "").trim() && verifiedLineProfile.picture))) {
     userData = {
       ...userData,
@@ -3634,7 +3351,7 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
     };
     await safePutKV(env, `USER_${userId}`, userData);
   }
-  const hasVerifiedLineUser = !!verifiedUserId;
+  const hasVerifiedLineUser = !!verifiedUserId && !identityConflict && !identityMismatch;
   const crmLineLoginEnabled = isCrmLineLoginEnabled(env, settings);
   const isAdminByUser = crmLineLoginEnabled && hasVerifiedLineUser && (adminUidSet.has(verifiedUserId) || adminUidSet.has(userId) || crmLoginUidSet.has(verifiedUserId) || crmLoginUidSet.has(userId) || userData?.isAdmin === true || userData?.role === "admin" || userData?.crmRole === "admin");
   const isAdmin = isAdminByUser;
@@ -3644,7 +3361,7 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   const canSystemTools = isAdmin || isSystemByUser;
   const canCrmLogin = isAdmin || isHeadquarterByUser || isSystemByUser || isOperatorByUser;
   const isTeacher = hasVerifiedLineUser && (teacherUidSet.has(verifiedUserId) || teacherUidSet.has(userId) || isTeacherRecord(userData));
-  return { settings, userData, userId, lineUserId: verifiedUserId, legacyBinding: binding || null, lineProfile: verifiedLineProfile || null, isAdmin, canCrmLogin, canHeadquarter: isHeadquarterByUser, canSystemTools, isTeacher, hasVerifiedLineUser, tokenVerificationError, crmLineLoginEnabled, adminPasswordOk: false };
+  return { settings, userData, userId, lineUserId: verifiedUserId, legacyBinding: binding || null, lineProfile: verifiedLineProfile || null, isAdmin, canCrmLogin, canHeadquarter: isHeadquarterByUser, canSystemTools, isTeacher, hasVerifiedLineUser, tokenVerificationError, crmLineLoginEnabled, adminPasswordOk: false, identityConflict, identityMismatch };
 }
 
 const STATIC_HTML_FILES = new Set([
@@ -4020,6 +3737,7 @@ async function callLinePayApi(env, settings, method, apiPath, body = null) {
     method,
     headers,
     body: bodyText || undefined,
+    signal: AbortSignal.timeout(10000),
   });
   const data = parseLinePayJson(await res.text());
   if (!res.ok || data.returnCode !== "0000") {
@@ -4076,13 +3794,10 @@ function getLineOaChatUrl(env, settings = {}) {
 
 async function handleReferralRegister(request, env, ctx) {
   const payload = await request.json().catch(() => ({}));
-  const payloadProfile = payload.lineProfile || {};
-  let profile = payloadProfile?.userId ? {
-    sub: payloadProfile.userId,
-    name: payloadProfile.displayName || "",
-    picture: payloadProfile.pictureUrl || "",
-  } : null;
-  const newLineUid = String(profile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
+  const profile = identity.profile;
+  const newLineUid = identity.lineUid;
   const referrerUid = String(payload.ref || payload.referrerUid || "").trim();
   const referrerLineUid = String(payload.lineRef || payload.referrerLineUid || referrerUid || "").trim();
   if (!newLineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
@@ -4103,25 +3818,9 @@ async function handleReferralRegister(request, env, ctx) {
   const rows = await safeGetKV(env, "REFERRAL_REGISTRATIONS", []);
   const nextRows = [record, ...(Array.isArray(rows) ? rows : []).filter(row => row?.newLineUid !== newLineUid)].slice(0, 5000);
   await safePutKV(env, "REFERRAL_REGISTRATIONS", nextRows).catch(() => {});
-  const accessToken = String(payload.accessToken || "").trim();
-  if (accessToken && ctx?.waitUntil) {
-    ctx.waitUntil((async () => {
-      try {
-        const verified = await verifyLineAccessToken(accessToken);
-        if (!verified?.sub || verified.sub !== newLineUid) return;
-        const verifiedRecord = {
-          ...record,
-          displayName: verified.name || record.displayName,
-          pictureUrl: verified.picture || record.pictureUrl,
-          verifiedAt: new Date().toISOString(),
-        };
-        await safePutKV(env, `REFERRAL_REG_${newLineUid}`, verifiedRecord, { expirationTtl: 86400 * 365 });
-      } catch (error) {}
-    })());
-  }
-  const user = await safeGetKV(env, `USER_${newLineUid}`, null).catch(() => null);
+  const user = identity.member;
   if (user && !selfReferral) {
-    await putUserKV(env, ctx, newLineUid, {
+    await putUserKV(env, ctx, identity.memberUid, {
       ...user,
       referredBy: user.referredBy || referrerUid || referrerLineUid,
       referrerLineUid: user.referrerLineUid || referrerLineUid,
@@ -4395,13 +4094,13 @@ async function requireHookTeaMonitorAdmin(request, env) {
     "admin_password",
     "HOOKTEA_ADMIN_PASSWORD",
   ])
-    || String(settings.admin_password || "@1234").trim();
+    || String(settings.admin_password || "").trim();
   const provided = String(
     request.headers.get("x-hooktea-admin-password") ||
     url.searchParams.get("adminPassword") ||
     ""
   ).trim();
-  const acceptedPasswords = new Set([expected, "@1234", "Tonyffang123"].filter(Boolean));
+  const acceptedPasswords = new Set([expected].filter(Boolean));
   if (provided && acceptedPasswords.has(provided)) return { ok: true };
   return { ok: false, response: json({ success: false, error: "UNAUTHORIZED" }, 401) };
 }
@@ -4438,7 +4137,7 @@ function getLineChannelSecret(env) {
 
 async function verifyLineWebhookSignature(env, rawText, signature) {
   const secret = getLineChannelSecret(env);
-  if (!secret) return { configured: false, valid: true };
+  if (!secret) return { configured: false, valid: false, reason: "missing_channel_secret" };
   const provided = String(signature || "").trim();
   if (!provided) return { configured: true, valid: false, reason: "missing_signature" };
   const encoder = new TextEncoder();
@@ -4447,12 +4146,45 @@ async function verifyLineWebhookSignature(env, rawText, signature) {
     encoder.encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"]
+    ["verify"]
   );
-  const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(rawText || ""));
+  try {
+    const digest = Uint8Array.from(atob(provided), char => char.charCodeAt(0));
+    const valid = await crypto.subtle.verify("HMAC", key, digest, encoder.encode(rawText || ""));
+    return { configured: true, valid, ...(valid ? {} : { reason: "invalid_signature" }) };
+  } catch (_) {
+    return { configured: true, valid: false, reason: "invalid_signature" };
+  }
+}
+
+async function signLineWebhookBody(env, body) {
+  const secret = getLineChannelSecret(env);
+  if (!secret) throw new Error("missing_channel_secret_for_filtered_webhook");
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(body));
   let binary = "";
   for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
-  return { configured: true, valid: btoa(binary) === provided };
+  return btoa(binary);
+}
+
+async function buildLineWebhookForwardRequest(env, parsedPayload, rawText, signature, events) {
+  const originalEvents = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
+  const unchanged = events.length === originalEvents.length && events.every((event, index) => event === originalEvents[index]);
+  const body = unchanged ? rawText : JSON.stringify({ ...parsedPayload, events });
+  const forwardedSignature = unchanged ? signature : await signLineWebhookBody(env, body);
+  if (!forwardedSignature) throw new Error("missing_forward_webhook_signature");
+  return {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-line-signature": forwardedSignature,
+      "x-hooktea-forwarded-by": "hooktea-event-router",
+    },
+    body,
+    redirect: "follow",
+    signal: AbortSignal.timeout(8000),
+  };
 }
 
 function extractResponseText(data) {
@@ -5222,31 +4954,35 @@ async function getHuaxuShopConfig(env) {
 async function findHuaxuMemberByLineUid(env, lineUid) {
   const uid = String(lineUid || "").trim();
   if (!uid) return { memberUid: "", member: null, binding: null };
-  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
-  const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
-  for (const candidateId of candidateIds) {
-    const member = await safeGetKV(env, `USER_${candidateId}`, null);
-    if (member && (member.userId || candidateId)) return { memberUid: member.userId || candidateId, member, binding };
-  }
+  const resolved = await findHuaxuMemberByLineUidFast(env, uid);
+  if (resolved.member || resolved.identityConflict) return resolved;
+  const binding = resolved.binding;
   const users = await listKVRecords(env, "USER_");
-  const found = users.find(row => {
+  const matching = users.filter(row => {
     const member = row?.data || {};
     return [member.lineUserId, member.linkedLineUid, member.lineUid, member.userId]
       .map(value => String(value || "").trim())
       .includes(uid);
   });
+  if (matching.length > 1) return { memberUid: uid, member: null, binding, identityConflict: true };
+  const found = matching[0];
   if (!found?.data) return { memberUid: uid, member: null, binding };
+  if (!isTrustedHuaxuMemberBinding(found.data, String(found.key || "").replace(/^USER_/, ""), uid, binding)) return { memberUid: uid, member: null, binding, identityConflict: true };
   return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data, binding };
 }
 
 async function findHuaxuMemberByLineUidFast(env, lineUid) {
   const uid = String(lineUid || "").trim();
   if (!uid) return { memberUid: "", member: null, binding: null };
-  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false }).catch(() => null);
+  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
   const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
   for (const candidateId of candidateIds) {
-    const member = await safeGetKV(env, `USER_${candidateId}`, null).catch(() => null);
-    if (member && (member.userId || candidateId)) return { memberUid: member.userId || candidateId, member, binding };
+    const member = await safeGetKV(env, `USER_${candidateId}`, null);
+    if (member) {
+      if (!isTrustedHuaxuMemberBinding(member, candidateId, uid, binding)) return { memberUid: uid, member: null, binding, identityConflict: true };
+      return { memberUid: candidateId, member, binding };
+    }
+    if (binding?.legacyUserId === candidateId) return { memberUid: uid, member: null, binding, identityConflict: true };
   }
   return { memberUid: uid, member: null, binding };
 }
@@ -5255,7 +4991,7 @@ async function scanHuaxuLegacyMemberByLineUid(env, lineUid) {
   const uid = String(lineUid || "").trim();
   if (!uid) return { memberUid: "", member: null };
   const users = await listKVRecords(env, "USER_");
-  const found = users.find(row => {
+  const matching = users.filter(row => {
     const keyUid = String(row?.key || "").replace(/^USER_/, "").trim();
     if (!keyUid || keyUid === uid) return false;
     const member = row?.data || {};
@@ -5263,14 +4999,20 @@ async function scanHuaxuLegacyMemberByLineUid(env, lineUid) {
       .map(value => String(value || "").trim())
       .includes(uid);
   });
+  if (matching.length > 1) return { memberUid: "", member: null, identityConflict: true };
+  const found = matching[0];
   if (!found?.data) return { memberUid: "", member: null };
+  if (!isTrustedHuaxuMemberBinding(found.data, String(found.key || "").replace(/^USER_/, ""), uid)) return { memberUid: "", member: null, identityConflict: true };
   return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data };
 }
 async function repairHuaxuLineBindingInBackground(env, ctx, lineUid, profile = null) {
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return null;
   let resolved = await findHuaxuMemberByLineUidFast(env, uid).catch(() => ({ memberUid: uid, member: null }));
+  if (resolved.identityConflict) return { identityConflict: true };
   const legacyResolved = await scanHuaxuLegacyMemberByLineUid(env, uid).catch(() => ({ memberUid: "", member: null }));
+  if (legacyResolved.identityConflict) return { identityConflict: true };
+  if (resolved?.binding?.legacyUserId && legacyResolved?.memberUid && resolved.binding.legacyUserId !== legacyResolved.memberUid) return { identityConflict: true };
   if (legacyResolved?.member) resolved = { ...legacyResolved, binding: resolved?.binding || null };
   if (resolved?.member) {
     const memberUid = String(resolved.memberUid || resolved.member.userId || uid).trim();
@@ -5304,6 +5046,7 @@ async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return null;
   const resolved = await findHuaxuMemberByLineUid(env, uid).catch(() => ({ memberUid: uid, member: null }));
+  if (resolved.identityConflict) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
   if (resolved?.member) return resolved.member;
   let lineProfile = profile;
   if (!lineProfile || (!lineProfile.displayName && !lineProfile.name && !lineProfile.pictureUrl && !lineProfile.picture)) {
@@ -5337,15 +5080,11 @@ async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source
 
 async function handleHuaxuMemberProfile(request, env, ctx = null) {
   const payload = await request.json().catch(() => ({}));
-  let verifiedProfile = null;
-  try {
-    verifiedProfile = await verifyLineAccessToken(payload.accessToken);
-  } catch (error) {
-    verifiedProfile = null;
-  }
-  const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
-  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  let resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
+  const verifiedProfile = identity.profile;
+  const lineUid = identity.lineUid;
+  let resolved = identity;
   if (ctx) ctx.waitUntil(repairHuaxuLineBindingInBackground(env, ctx, lineUid, verifiedProfile || payload.lineProfile || {}).catch(error => console.error("Huaxu LINE binding repair failed", error)));
   let memberUid = resolved.memberUid || lineUid;
   let member = resolved.member || null;
@@ -5363,10 +5102,7 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
   const pointUid = pointLookup.pointUid;
   const localPoints = pointLookup.data;
   const orders = await getHuaxuShopOrders(env);
-  const memberOrders = orders.filter(order => {
-    const ids = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId].map(value => String(value || "").trim());
-    return ids.includes(lineUid) || ids.includes(memberUid);
-  });
+  const memberOrders = orders.filter(order => huaxuOrderOwnedBy(order, { lineUid, memberUid }));
   const safeMember = member ? {
     userId: member.userId || memberUid,
     lineUserId: member.lineUserId || lineUid,
@@ -5404,42 +5140,14 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
     memberTier: "一般會員",
     pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
   };
-  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const localBalance = Math.max(0, Math.floor(Number(localPoints?.balance || 0)));
-  let sharedPoints = { ok: false, reason: localBalance > 0 ? "wp_query_deferred" : "wp_query_pending" };
-  let displayPoints = resolveDisplayPointData(localPoints, sharedPoints, 10);
-  const refreshMotherPoints = async () => {
-    const freshSharedPoints = await queryWetwPointList(settings, safeMember, env).catch(error => ({
-      ok: false,
-      reason: "wp_query_exception",
-      message: error?.message || String(error),
-    }));
-    if (freshSharedPoints?.ok) {
-      const motherBalance = Math.max(0, Math.floor(Number(freshSharedPoints.balance || 0)));
-      if (motherBalance > localBalance && pointUid) {
-        await alignLocalPointsToMotherBalance(env, null, pointUid, motherBalance, "母站餘額較高，同步前台會員點數").catch(error => console.error("Huaxu member point align failed", error));
-      }
-    }
-    return freshSharedPoints;
-  };
-  if (localBalance > 0 && ctx) {
-    ctx.waitUntil(refreshMotherPoints());
-  } else {
-    sharedPoints = await refreshMotherPoints();
-    displayPoints = resolveDisplayPointData(localPoints, sharedPoints, 10);
-  }
+  const displayPoints = await readAuthoritativePoints(env, lineUid, safeMember, 10);
   return json({
     ok: true,
     bound: !!member,
     lineUserId: lineUid,
     memberUid,
     member: safeMember,
-    points: {
-      balance: displayPoints.balance,
-      source: displayPoints.source,
-      shared: displayPoints.shared,
-      logs: displayPoints.logs,
-    },
+    points: displayPoints,
     orders: {
       count: memberOrders.length,
       latest: memberOrders.slice(0, 5).map(order => ({
@@ -5469,21 +5177,20 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
 
 async function handleHuaxuReportRemittance(request, env, ctx) {
   const payload = await request.json().catch(() => ({}));
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
   const orderId = String(payload.orderId || "").trim();
   const remittance = String(payload.remittance || "").replace(/\D/g, "").slice(0, 5);
   if (!orderId) return json({ ok: false, message: "\u7f3a\u5c11\u8a02\u55ae\u7de8\u865f" }, 400);
   if (remittance.length !== 5) return json({ ok: false, message: "\u8acb\u8f38\u5165\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc" }, 400);
-  const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
-  if (!lineUid) return json({ ok: false, message: "\u5c1a\u672a\u53d6\u5f97 LINE \u8eab\u5206" }, 401);
-  const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
-  const memberUid = resolved.memberUid || lineUid;
+  const lineUid = identity.lineUid;
+  const memberUid = identity.memberUid;
   const orders = await safeGetKV(env, "ORDERS", []);
   const list = Array.isArray(orders) ? orders : [];
   const idx = list.findIndex(order => order && String(order.orderId || "") === orderId);
   if (idx < 0) return json({ ok: false, message: "\u627e\u4e0d\u5230\u8a02\u55ae" }, 404);
   const order = list[idx];
-  const ownerIds = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId, order.pointsMemberUid].map(value => String(value || "").trim()).filter(Boolean);
-  if (!ownerIds.includes(lineUid) && !ownerIds.includes(memberUid)) return json({ ok: false, message: "\u7121\u6cd5\u56de\u5831\u975e\u672c\u4eba\u8a02\u55ae" }, 403);
+  if (!huaxuOrderOwnedBy(order, identity)) return json({ ok: false, message: "無法回報非本人訂單" }, 403);
   const status = String(order.status || "").toUpperCase();
   if (status !== "PENDING") return json({ ok: false, message: "\u6b64\u8a02\u55ae\u76ee\u524d\u4e0d\u53ef\u56de\u5831\u532f\u6b3e" }, 400);
   if (String(order.paymentMethod || "").toUpperCase() !== "REMITTANCE") return json({ ok: false, message: "\u7121\u6cd5\u56de\u5831\u975e\u672c\u4eba\u8a02\u55ae" }, 400);
@@ -5507,15 +5214,11 @@ async function handleHuaxuReportRemittance(request, env, ctx) {
 }
 async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
   const payload = await request.json().catch(() => ({}));
-  let verifiedProfile = null;
-  try {
-    verifiedProfile = await verifyLineAccessToken(payload.accessToken);
-  } catch (error) {
-    verifiedProfile = null;
-  }
-  const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
-  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
+  const verifiedProfile = identity.profile;
+  const lineUid = identity.lineUid;
+  const resolved = identity;
   const memberUid = resolved.memberUid || lineUid;
   const profile = payload.profile || payload.member || {};
   const phone = normalizeMemberPhone(profile.phone || profile.mobile || profile.tel || profile.memberPhone || "");
@@ -5576,94 +5279,70 @@ async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
 
 async function handleHuaxuMemberCheckin(request, env, ctx) {
   const payload = await request.json().catch(() => ({}));
-  let verifiedProfile = null;
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
+  const date = taipeiDateKey();
+  const points = hookTeaDailySigninPoints(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), env);
   try {
-    verifiedProfile = await verifyLineAccessToken(payload.accessToken);
-  } catch (error) {
-    verifiedProfile = null;
-  }
-  const lineUid = String(verifiedProfile?.sub || payload.lineUserId || payload.lineProfile?.userId || "").trim();
-  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-  const keyword = String(payload.keyword || settings.shop_checkin_keyword || env.SHOP_CHECKIN_KEYWORD || "會員打卡").trim();
-  const forwardWebhook = getMotherWebhookUrl(env, settings);
-  const now = new Date();
-  const dateKey = now.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
-  const recordKey = `CHECKIN_${lineUid}_${dateKey}`;
-  const existing = await safeGetKV(env, recordKey, null).catch(() => null);
-  if (existing?.forwarded) {
-    return json({ ok: true, alreadyCheckedIn: true, message: "今日已完成打卡", record: existing });
-  }
-  const event = {
-    type: "message",
-    mode: "active",
-    timestamp: now.getTime(),
-    source: { type: "user", userId: lineUid },
-    replyToken: `hooktea-checkin-${now.getTime()}`,
-    message: {
-      id: `huaxu-checkin-${now.getTime()}`,
-      type: "text",
-      text: keyword,
-    },
-  };
-  const forwardPayload = {
-    destination: String(env.LINE_BOT_USER_ID || settings.line_bot_user_id || ""),
-    events: [event],
-  };
-  const attempt = {
-    lineUserId: lineUid,
-    displayName: verifiedProfile?.name || payload.lineProfile?.displayName || "",
-    keyword,
-    url: forwardWebhook,
-    dateKey,
-    attemptedAt: now.toISOString(),
-  };
-  await safePutKV(env, "HUAXU_CHECKIN_ATTEMPT_LAST", attempt, { expirationTtl: 86400 }).catch(() => {});
-  let result = null;
-  try {
-    const response = await fetch(forwardWebhook, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-line-signature": "",
-        "x-hooktea-forwarded-by": "huaxu-shop-checkin",
-      },
-      body: JSON.stringify(forwardPayload),
-      redirect: "follow",
-      signal: AbortSignal.timeout(8000),
+    const result = await claimHookTeaReward(env, ctx, {
+      lineUid: identity.lineUid, kind: 'daily_signin', key: date, amount: points,
+      reason: '虎克茶簽到贈點 ' + date, recordKey: 'HOOKTEA_DAILY_SIGNIN_' + identity.lineUid + '_' + date,
+      profile: identity.profile,
     });
-    const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
-    result = {
-      ...attempt,
-      forwarded: response.ok,
-      status: response.status,
-      ok: response.ok,
-      response: responseText.slice(0, 300),
-      forwardedAt: new Date().toISOString(),
-    };
-  } catch (error) {
-    result = {
-      ...attempt,
-      forwarded: false,
-      ok: false,
-      error: error?.message || String(error),
-      forwardedAt: new Date().toISOString(),
-    };
+    return json({
+      ok: result.ok, pending: !!result.pending, alreadyCheckedIn: !!result.duplicate,
+      points: result.ok ? (result.amount || points) : 0, balance: result.balance, source: 'mother',
+      message: result.ok ? (result.duplicate ? '今日已完成簽到' : '簽到成功，點數已入帳') : '簽到點數尚待確認，請稍後至會員專區查看',
+    }, result.ok ? 200 : 409);
+  } catch (_) {
+    return json({ ok: false, pending: true, message: '簽到點數暫時無法確認，請稍後重試' }, 503);
   }
-  await safePutKV(env, "HUAXU_CHECKIN_FORWARD_LAST", result, { expirationTtl: 86400 }).catch(() => {});
-  if (result.forwarded) await safePutKV(env, recordKey, result, { expirationTtl: 86400 * 7 }).catch(() => {});
-  return json({
-    ok: !!result.forwarded,
-    message: result.forwarded ? "打卡已送出" : "打卡送出失敗",
-    keyword,
-    status: result.status || 0,
-    response: result.response || "",
-    error: result.error || "",
-  }, result.forwarded ? 200 : 502);
+}
+
+async function withHookTeaOrderLock(env, task) {
+  if (!env.DB) return json({ ok: false, message: '訂單系統暫時無法安全寫入，請稍後重試' }, 503);
+  const owner = crypto.randomUUID();
+  const lock = await env.DB.prepare("INSERT OR IGNORE INTO order_action_locks(order_id,owner) VALUES('huaxu-orders',?)").bind(owner).run();
+  if (!lock?.meta?.changes) return json({ ok: false, processing: true, message: '訂單處理中，請稍後重試' }, 409);
+  try { return await task(); }
+  finally { await env.DB.prepare("DELETE FROM order_action_locks WHERE order_id = 'huaxu-orders' AND owner = ?").bind(owner).run(); }
 }
 
 async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
+  const payload = await request.clone().json().catch(() => ({}));
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
+  if (!env.DB) return json({ ok: false, message: '訂單系統暫時無法安全寫入' }, 503);
+  const fingerprint = await sha256HexBody(JSON.stringify({
+    items: payload.items, customer: payload.customer, points: payload.pointsUsed || payload.pointDeduction || 0,
+    shippingCarrier: payload.shippingCarrier, paymentMethod: payload.paymentMethod, sameAsRegistered: payload.sameAsRegistered,
+  }));
+  const key = await sha256HexBody(identity.lineUid + ':' + String(payload.clientOrderKey || fingerprint));
+  return withHookTeaOrderLock(env, async () => {
+    const prior = await env.DB.prepare('SELECT * FROM checkout_requests WHERE request_key = ?').bind(key).first();
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) return json({ ok: false, message: '此訂單識別碼已使用，請重新確認購物車' }, 409);
+      if (!prior.response_json) return json({ ok: false, processing: true, message: '前次訂單仍待確認，請聯絡客服，勿重複建立' }, 409);
+      return json({ ...JSON.parse(prior.response_json), duplicate: true }, prior.http_status);
+    }
+    await env.DB.prepare('INSERT INTO checkout_requests(request_key,line_user_id,fingerprint) VALUES(?,?,?)').bind(key, identity.lineUid, fingerprint).run();
+    const response = await createHuaxuOrderOnce(request, env, ctx, apiHandler, identity);
+    const body = await response.clone().json();
+    if (response.status >= 400 && !body.order) {
+      // Validation or point preflight failed before an order/payment was created.
+      await env.DB.prepare('DELETE FROM checkout_requests WHERE request_key = ?').bind(key).run();
+      return response;
+    }
+    await env.DB.prepare('UPDATE checkout_requests SET response_json = ?, http_status = ? WHERE request_key = ?')
+      .bind(JSON.stringify(body), response.status, key).run();
+    return response;
+  });
+}
+
+async function createHuaxuOrderOnce(request, env, ctx, apiHandler, verifiedIdentity) {
   const payload = await request.json().catch(() => null);
+  const identity = verifiedIdentity;
+  if (!identity.ok) return identity.response;
   if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
     return json({ ok: false, message: "購物車是空的" }, 400);
   }
@@ -5671,7 +5350,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const byId = new Map(products.map(item => [item.id, item]));
   const items = payload.items.map(item => {
     const product = byId.get(String(item.id || ""));
-    const quantity = Math.max(1, Math.min(99, Number(item.quantity || 1)));
+    const quantity = Math.max(1, Math.min(99, Math.floor(Number(item.quantity || 1) || 1)));
     return product ? { ...product, quantity, lineTotal: product.price * quantity } : null;
   }).filter(Boolean);
   if (!items.length) return json({ ok: false, message: "找不到有效商品" }, 400);
@@ -5688,9 +5367,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const cvsFreeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_cvs_free_shipping_subtotal || "888", 10) || 0);
   const postFreeShippingSubtotal = Math.max(0, Number.parseInt(settings.shop_post_free_shipping_subtotal || "1200", 10) || 0);
   const lineProfile = {
-    userId: String(payload.lineProfile?.userId || "").slice(0, 80),
-    displayName: String(payload.lineProfile?.displayName || "").slice(0, 80),
-    pictureUrl: String(payload.lineProfile?.pictureUrl || "").slice(0, 300),
+    userId: identity.lineUid,
+    displayName: String(identity.profile.name || "").slice(0, 80),
+    pictureUrl: String(identity.profile.picture || "").slice(0, 300),
   };
   const sameAsRegistered = payload.sameAsRegistered === true || payload.customer?.sameAsRegistered === true;
   let customer = {
@@ -5706,7 +5385,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   };
   if (sameAsRegistered) {
     if (!lineProfile.userId) return json({ ok: false, message: "尚未取得 LINE 身分，無法套用註冊人資料" }, 401);
-    const resolvedMember = await findHuaxuMemberByLineUidFast(env, lineProfile.userId);
+    const resolvedMember = identity;
     if (!resolvedMember.member) return json({ ok: false, message: "尚未找到註冊會員資料，請改用手填收件資料" }, 400);
     const registeredCustomer = registeredShippingFromMember(resolvedMember.member);
     customer = {
@@ -5748,27 +5427,10 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   }
   if (pointsUsed > 0) {
     if (!lineProfile.userId) return json({ ok: false, message: "請先完成 LINE 登入，才能使用點數折抵" }, 401);
-    let resolvedForPoints = await findHuaxuMemberByLineUidFast(env, lineProfile.userId);
-    if (!resolvedForPoints.member && ctx) {
-      ctx.waitUntil(repairHuaxuLineBindingInBackground(env, ctx, lineProfile.userId, lineProfile).catch(error => console.error("Huaxu checkout binding repair failed", error)));
-    }
-    memberUidForPoints = resolvedForPoints.memberUid || lineProfile.userId;
-    if (resolvedForPoints.member && memberUidForPoints !== lineProfile.userId) await mergePointDataForLineBind(env, ctx, memberUidForPoints, lineProfile.userId).catch(() => null);
-    const pointLookupForOrder = await getPointDataForUid(env, memberUidForPoints, { balance: 0, logs: [] });
-    memberUidForPoints = pointLookupForOrder.pointUid;
-    const localPointData = pointLookupForOrder.data;
-    const memberForPoints = resolvedForPoints.member || { userId: memberUidForPoints, lineUserId: lineProfile.userId };
-    const pointSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-    const sharedPointData = await queryWetwPointList(pointSettings, memberForPoints, env).catch(error => ({
-      ok: false,
-      reason: "wp_query_exception",
-      message: error?.message || String(error),
-    }));
-    const displayPointData = resolveDisplayPointData(localPointData, sharedPointData, 50);
-    pointDataForOrder = { ...localPointData, balance: displayPointData.balance };
-    if (Number(displayPointData.balance || 0) !== Number(localPointData.balance || 0)) {
-      await putPointKV(env, ctx, memberUidForPoints, pointDataForOrder);
-    }
+    memberUidForPoints = identity.memberUid || identity.lineUid;
+    pointDataForOrder = await readAuthoritativePoints(env, identity.lineUid,
+      identity.member || { userId: memberUidForPoints, lineUserId: identity.lineUid });
+    if (!pointDataForOrder.available) return json({ ok: false, message: '共用點數尚待確認，暫時無法折抵' }, 409);
     const balance = Math.max(0, Math.floor(Number(pointDataForOrder.balance || 0)));
     if (balance <= 0) return json({ ok: false, message: "目前沒有可折抵點數" }, 400);
     if (requestedPointsUsed > maxPointDeduction) return json({ ok: false, message: `本次商品最高可折抵 ${maxPointDeduction} 點` }, 400);
@@ -5803,28 +5465,13 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   }));
   const clientOrderKey = providedClientOrderKey || fallbackClientOrderKey;
   const pendingKey = `HUAXU_ORDER_PENDING_${clientOrderKey}`;
-  const existingPending = await safeGetKV(env, pendingKey, null).catch(() => null);
-  if (existingPending?.status === "CREATING") {
-    return json({ ok: false, processing: true, message: "訂單處理中，請勿重複送出" }, 409);
-  }
-  if (existingPending?.order) {
-    return json({
-      ok: true,
-      duplicate: true,
-      order: existingPending.order,
-      payment: existingPending.payment || null,
-      remittanceInfo: existingPending.remittanceInfo || "",
-    });
-  }
-  await safePutKV(env, pendingKey, {
-    status: "CREATING",
-    createdAt: new Date().toISOString(),
-  }, { expirationTtl: 120 }).catch(() => {});
   const order = {
-    orderId: `HX${Date.now()}`,
+    orderId: 'HX' + crypto.randomUUID().replace(/-/g, ''),
     type: "PRODUCT",
     source: "huaxu-shop",
-    userId: lineProfile.userId || "",
+    userId: identity.memberUid,
+    memberUid: identity.memberUid,
+    lineUserId: identity.lineUid,
     name: customer.name,
     phone: customer.phone,
     email: customer.email,
@@ -5876,7 +5523,7 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
     trackingNumber: "",
     trackingUrl: "",
     sameAsRegistered,
-    status: payableTotal > 0 ? "PENDING" : "PAID",
+    status: "PENDING",
     entryUrl: String(payload.entryUrl || "").slice(0, 1000),
     entryParams,
     clientOrderKey,
@@ -5913,8 +5560,8 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   } else if (payableTotal > 0 && paymentMethod === "COD") {
     payment = { provider: "COD", orderId: order.orderId, status: "PENDING" };
   } else if (payableTotal > 0 && apiHandler?.preparePayment) {
-    const workerUrl = String(payload.workerUrl || new URL(request.url).origin).replace(/\/+$/, "");
-    const returnUrl = String(payload.returnUrl || `${workerUrl}/huaxu-shop.html`);
+    const workerUrl = new URL(request.url).origin;
+    const returnUrl = workerUrl + '/huaxu-shop.html';
     try {
       payment = await apiHandler.preparePayment({
         orderId: order.orderId,
@@ -5926,14 +5573,26 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
         returnUrl,
       }, env);
     } catch (error) {
-      return json({ ok: false, message: error?.message || "付款建立失敗，請稍後再試。", order }, 502);
+      order.status = 'PAYMENT_INIT_FAILED';
+      order.paymentStatus = 'PAYMENT_INIT_FAILED';
+      order.paymentInitFailedAt = new Date().toISOString();
+      await updateLinePayOrder(env, ctx, order.orderId, '', order);
+      return json({ ok: false, message: '付款建立未完成；此訂單已保留，請至會員專區確認或聯絡客服。', order }, 502);
     }
   }
   if (pointsUsed > 0 && apiHandler?.updatePoints) {
-    await apiHandler.updatePoints(env, ctx, memberUidForPoints, -pointsUsed, `購物車點數折抵：${order.orderId}`, {
-      source: "huaxu_shop_checkout",
-      targetName: customer.name,
-    });
+    try {
+      await apiHandler.updatePoints(env, ctx, memberUidForPoints, -pointsUsed, `購物車點數折抵：${order.orderId}`, {
+        source: "huaxu_shop_checkout", operationId: 'order-spend:' + order.orderId,
+        targetName: customer.name,
+      });
+    } catch (error) {
+      order.status = 'POINTS_PENDING';
+      order.paymentStatus = 'POINTS_PENDING';
+      order.pointsOperationId = 'order-spend:' + order.orderId;
+      await updateLinePayOrder(env, ctx, order.orderId, '', order);
+      return json({ ok: false, pending: true, message: '折抵點數尚待確認，付款連結未開放，請聯絡客服確認此單。', order }, 409);
+    }
     order.pointsDeductedAt = new Date().toISOString();
     order.pointBalanceAfter = Math.max(0, Math.floor(Number(pointDataForOrder.balance || 0))) - pointsUsed;
     const refreshedOrders = await safeGetKV(env, "ORDERS", []);
@@ -5942,6 +5601,11 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
       refreshedOrders[orderIndex] = { ...refreshedOrders[orderIndex], ...order };
       await putOrdersKV(env, ctx, refreshedOrders);
     }
+  }
+  if (payableTotal <= 0) {
+    order.status = 'PAID';
+    order.paymentStatus = 'SUCCESS';
+    await updateLinePayOrder(env, ctx, order.orderId, '', order);
   }
   await safePutKV(env, pendingKey, {
     status: "CREATED",
@@ -5967,61 +5631,69 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
 
 async function handleHuaxuCancelOrder(request, env, ctx, apiHandler) {
   const payload = await request.json().catch(() => ({}));
+  const identity = await requireHuaxuIdentity(request, env, payload);
+  if (!identity.ok) return identity.response;
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   if (String(settings.allow_cancel_order || "true") === "false") return json({ ok: false, message: "目前未開放會員自行取消訂單，請聯絡客服處理" }, 403);
   const orderId = String(payload.orderId || "").trim();
   if (!orderId) return json({ ok: false, message: "缺少訂單編號" }, 400);
-  const lineUid = String(payload.lineProfile?.userId || payload.lineUserId || "").trim();
-  if (!lineUid) return json({ ok: false, message: "尚未取得 LINE 身分" }, 401);
-  const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
-  const memberUid = resolved.memberUid || lineUid;
+  const lineUid = identity.lineUid;
+  const memberUid = identity.memberUid;
   const orders = await safeGetKV(env, "ORDERS", []);
   const list = Array.isArray(orders) ? orders : [];
   const idx = list.findIndex(order => order && String(order.orderId || "") === orderId);
   if (idx < 0) return json({ ok: false, message: "找不到訂單" }, 404);
   const order = list[idx];
-  const ownerIds = [order.userId, order.lineProfile?.userId, order.memberUid, order.memberId, order.pointsMemberUid]
-    .map(value => String(value || "").trim())
-    .filter(Boolean);
-  if (!ownerIds.includes(lineUid) && !ownerIds.includes(memberUid)) {
+  if (!huaxuOrderOwnedBy(order, identity)) {
     return json({ ok: false, message: "無法取消非本人訂單" }, 403);
   }
-  const status = String(order.status || "").toUpperCase();
-  if (["PAID", "PREPARING", "SHIPPED", "COMPLETED"].includes(status)) {
-    return json({ ok: false, message: "\u6b64\u8a02\u55ae\u5df2\u4ed8\u6b3e\u6216\u5df2\u9032\u5165\u914d\u9001\uff0c\u8acb\u806f\u7d61\u5ba2\u670d\u8655\u7406" }, 400);
-  }
-  if (status === "CANCELLED") return json({ ok: true, order, duplicate: true });
+  return withHookTeaOrderLock(env, async () => {
+    const list = await safeGetKV(env, 'ORDERS', []);
+    const idx = list.findIndex(item => item?.orderId === orderId);
+    const order = list[idx];
+    if (!order || !huaxuOrderOwnedBy(order, identity)) return json({ ok: false, message: '找不到可取消訂單' }, 404);
+    if (isHookTeaPaidOrder(order)) return json({ ok: false, message: '訂單已付款或已進入配送，請聯絡客服處理' }, 409);
+    // Unknown point deductions must be reconciled before a refund can be created.
+    const spend = await createHookTeaPointService(env).get('order-spend:' + orderId);
+    if (spend && !['confirmed','rejected'].includes(spend.status)) return json({ ok: false, pending: true, message: '折抵點數尚待確認，請稍後重試或聯絡客服' }, 409);
+    const points = Math.max(0, Math.floor(Number(order.pointsUsed || 0)));
+    let restored = 0;
+    if (points && (order.pointsDeductedAt || spend?.status === 'confirmed') && !order.pointsRestoredAt) {
+      const member = identity.member || { userId: memberUid, lineUserId: lineUid };
+      const result = await createHookTeaPointService(env).submit({
+        id: 'order-restore:' + orderId, lineUid, memberUid, kind: 'order_restore',
+        amount: points, reason: '取消訂單回補：' + orderId,
+      }, member);
+      // Once restoration is queued the payment confirm handler must reject this order.
+      order.status = 'CANCELLED';
+      order.paymentStatus = 'CANCELLED';
+      order.pointsRestoreOperationId = result.id;
+      if (result.ok) { order.pointsRestoredAt = new Date().toISOString(); restored = points; }
+      order.pointsRestorePending = !!result.pending;
+    } else {
+      order.status = 'CANCELLED';
+      order.paymentStatus = 'CANCELLED';
+    }
+    order.cancelledAt ||= new Date().toISOString();
+    order.updatedAt = new Date().toISOString();
+    list[idx] = order;
+    await putOrdersKV(env, ctx, list);
+    return json({ ok: true, order, pointsRestored: restored, pending: !!order.pointsRestorePending });
+  });
+}
 
-  const nowIso = new Date().toISOString();
-  const patch = {
-    status: "CANCELLED",
-    paymentStatus: "CANCELLED",
-    cancelledAt: nowIso,
-    cancelReason: String(payload.reason || "會員自行取消").slice(0, 120),
-  };
-  const pointsToRestore = Math.max(0, Math.floor(Number(order.pointsUsed || 0)));
-  const restoreUid = String(order.pointsMemberUid || memberUid || lineUid).trim();
-  if (pointsToRestore > 0 && order.pointsDeductedAt && !order.pointsRestoredAt && restoreUid && apiHandler?.updatePoints) {
-    await apiHandler.updatePoints(env, ctx, restoreUid, pointsToRestore, `取消訂單回補：${orderId}`, {
-      source: "huaxu_shop_cancel",
-      targetName: order.name || order.recipientName || "",
-    });
-    patch.pointsRestoredAt = nowIso;
-    patch.pointRestoreReason = "ORDER_CANCEL";
-  }
-  list[idx] = { ...order, ...patch, updatedAt: nowIso };
-  await putOrdersKV(env, ctx, list);
-  await appendPaymentLog(env, {
-    timestamp: new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }),
-    orderNo: orderId,
-    amount: Number(order.amount || 0),
-    status: "CANCELLED",
-    message: pointsToRestore > 0 ? `會員取消訂單，回補 ${pointsToRestore} 點` : "會員取消訂單",
-    tradeNo: String(order.linePayTransactionId || ""),
-    source: "HUAXU_ORDER_CANCEL",
-  }).catch(() => {});
-  if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()).catch(() => {}));
-  return json({ ok: true, order: list[idx], pointsRestored: pointsToRestore });
+function isHookTeaPaidOrder(order) {
+  return ['PAID','PREPARING','SHIPPED','COMPLETED'].includes(String(order?.status || '').toUpperCase())
+    || !!order?.paidAt || !!order?.linePayConfirmedAt
+    || ['SUCCESS','PAID'].includes(String(order?.paymentStatus || '').toUpperCase())
+    || String(order?.linePayStatus || '').toUpperCase() === 'SUCCESS';
+}
+
+function hookTeaPaymentReturn(request, state, orderId = '') {
+  const target = new URL('/huaxu-shop.html', request.url);
+  target.searchParams.set('linepay', state);
+  if (orderId) target.searchParams.set('orderId', orderId);
+  return Response.redirect(target.toString(), 302);
 }
 
 async function handleHuaxuLiffDebug(request, env) {
@@ -6102,11 +5774,32 @@ async function buildShopCartActivityAdminData(env, payload = {}) {
   }
   return { logs, count: logs.length, diagnostic };
 }
+async function handleHuaxuReadOrders(request, env, statusOnly = false) {
+  const admin = await requireHookTeaMonitorAdmin(request, env);
+  let identity = null;
+  if (!admin.ok) {
+    identity = await requireHuaxuIdentity(request, env);
+    if (!identity.ok) return identity.response;
+  }
+  const orders = await getHuaxuShopOrders(env);
+  if (!statusOnly) return json(admin.ok ? orders : orders.filter(order => huaxuOrderOwnedBy(order, identity)));
+  const orderId = String(new URL(request.url).searchParams.get("orderId") || "").trim();
+  if (!orderId) return json({ ok: false, message: "缺少訂單編號" }, 400);
+  const order = orders.find(item => String(item.orderId || "") === orderId && (admin.ok || huaxuOrderOwnedBy(item, identity)));
+  if (!order) return json({ ok: false, message: "找不到訂單" }, 404);
+  return json({ ok: true, order: {
+    orderId: order.orderId, status: order.status || "", paymentStatus: order.paymentStatus || "",
+    linePayStatus: order.linePayStatus || "", paymentMethod: order.paymentMethod || "",
+    pointsUsed: Number(order.pointsUsed || 0), pointsRestoredAt: order.pointsRestoredAt || "",
+  } });
+}
+
 async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   const url = new URL(request.url);
   if (url.pathname === "/api/huaxu/config" && request.method === "GET") return json(await getHuaxuShopConfig(env));
   if (url.pathname === "/api/huaxu/products" && request.method === "GET") return json(await getHuaxuShopProducts(env));
-  if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return json(await getHuaxuShopOrders(env));
+  if (url.pathname === "/api/huaxu/orders" && request.method === "GET") return handleHuaxuReadOrders(request, env);
+  if (url.pathname === "/api/huaxu/orders/status" && request.method === "GET") return handleHuaxuReadOrders(request, env, true);
   if (url.pathname === "/api/huaxu/member" && request.method === "POST") return handleHuaxuMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/member" && request.method === "PUT") return handleHuaxuUpdateMemberProfile(request, env, ctx);
   if (url.pathname === "/api/huaxu/checkin" && request.method === "POST") return handleHuaxuMemberCheckin(request, env, ctx);
@@ -6265,6 +5958,9 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     let lineProfile = {};
     let memberData = null;
     let memberLoading = false;
+    let memberVerified = false;
+    let verifiedMemberUid = "";
+    let lineIdentityLoading = false;
     let activeMemberSection = "";
     let memberEditMode = false;
     let expandedOrderId = "";
@@ -6273,8 +5969,131 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     let isCheckingOut = false;
     let entryContext = { url: location.href.split("#")[0], params: {} };
     const SHOP_LIFF_ID = ${JSON.stringify(String(shopLiffId || "2007674851-ijenzSk8"))};
+    const CHECKOUT_DRAFT_PREFIX = "huaxu_checkout_draft_v2";
+    const CHECKOUT_DRAFT_ANON_KEY = CHECKOUT_DRAFT_PREFIX + ":anon";
+    const CHECKOUT_DRAFT_ACTIVE_KEY = CHECKOUT_DRAFT_PREFIX + ":active";
+    const CHECKOUT_DRAFT_TTL_MS = 2 * 60 * 60 * 1000;
+    const PENDING_CHECKOUT_KEY = "huaxu_pending_checkout_v1";
+    let checkoutDraftKey = CHECKOUT_DRAFT_ANON_KEY;
+    let checkoutDraftStorage = sessionStorage;
+    const CHECKOUT_DRAFT_FIELD_IDS = ["name","phone","email","postalCode","city","district","address","shippingCarrier","shippingStoreInfo","note"];
+    const REGISTERED_SHIPPING_FIELD_IDS = ["name","phone","email","postalCode","city","district","address"];
+    let checkoutDraftRestoring = false;
+    let checkoutDraftBound = false;
+    function readCheckoutDraftFrom(storage, key){
+      try {
+        const raw = storage.getItem(key);
+        if (!raw) return null;
+        const draft = JSON.parse(raw);
+        const savedAt = Number(draft && draft.savedAt);
+        if (!draft || !savedAt || Date.now() - savedAt > CHECKOUT_DRAFT_TTL_MS) {
+          storage.removeItem(key);
+          return null;
+        }
+        return draft;
+      } catch (error) {
+        try { storage.removeItem(key); } catch (ignore) {}
+        return null;
+      }
+    }
+    function readCheckoutDraft(){
+      return readCheckoutDraftFrom(checkoutDraftStorage, checkoutDraftKey);
+    }
+    function checkoutDraftSnapshot(){
+      const fields = {};
+      CHECKOUT_DRAFT_FIELD_IDS.forEach(id => {
+        const field = document.getElementById(id);
+        if (field) fields[id] = field.value || "";
+      });
+      return {
+        savedAt: Date.now(),
+        fields,
+        sameAsRegistered: !!document.getElementById("sameAsRegistered")?.checked
+      };
+    }
+    function checkoutDraftHasContent(draft){
+      const fields = draft && draft.fields && typeof draft.fields === "object" ? draft.fields : {};
+      return CHECKOUT_DRAFT_FIELD_IDS.some(id => id !== "shippingCarrier" && String(fields[id] || "").trim()) || !!draft?.sameAsRegistered;
+    }
+    function saveCheckoutDraft(){
+      if (checkoutDraftRestoring) return;
+      const snapshot = checkoutDraftSnapshot();
+      if (!checkoutDraftHasContent(snapshot) && !readCheckoutDraft()) return;
+      try { checkoutDraftStorage.setItem(checkoutDraftKey, JSON.stringify(snapshot)); } catch (error) {}
+    }
+    function restoreCheckoutDraft(draft = readCheckoutDraft()){
+      if (!draft) return false;
+      checkoutDraftRestoring = true;
+      try {
+        const fields = draft.fields && typeof draft.fields === "object" ? draft.fields : {};
+        CHECKOUT_DRAFT_FIELD_IDS.forEach(id => {
+          if (!Object.prototype.hasOwnProperty.call(fields, id)) return;
+          const field = document.getElementById(id);
+          if (field) field.value = String(fields[id] || "");
+        });
+        const sameBox = document.getElementById("sameAsRegistered");
+        if (sameBox) sameBox.checked = !!draft.sameAsRegistered;
+      } finally {
+        checkoutDraftRestoring = false;
+      }
+      return true;
+    }
+    function clearCheckoutDraft(){
+      try { localStorage.removeItem("huaxu_checkout_attempt:" + verifiedMemberUid); } catch (error) {}
+      try { checkoutDraftStorage.removeItem(checkoutDraftKey); } catch (error) {}
+      try { sessionStorage.removeItem(CHECKOUT_DRAFT_ANON_KEY); } catch (error) {}
+      try {
+        const activeKey = sessionStorage.getItem(CHECKOUT_DRAFT_ACTIVE_KEY);
+        if (activeKey && activeKey === checkoutDraftKey) localStorage.removeItem(activeKey);
+        sessionStorage.removeItem(CHECKOUT_DRAFT_ACTIVE_KEY);
+      } catch (error) {}
+      checkoutDraftRestoring = true;
+      CHECKOUT_DRAFT_FIELD_IDS.forEach(id => { const field = document.getElementById(id); if (field) field.value = id === "shippingCarrier" ? "FAMILY" : ""; });
+      const sameBox = document.getElementById("sameAsRegistered");
+      if (sameBox) sameBox.checked = false;
+      checkoutDraftRestoring = false;
+    }
+    function adoptCheckoutDraftForVerifiedUser(lineUserId){
+      const verifiedUid = String(lineUserId || "").trim();
+      if (!/^U[a-zA-Z0-9]{20,}$/.test(verifiedUid)) return false;
+      const userKey = CHECKOUT_DRAFT_PREFIX + ":" + verifiedUid;
+      const anonymousDraft = readCheckoutDraftFrom(sessionStorage, CHECKOUT_DRAFT_ANON_KEY);
+      const userDraft = readCheckoutDraftFrom(localStorage, userKey);
+      checkoutDraftKey = userKey;
+      checkoutDraftStorage = localStorage;
+      let selectedDraft = userDraft;
+      if (checkoutDraftHasContent(anonymousDraft) && (!checkoutDraftHasContent(userDraft) || Number(anonymousDraft.savedAt || 0) >= Number(userDraft.savedAt || 0))) {
+        selectedDraft = anonymousDraft;
+        try { localStorage.setItem(userKey, JSON.stringify(anonymousDraft)); } catch (error) {}
+      }
+      try {
+        sessionStorage.removeItem(CHECKOUT_DRAFT_ANON_KEY);
+        sessionStorage.setItem(CHECKOUT_DRAFT_ACTIVE_KEY, userKey);
+      } catch (error) {}
+      if (selectedDraft) restoreCheckoutDraft(selectedDraft);
+      return true;
+    }
+    function bindCheckoutDraftPersistence(){
+      if (checkoutDraftBound) return;
+      checkoutDraftBound = true;
+      const handleDraftChange = event => {
+        const target = event && event.target;
+        if (!target || (target.id !== "sameAsRegistered" && !CHECKOUT_DRAFT_FIELD_IDS.includes(target.id))) return;
+        const sameBox = document.getElementById("sameAsRegistered");
+        if (event.isTrusted && REGISTERED_SHIPPING_FIELD_IDS.includes(target.id) && sameBox?.checked) {
+          sameBox.checked = false;
+          setSameMemberHint("已切換為手填，保留您修改的收件資料。", "warn");
+        }
+        saveCheckoutDraft();
+      };
+      document.addEventListener("input", handleDraftChange);
+      document.addEventListener("change", handleDraftChange);
+      window.addEventListener("pagehide", saveCheckoutDraft);
+    }
     init();
     async function init(){
+      restoreCheckoutDraft();
+      bindCheckoutDraftPersistence();
       entryContext = restoreEntryContext();
       const loaded = await Promise.all([
         fetch("/api/huaxu/config").then(r => r.json()).catch(() => null),
@@ -6349,19 +6168,25 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       }
     }
     async function initLineIdentity(forceLogin){
+      if (lineIdentityLoading) return;
       if (!window.liff) {
         await logShopLiff("no_sdk", "LIFF SDK not available");
+        toast("LINE 登入元件尚未載入，請重新整理；收件資料已保留。");
         return;
       }
+      lineIdentityLoading = true;
+      memberVerified = false;
       try {
         entryContext = restoreEntryContext();
         const params = new URLSearchParams(location.search);
         const liffId = params.get("liffId") || shopConfig.shopLiffId || SHOP_LIFF_ID || "2007674851-ijenzSk8";
         if (!liffId) return;
+        saveCheckoutDraft();
         await liff.init({ liffId, withLoginOnExternalBrowser: true });
         await logShopLiff("init_done", "", { liffId });
         if (!liff.isLoggedIn()) {
           await logShopLiff(forceLogin ? "login_manual" : "login_redirect", "", { liffId });
+          saveCheckoutDraft();
           liff.login({ redirectUri: entryContext.url || location.href.split("#")[0] });
           return;
         }
@@ -6370,10 +6195,92 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         renderLineProfile();
         await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
         renderLineProfile();
+        if (memberVerified) await verifyPaymentReturn();
         if (new URLSearchParams(location.search).get("open") === "member") openMember();
       } catch (error) {
         console.warn("LIFF init failed", error);
         await logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
+        toast("LINE 身分確認失敗，請點「我的」重試；收件資料已保留。");
+      } finally {
+        lineIdentityLoading = false;
+      }
+    }
+    function currentMemberAccessToken(){
+      try { return window.liff && liff.isLoggedIn() && liff.getAccessToken ? String(liff.getAccessToken() || "") : ""; } catch (error) { return ""; }
+    }
+    function requireReadyMember(){
+      saveCheckoutDraft();
+      if (memberLoading || lineIdentityLoading) { toast("正在確認 LINE 會員身分，請稍候再送出。"); return false; }
+      if (!memberVerified || !verifiedMemberUid || !currentMemberAccessToken()) {
+        memberVerified = false;
+        loginLine();
+        return false;
+      }
+      return true;
+    }
+    async function memberRequest(path, options = {}, accessToken = currentMemberAccessToken()){
+      if (!accessToken) {
+        memberVerified = false;
+        throw new Error("LINE 登入已失效，請點「我的」重新登入；收件資料已保留。");
+      }
+      const response = await fetch(path, Object.assign({}, options, { headers: Object.assign({}, options.headers || {}, { authorization: "Bearer " + accessToken }) }));
+      const result = await response.json();
+      if (response.status === 401 || response.status === 403) {
+        saveCheckoutDraft();
+        memberVerified = false;
+        throw new Error(result.message || "LINE 身分驗證失敗，請重新登入；收件資料已保留。");
+      }
+      if (!response.ok && result.ok !== false) throw new Error(result.message || "服務暫時無法使用，請稍後重試。");
+      return result;
+    }
+    function rememberPendingCheckout(order){
+      if (!order?.orderId || !verifiedMemberUid) return;
+      try { sessionStorage.setItem(PENDING_CHECKOUT_KEY, JSON.stringify({ orderId: order.orderId, lineUserId: verifiedMemberUid, savedAt: Date.now(), cart: JSON.stringify(cart), pointsUsed: pointDeduction })); } catch (error) {}
+    }
+    async function verifyPaymentReturn(){
+      const params = new URLSearchParams(location.search);
+      const returnState = params.get("linepay") || params.get("payment") || "";
+      let pending = null;
+      try { pending = JSON.parse(sessionStorage.getItem(PENDING_CHECKOUT_KEY) || "null"); } catch (error) {}
+      if (!returnState && !pending) return;
+      const orderId = params.get("orderId") || pending?.orderId || "";
+      if (!orderId || !memberVerified) {
+        toast("付款狀態尚未確認，請至「我的 → 訂單查詢」查看；購物資料已保留。");
+        return;
+      }
+      try {
+        const result = await memberRequest("/api/huaxu/orders/status?orderId=" + encodeURIComponent(orderId));
+        if (!result.ok || !result.order || result.order.orderId !== orderId) throw new Error(result.message || "尚未查到付款結果");
+        const order = result.order;
+        const status = String(order.status || "").toUpperCase();
+        const paymentStatus = String(order.paymentStatus || "").toUpperCase();
+        const paid = status === "PAID" || (["PREPARING","SHIPPED","COMPLETED"].includes(status) && paymentStatus === "SUCCESS");
+        if (paid) {
+          const matchingCheckout = pending && pending.orderId === orderId && pending.lineUserId === verifiedMemberUid;
+          if (matchingCheckout && pending.cart === JSON.stringify(cart)) {
+            clearCheckoutDraft();
+            cart = []; pointDeduction = 0; localStorage.setItem("huaxu_points_used", "0"); saveCart();
+          }
+          if (matchingCheckout) sessionStorage.removeItem(PENDING_CHECKOUT_KEY);
+          toast("付款成功：" + orderId);
+          activeMemberSection = "訂單查詢";
+          expandedOrderId = orderId;
+          renderMemberPanel();
+          toggleMember(true);
+        } else if (status === "CANCELLED" || paymentStatus === "CANCELLED") {
+          if (pending?.orderId === orderId && pending.lineUserId === verifiedMemberUid) sessionStorage.removeItem(PENDING_CHECKOUT_KEY);
+          localStorage.removeItem("huaxu_checkout_attempt:" + verifiedMemberUid);
+          toast("付款已取消，購物車與收件資料已保留。");
+          toggleCart(true);
+        } else {
+          toast("付款尚未完成，請先查看訂單狀態，避免重複下單；購物資料已保留。");
+          activeMemberSection = "訂單查詢";
+          expandedOrderId = orderId;
+          renderMemberPanel();
+          toggleMember(true);
+        }
+      } catch (error) {
+        toast((error.message || "付款狀態確認失敗") + "，購物資料已保留。");
       }
     }
     function applyShopConfig(){
@@ -6513,7 +6420,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       return { subtotal, maxPoints, memberBalance, allowedPoints, used, shippingFee, freeShippingSubtotal: freeAt, payable: Math.max(0, subtotal + shippingFee - used) };
     }
     function memberPointBalance(){
-      if (!memberData || !memberData.points) return 0;
+      if (!memberVerified || memberLoading || !memberData?.points?.shared?.ok || memberData.points.available === false || memberData.points.reconciliationRequired) return 0;
       return Math.max(0, Math.floor(Number(memberData.points.balance || 0)));
     }
     function fallbackMemberData(reason){
@@ -6540,8 +6447,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     function clampPointDeduction(){
       const totals = cartTotals();
-      pointDeduction = Math.max(0, Math.min(Math.floor(Number(pointDeduction || 0)), totals.allowedPoints));
-      localStorage.setItem("huaxu_points_used", String(pointDeduction));
+      if (memberVerified && !memberLoading && memberData?.points?.shared?.ok && memberData.points.available !== false && !memberData.points.reconciliationRequired) {
+        pointDeduction = Math.max(0, Math.min(Math.floor(Number(pointDeduction || 0)), totals.allowedPoints));
+        localStorage.setItem("huaxu_points_used", String(pointDeduction));
+      }
       const input = document.getElementById("pointsUsed");
       if (input && String(input.value || "") !== String(pointDeduction || "")) input.value = pointDeduction || "";
       return totals;
@@ -6572,13 +6481,15 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         +'<div class="summary-row total"><span>實付金額</span><b>$'+money(totals.payable)+'</b></div>';
       const note = document.getElementById("pointNote");
       if (note) {
-        const canUse = !!lineProfile.userId && !!memberData;
+        const canUse = memberVerified && !memberLoading && !!memberData?.points?.shared?.ok && memberData.points.available !== false && !memberData.points.reconciliationRequired;
         note.className = "point-note" + (!canUse || (!totals.allowedPoints && totals.subtotal > 0) ? " warn" : "");
         note.textContent = !lineProfile.userId
           ? "請先登入 LINE 才能使用點數折抵。"
-          : !memberData
-            ? "目前可用 0 點，本次最高可折抵 0 點。"
-            : "目前可用 " + money(totals.memberBalance) + " 點，本次最高可折抵 " + money(totals.allowedPoints) + " 點。" + (memberLoading ? "（同步中）" : "");
+          : !memberVerified || memberLoading
+            ? "正在確認會員與可用點數，資料尚未完成載入。"
+            : !canUse
+              ? "點數尚待同步或核對，目前無法折抵。待同步點數：" + money(memberData?.points?.pendingBalance || 0) + " 點。"
+              : "目前可用 " + money(totals.memberBalance) + " 點，本次最高可折抵 " + money(totals.allowedPoints) + " 點。" + (Number(memberData?.points?.pendingBalance || 0) > 0 ? "待同步 " + money(memberData.points.pendingBalance) + " 點，完成後才能折抵。" : "") + (memberData.points.legacyReviewRequired ? "舊點數紀錄待核對，不影響以上已確認的可用點數。" : "");
       }
       renderPayOptions();
     }
@@ -6594,7 +6505,15 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     function removeCart(id){ cart = cart.filter(item => item.id !== id); saveCart(); logCartActivity("cart_remove", { productId: id }); }
     function buildClientOrderKey(customer){
       const cartKey = cart.map(item => String(item.id || "") + ":" + Number(item.quantity || 1)).sort().join("|");
-      return [lineProfile.userId || "guest", paymentMethod, pointDeduction, customer.shippingCarrier, customer.shippingStoreInfo, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
+      const fingerprint = [lineProfile.userId || "guest", paymentMethod, pointDeduction, customer.shippingCarrier, customer.shippingStoreInfo, customer.name, customer.phone, customer.city, customer.district, customer.address, cartKey].join("|");
+      const storageKey = "huaxu_checkout_attempt:" + verifiedMemberUid;
+      try {
+        const prior = JSON.parse(localStorage.getItem(storageKey) || "null");
+        if (prior?.fingerprint === fingerprint && prior?.id) return prior.id;
+        const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+        localStorage.setItem(storageKey, JSON.stringify({ fingerprint, id }));
+        return id;
+      } catch (_) { return fingerprint; }
     }
     function setCheckoutBusy(busy){
       isCheckingOut = !!busy;
@@ -6707,7 +6626,21 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       hint.textContent = message || "";
     }
     function fillRegisteredShipping(){
+      const box = document.getElementById("sameAsRegistered");
+      if (memberLoading || memberData?.syncFallback || !memberData?.bound || !memberData?.member) {
+        if (box) box.checked = false;
+        setSameMemberHint(memberLoading ? "會員資料讀取中，已切回手填並保留目前內容。" : "尚未取得完整註冊資料，已切回手填並保留目前內容。", "warn");
+        saveCheckoutDraft();
+        return false;
+      }
       const data = registeredShipping();
+      const missing = missingShippingFields(data);
+      if (missing.length) {
+        if (box) box.checked = false;
+        setSameMemberHint("註冊資料不完整，缺少：" + missing.join("、") + "。已切回手填並保留目前內容。", "warn");
+        saveCheckoutDraft();
+        return false;
+      }
       setField("name", data.name);
       setField("phone", data.phone);
       setField("email", data.email);
@@ -6715,25 +6648,27 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       setField("city", data.city);
       setField("district", data.district);
       setField("address", data.address);
-      const missing = missingShippingFields(data);
-      if (missing.length) {
-        setSameMemberHint("註冊資料不完整，缺少：" + missing.join("、") + "。請先補齊會員資料或改用手填。", "warn");
-        return false;
-      }
       setSameMemberHint("已帶入註冊人資料，送出前系統仍會再次檢查。", "ok");
+      saveCheckoutDraft();
       return true;
     }
     function toggleSameAsRegistered(checked){
-      if (!checked) return setSameMemberHint("", "");
+      if (!checked) {
+        setSameMemberHint("", "");
+        saveCheckoutDraft();
+        return;
+      }
       if (!lineProfile.userId) {
         const box = document.getElementById("sameAsRegistered");
         if (box) box.checked = false;
+        saveCheckoutDraft();
         toast("請先完成 LINE 登入");
         return loginLine();
       }
-      if (!memberData) {
+      if (!memberData || memberLoading || memberData?.syncFallback || !memberData?.bound) {
         const box = document.getElementById("sameAsRegistered");
         if (box) box.checked = false;
+        saveCheckoutDraft();
         return toast(memberLoading ? "會員資料讀取中" : "尚未取得註冊資料");
       }
       fillRegisteredShipping();
@@ -6741,8 +6676,12 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     async function checkout(){
       if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
+      if (!requireReadyMember()) return;
+      if (pointDeduction > 0 && (!memberData?.points?.shared?.ok || memberData.points.available === false || memberData.points.reconciliationRequired)) return toast("目前無法確認折抵點數，請稍後重試，或自行將折抵設為 0 點後送出。");
+      let pending = null;
+      try { pending = JSON.parse(sessionStorage.getItem(PENDING_CHECKOUT_KEY) || "null"); } catch (error) {}
+      if (pending?.orderId && pending.lineUserId === verifiedMemberUid) { await verifyPaymentReturn(); return; }
       const totals = clampPointDeduction();
-      if (totals.used > 0 && !lineProfile.userId) return loginLine();
       clearCheckoutErrors();
       const sameAsRegistered = !!document.getElementById("sameAsRegistered")?.checked;
       if (sameAsRegistered && !fillRegisteredShipping()) {
@@ -6773,6 +6712,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       setField("city", customer.city);
       setField("district", customer.district);
       setField("address", customer.address);
+      saveCheckoutDraft();
       entryContext = restoreEntryContext();
       setCheckoutBusy(true);
       await logCartActivity("checkout_start", { status: "active" });
@@ -6780,8 +6720,9 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       try {
         const clientOrderKey = buildClientOrderKey(customer);
         const currentCart = cart.map(item => ({ id: item.id, quantity: item.quantity }));
-        const res = await fetch("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, pointsUsed: totals.used, shippingCarrier: customer.shippingCarrier, sameAsRegistered, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) }).then(r => r.json());
+        const res = await memberRequest("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, pointsUsed: totals.used, shippingCarrier: customer.shippingCarrier, sameAsRegistered, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) });
         if (!res.ok) {
+          if (res.order?.orderId) rememberPendingCheckout(res.order);
           await logCartActivity("checkout_error", { status: "failed", errorMessage: res.message || "訂單送出失敗" });
           if (Array.isArray(res.fields) && res.fields.length) {
             markCheckoutErrors(res.fields, Object.fromEntries(res.fields.map(id => [id, res.message || "請檢查" + (checkoutFieldLabels[id] || "此欄位")])));
@@ -6790,18 +6731,23 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           return;
         }
         if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
+          rememberPendingCheckout(res.order);
           await logCartActivity("payment_redirect", { status: "redirecting", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
+          saveCheckoutDraft();
           keepBusy = true;
           location.href = res.payment.redirectUrl;
           return;
         }
         if (res.payment && res.payment.GatewayUrl) {
+          rememberPendingCheckout(res.order);
           await logCartActivity("payment_redirect", { status: "redirecting", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
+          saveCheckoutDraft();
           keepBusy = true;
           submitPaymentForm(res.payment);
           return;
         }
         await logCartActivity("order_created", { status: "submitted", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
+        clearCheckoutDraft();
         cart = []; pointDeduction = 0; localStorage.setItem("huaxu_points_used", "0"); saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
         if (res.order && Number(res.order.amount || 0) <= 0 && Number(res.order.pointsUsed || 0) > 0) {
           alert("訂單已成立：" + res.order.orderId + "\\n已使用點數折抵：" + money(res.order.pointsUsed) + " 點\\n本筆不需付款。");
@@ -6823,12 +6769,14 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         }
       } catch (error) {
         await logCartActivity("checkout_error", { status: "failed", errorMessage: error && error.message ? error.message : "訂單送出失敗" });
-        toast("訂單送出失敗，請稍後再試");
+        saveCheckoutDraft();
+        toast(error.message || "訂單送出失敗，請稍後再試；收件資料已保留。");
       } finally {
         if (!keepBusy) setCheckoutBusy(false);
       }
     }
     function submitPaymentForm(payRes){
+      saveCheckoutDraft();
       const form = document.createElement("form");
       form.method = "POST";
       form.action = payRes.GatewayUrl;
@@ -6861,7 +6809,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           }
         } catch (error) { console.warn("LIFF state restore failed", error); }
       }
-      const ignored = new Set(["code", "state", "liff.state", "friendship_status_changed"]);
+      const ignored = new Set(["code", "state", "liff.state", "friendship_status_changed", "linepay", "payment", "orderId", "transactionId"]);
       const hasEntryParams = Array.from(current.searchParams.keys()).some(key => !ignored.has(key));
       try {
         if (hasEntryParams || !sessionStorage.getItem("huaxu_entry_url")) {
@@ -6871,10 +6819,12 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         const saved = new URL(savedUrl, location.origin);
         const params = {};
         saved.searchParams.forEach((value, key) => { if (!ignored.has(key)) params[key] = value; });
+        ignored.forEach(key => saved.searchParams.delete(key));
         return { url: saved.href.split("#")[0], params };
       } catch (error) {
         const params = {};
         current.searchParams.forEach((value, key) => { if (!ignored.has(key)) params[key] = value; });
+        ignored.forEach(key => current.searchParams.delete(key));
         return { url: current.href.split("#")[0], params };
       }
     }
@@ -6894,23 +6844,36 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     async function loadMemberData(accessToken){
       if (!lineProfile.userId) return;
+      const requestedUid = lineProfile.userId;
+      saveCheckoutDraft();
       memberLoading = true;
+      memberVerified = false;
       memberData = memberData || fallbackMemberData("syncing");
       renderCart();
       renderMemberPanel();
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 7000);
-        const res = await fetch("/api/huaxu/member", {
+        const res = await memberRequest("/api/huaxu/member", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile }),
           signal: controller.signal
-        }).then(r => r.json()).finally(() => clearTimeout(timeoutId));
-        memberData = res && res.ok ? Object.assign({ syncFallback: false }, res) : fallbackMemberData(res?.message || "sync_failed");
+        }, accessToken).finally(() => clearTimeout(timeoutId));
+        if (!res?.ok || res.lineUserId !== requestedUid || lineProfile.userId !== requestedUid) throw new Error(res?.message || "會員身分確認失敗，請重新登入。");
+        if (verifiedMemberUid && verifiedMemberUid !== requestedUid) {
+          CHECKOUT_DRAFT_FIELD_IDS.forEach(id => { const field = document.getElementById(id); if (field) field.value = id === "shippingCarrier" ? "FAMILY" : ""; });
+          const sameBox = document.getElementById("sameAsRegistered");
+          if (sameBox) sameBox.checked = false;
+        }
+        memberData = Object.assign({ syncFallback: false }, res);
+        verifiedMemberUid = requestedUid;
+        memberVerified = true;
+        adoptCheckoutDraftForVerifiedUser(requestedUid);
       } catch (error) {
         console.warn("Member profile load failed", error);
         memberData = fallbackMemberData(error?.name === "AbortError" ? "timeout" : "sync_failed");
+        toast(error?.name === "AbortError" ? "會員資料讀取逾時，請重試；收件資料已保留。" : (error.message || "會員身分確認失敗，請重新登入。"));
       } finally {
         memberLoading = false;
         renderCart();
@@ -6918,12 +6881,12 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       }
     }
     function openMember(){
-      if (!lineProfile.userId) return loginLine();
+      if (!memberVerified) return loginLine();
       renderMemberPanel();
       toggleMember(true);
     }
     async function openOrders(){
-      if (!lineProfile.userId) return loginLine();
+      if (!requireReadyMember()) return;
       activeMemberSection = "訂單查詢";
       memberEditMode = false;
       if (!memberData && !memberLoading) await refreshMemberData();
@@ -6981,12 +6944,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       }
     }
     function loginLine(){
-      if (lineProfile.userId) return openMember();
+      if (memberVerified) return openMember();
+      saveCheckoutDraft();
       initLineIdentity(true);
       toast("正在確認 LINE 身分");
     }
     async function dailyCheckin(){
-      if (!lineProfile.userId) return loginLine();
+      if (!requireReadyMember()) return;
       const button = document.getElementById("checkinButton");
       if (button) {
         button.disabled = true;
@@ -6994,13 +6958,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       }
       try {
         const accessToken = window.liff && liff.getAccessToken ? liff.getAccessToken() : "";
-        const res = await fetch("/api/huaxu/checkin", {
+        const res = await memberRequest("/api/huaxu/checkin", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile, keyword: "會員打卡" })
-        }).then(r => r.json());
+          body: JSON.stringify({ accessToken })
+        });
         if (!res.ok) throw new Error(res.message || "打卡送出失敗");
-        toast(res.alreadyCheckedIn ? "今日已完成打卡" : "打卡已送出");
+        toast(res.message || (res.alreadyCheckedIn ? "今日已完成簽到" : "簽到成功"));
         await refreshMemberData();
       } catch (error) {
         toast(error.message || "打卡送出失敗");
@@ -7086,6 +7050,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const sourceText = points.source === "wetw" ? "母站共用點數" : (points.source === "fallback" ? "尚未同步，暫以 0 點顯示" : "HookTea 本地點數");
       return '<section class="member-detail"><div class="member-detail-head"><div class="member-detail-title">點數記錄</div><button class="member-edit" onclick="refreshMemberData()">重新整理</button></div>'
         + '<div class="points-summary"><div class="points-card"><small>目前餘額</small><b>'+money(balance)+' 點</b></div><div class="points-card"><small>資料來源</small><b style="font-size:15px">'+escapeHtml(sourceText)+'</b></div></div>'
+        + (Number(points.pendingBalance || 0) > 0 ? '<div class="member-empty">待同步點數：'+money(points.pendingBalance)+' 點，完成同步後才能折抵。</div>' : '')
+        + (points.reconciliationRequired || points.legacyReviewRequired ? '<div class="member-empty">部分點數待核對，請以目前已確認的可用點數為準。</div>' : '')
         + (logs.length ? logs.map(renderPointLog).join("") : '<div class="member-empty">目前沒有點數異動紀錄</div>')
         + '</section>';
     }
@@ -7162,17 +7128,18 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     async function reportRemittance(orderId){
       if (!orderId || reportingOrderId) return;
+      if (!requireReadyMember()) return;
       const input = document.getElementById("remit_" + orderId);
       const remittance = String(input && input.value || "").replace(/\D/g, "").slice(0, 5);
       if (remittance.length !== 5) return toast("\u8acb\u8f38\u5165\u532f\u6b3e\u5e33\u865f\u672b\u4e94\u78bc");
       reportingOrderId = orderId;
       renderMemberPanel();
       try {
-        const res = await fetch("/api/huaxu/orders/remittance", {
+        const res = await memberRequest("/api/huaxu/orders/remittance", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ orderId, remittance, lineProfile })
-        }).then(r => r.json());
+        });
         if (!res.ok) throw new Error(res.message || "\u56de\u5831\u532f\u6b3e\u5931\u6557");
         toast("\u5df2\u9001\u51fa\u532f\u6b3e\u672b\u4e94\u78bc\uFF0C\u7b49\u5f85\u5f8c\u53f0\u6838\u5c0d");
         await refreshMemberData();
@@ -7186,15 +7153,16 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     async function cancelOrder(orderId){
       if (!orderId || cancellingOrderId) return;
+      if (!requireReadyMember()) return;
       if (!confirm("確定要取消這筆訂單？")) return;
       cancellingOrderId = orderId;
       renderMemberPanel();
       try {
-        const res = await fetch("/api/huaxu/orders/cancel", {
+        const res = await memberRequest("/api/huaxu/orders/cancel", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ orderId, lineProfile })
-        }).then(r => r.json());
+        });
         if (!res.ok) throw new Error(res.message || "取消訂單失敗");
         toast(res.pointsRestored ? "訂單已取消，點數已回補" : "訂單已取消");
         await refreshMemberData();
@@ -7237,7 +7205,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       renderMemberPanel();
     }
     async function saveMemberProfile(){
-      if (!lineProfile.userId) return loginLine();
+      if (!requireReadyMember()) return;
       const profile = {
         name: fieldValue("editName"),
         phone: fieldValue("editPhone"),
@@ -7252,11 +7220,11 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       renderMemberPanel();
       try {
         const accessToken = window.liff && liff.getAccessToken ? liff.getAccessToken() : "";
-        const res = await fetch("/api/huaxu/member", {
+        const res = await memberRequest("/api/huaxu/member", {
           method: "PUT",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile, profile })
-        }).then(r => r.json());
+        });
         if (!res.ok) throw new Error(res.message || "資料儲存失敗");
         memberData = Object.assign({}, memberData || {}, { bound: true, memberUid: res.memberUid, lineUserId: res.lineUserId, member: res.member });
         memberEditMode = false;
@@ -7297,6 +7265,10 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/api/health') {
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260914-identity-journal-v1' }),
+        { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+    }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
       const headers = new Headers(corsHeaders);
       headers.set("Content-Type", "text/html; charset=utf-8");
@@ -7398,6 +7370,8 @@ export default {
       }
 
       const access = await resolveAccess(env, claimedUserId, payload, idToken, accessToken);
+      if (access.identityConflict) return json({ status: "error", code: "MEMBER_IDENTITY_REVIEW_REQUIRED", message: "會員綁定資料需要確認，請聯絡客服" }, 409);
+      if (access.identityMismatch) return json({ status: "error", code: "LINE_IDENTITY_MISMATCH", message: "會員身分不一致，請重新登入" }, 403);
       const userId = access.userId;
       const isSensitiveAdminAction = action?.startsWith("ADMIN_") || action === "UPLOAD_IMAGE" || action === "DEPLOY_RICH_MENU";
       const isTeacherAction = TEACHER_ALLOWED_ACTIONS.has(action);
@@ -7560,20 +7534,13 @@ export default {
           break;
         }
           
-        case "GET_USER_POINTS":
-          {
-            const pointUid = payload?.targetUid || userId;
-            const localPointData = await safeGetKV(env, `POINTS_${pointUid}`, { balance: 0, logs: [] });
-            const pointMember = await safeGetKV(env, `USER_${pointUid}`, null);
-            const pointSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-            const sharedPointData = await queryWetwPointList(pointSettings, pointMember || { userId: pointUid, lineUserId: pointUid }, env).catch(error => ({
-              ok: false,
-              reason: "wp_query_exception",
-              message: error?.message || String(error),
-            }));
-            result.data = resolveDisplayPointData(localPointData, sharedPointData, 50);
-          }
+        case "GET_USER_POINTS": {
+          const pointUid = access.isAdmin ? (payload?.targetUid || userId) : userId;
+          const member = await safeGetKV(env, 'USER_' + pointUid, null);
+          const lineUid = getMemberLineUid(member, pointUid);
+          result.data = await readAuthoritativePoints(env, lineUid, member || { userId: pointUid, lineUserId: lineUid });
           break;
+        }
           
         case "GET_USER_ORDERS":
           const allOrd = await safeGetKV(env, "ORDERS", []);
@@ -7727,19 +7694,32 @@ export default {
           const currentMember = bindResult.bound ? bindResult.member : await safeGetKV(env, `USER_${memberUid}`, {});
           const savedRegisterMember = {
             ...currentMember,
-            ...payload,
+            ...Object.fromEntries(['name','displayName','phone','mobile','email','address','gender','birthday','industry'].filter(key => typeof payload[key] === 'string').map(key => [key, payload[key].slice(0, 240)])),
             userId: memberUid,
             lineUserId: access.lineUserId || userId,
             linkedLineUid: access.lineUserId || userId,
             createdAt: currentMember?.createdAt || new Date().toLocaleString(),
             updatedAt: new Date().toISOString(),
-            memberTier: payload.memberTier || currentMember?.memberTier || "一般會員",
+            memberTier: currentMember?.memberTier || "一般會員",
           };
-          await putUserKV(env, ctx, memberUid, savedRegisterMember);
+          // Persist the registration reward intent before making the profile look complete.
           
           const setsReg = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-          if (!bindResult.bound) await this.updatePoints(env, ctx, memberUid, setsReg.reward_register || 100, "註冊獎勵");
+          // Existing profiles predate durable claims; editing them never grants another registration reward.
+          let registrationReward = null;
+          const registrationId = 'register:' + (access.lineUserId || userId);
+          const pointService = createHookTeaPointService(env);
+          const priorRegistration = await pointService.get(registrationId);
+          const rewardAmount = Math.max(0, Math.floor(Number(setsReg.reward_register ?? 100)));
+          if (priorRegistration) registrationReward = pointService.publicResult(priorRegistration);
+          else if (!bindResult.bound && !currentMember?.userId && rewardAmount > 0) {
+            registrationReward = await pointService.submit({
+              id: registrationId, lineUid: access.lineUserId || userId, memberUid,
+              kind: 'register', amount: rewardAmount, reason: '註冊獎勵',
+            }, savedRegisterMember);
+          }
           
+          await putUserKV(env, ctx, memberUid, savedRegisterMember);
           if (env.GAS_URL) {
               ctx.waitUntil(fetch(env.GAS_URL, {
                   method: "POST", headers: { "Content-Type": "application/json" },
@@ -7751,21 +7731,27 @@ export default {
           ctx.waitUntil(this.sendTgMessage(env, `🆕 <b>新學員註冊</b>\n姓名：${payload.name}\n電話：${payload.phone}\n業種：${payload.industry || '未填寫'}`));
           ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString())); 
 
-          result.data = { success: true, userId: memberUid, legacyBound: !!bindResult.bound, bindSource: bindResult.source || "" };
+          result.data = { success: true, userId: memberUid, legacyBound: !!bindResult.bound, bindSource: bindResult.source || "", reward: registrationReward };
           break;
         }
           
-        case "DAILY_CHECKIN":
+        case "DAILY_CHECKIN": {
           const today = taipeiDateKey();
+          const lineUid = access.lineUserId || userId;
           const checkKey = `CHECKIN_${userId}_${today}`;
           if (await safeGetKV(env, checkKey, false, { preferWasabi: false })) throw new Error("今天已經領過紅包囉！");
-          const setsDaily = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-          const pts = setsDaily.reward_daily || 10;
-          await safePutKV(env, checkKey, true, { expirationTtl: secondsUntilNextTaipeiMidnight() });
-          
-          await this.updatePoints(env, ctx, userId, pts, "每日登入紅包");
-          result.data = { earned: pts };
+          const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+          const pts = Math.max(0, Math.floor(Number(settings.reward_daily ?? 10)));
+          if (!pts) { result.data = { earned: 0 }; break; }
+          const member = await safeGetKV(env, 'USER_' + userId, null);
+          const reward = await createHookTeaPointService(env).submit({
+            id: 'legacy-daily:' + lineUid + ':' + today, lineUid, memberUid: userId,
+            kind: 'legacy_daily', amount: pts, reason: '每日登入紅包',
+          }, member || { userId, lineUserId: lineUid });
+          if (reward.ok) await safePutKV(env, checkKey, true, { expirationTtl: secondsUntilNextTaipeiMidnight() });
+          result.data = { earned: reward.ok && !reward.duplicate ? pts : 0, pending: reward.pending, duplicate: !!reward.duplicate };
           break;
+        }
 
         case "CREATE_BOOKING": {
           const service = payload?.service || {};
@@ -8890,7 +8876,8 @@ export default {
             }
             let wpSync = { ok: true, dryRun: true };
             if (!dryRun) {
-              wpSync = await insertWetwPoint(access.settings, pointUid, diff, reason, env, member).catch(error => ({ ok: false, error: error?.message || String(error) }));
+              await createHookTeaPointService(env).snapshot(lineUid, pointUid, pointLookup.data);
+              wpSync = { ok: false, reason: 'legacy_review_required', message: '本機與母站差額須逐筆審核，不會自動補入母站。' };
             }
             const motherBalanceAfter = extractWetwInsertBalance(wpSync);
             const localAlign = motherBalanceAfter !== null && !dryRun
@@ -9193,6 +9180,7 @@ export default {
     };
     const data = await callLinePayApi(env, settings, "POST", "/v3/payments/request", body);
     const transactionId = String(data?.info?.transactionId || "");
+    if (!transactionId || !(data?.info?.paymentUrl?.web || data?.info?.paymentUrl?.app)) throw new Error('LINE Pay 回應缺少交易編號或付款網址');
     await updateLinePayOrder(env, null, orderId, transactionId, {
       paymentMethod: "LINEPAY",
       paymentStatus: "LINEPAY_REQUESTED",
@@ -9243,370 +9231,195 @@ export default {
   },
 
   async updatePoints(env, ctx, uid, amount, reason, options = {}) {
-    const sourceUid = String(uid || "").trim();
-    const pointLookup = await getPointDataForUid(env, sourceUid, { balance: 0, logs: [] });
-    const pointUid = pointLookup.pointUid || sourceUid;
-    let data = pointLookup.data || { balance: 0, logs: [] };
-    const numericAmount = Number(amount || 0);
-    data.balance = Number(data.balance || 0) + numericAmount;
-    const typeStr = numericAmount >= 0 ? "EARN" : "SPEND";
-    const createdTs = Date.now();
-    const createdAt = new Date(createdTs).toLocaleString();
-    const logId = crypto.randomUUID ? crypto.randomUUID() : createdTs.toString();
-    data.logs.unshift({ logId, amount: Math.abs(numericAmount), reason, createdAt, type: typeStr });
-    data.logs = data.logs.slice(0, 50);
-    await putPointKV(env, ctx, pointUid, data);
-    try {
-      await appendPointsLedger(env, {
-        logId,
-        uid: pointUid,
-        sourceUid,
-        type: typeStr,
-        amount: numericAmount,
-        points: Math.abs(numericAmount),
-        reason,
-        balanceAfter: data.balance,
-        createdAt,
-        createdTs,
-        source: options.source || "system",
-        operatorUid: options.operatorUid || "",
-        operatorName: options.operatorName || "",
-        targetName: options.targetName || "",
-      });
-    } catch (e) {
-      console.error("[PointsLedger] Failed to append ledger", e);
+    if (options.skipWpSync) throw new Error('共用點數已直接採用母站餘額，不可再補登為新贈點');
+    const member = await safeGetKV(env, 'USER_' + uid, null);
+    const lineUid = getMemberLineUid(member, /^U[0-9a-f]{32}$/i.test(uid) ? uid : '');
+    if (!lineUid) throw new Error('POINT_MEMBER_REQUIRES_LINE_BINDING');
+    const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
+    if (resolved.identityConflict || (resolved.memberUid && resolved.memberUid !== uid && uid !== lineUid)) throw new Error('POINT_IDENTITY_CONFLICT');
+    const target = resolved.member || member || { userId: lineUid, lineUserId: lineUid };
+    const service = createHookTeaPointService(env);
+    const result = await service.submit({
+      id: options.operationId || crypto.randomUUID(), lineUid, memberUid: target.userId || uid,
+      kind: options.source || 'system', amount: Number(amount), reason,
+    }, target);
+    if (!result.ok) {
+      const error = new Error(result.pending ? '點數異動待確認，請勿重複操作' : '點數異動未完成：' + result.error);
+      error.pointOperation = result;
+      throw error;
     }
-    if (ctx) observeHighRiskDualWrite(env, ctx, ["points", "point-ledger"]);
-    else await observeHighRiskDualWrite(env, null, ["points", "point-ledger"]);
-
-    if (env.GAS_URL && ctx) {
-        ctx.waitUntil(fetch(env.GAS_URL, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "MANAGE_POINTS", payload: { uid: pointUid, sourceUid, amount: Math.abs(numericAmount), type: typeStr, reason, operator: "System" } }),
-            redirect: "follow"
-        }).catch(e => console.error("GAS Points Sync Error", e)));
-    }
-
-    if (!options.skipWpSync && ctx) {
-      ctx.waitUntil((async () => {
-        const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-        const memberForWp = await safeGetKV(env, `USER_${pointUid}`, null).catch(() => null);
-        const wpRes = await insertWetwPoint(settings, pointUid, numericAmount, reason, env, memberForWp);
-        const motherBalanceAfter = extractWetwInsertBalance(wpRes);
-        if (motherBalanceAfter !== null) {
-          await alignLocalPointsToMotherBalance(env, null, pointUid, motherBalanceAfter, "母站點數異動後同步子站餘額").catch(error => console.error("Mother Balance Align Error", error));
-        }
-        if (!wpRes.ok && !wpRes.skipped) console.error("WordPress Points Sync Error", wpRes);
-      })());
-    }
-    
-    if (ctx) ctx.waitUntil(env.ACTION_DATA.put("SYS_LAST_UPDATE", Date.now().toString()));
+    return result;
   },
 
   async handleLineWebhook(request, env, ctx) {
-    if (request.method !== "POST") {
-      await safePutKV(env, "LINE_WEBHOOK_PING_LAST", {
-        receivedAt: new Date().toISOString(),
-        method: request.method,
-        url: request.url,
-      }, { expirationTtl: 86400 }).catch(() => {});
-      return new Response("HookTea LINE webhook endpoint", { status: 200 });
-    }
+    if (request.method !== "POST") return new Response("HookTea LINE webhook endpoint", { status: 200 });
     const signature = request.headers.get("x-line-signature") || "";
-    await env.ACTION_DATA?.put("LINE_WEBHOOK_ENTRY_DIRECT_LAST", JSON.stringify({ receivedAt: new Date().toISOString(), method: request.method, url: request.url, signaturePresent: !!signature }), { expirationTtl: 86400 }).catch(() => {});
     const rawText = await request.text();
-    await env.ACTION_DATA?.put("LINE_WEBHOOK_RAW_DIRECT_LAST", JSON.stringify({ receivedAt: new Date().toISOString(), rawLength: rawText.length, rawHead: rawText.slice(0, 500) }), { expirationTtl: 86400 }).catch(() => {});
+    const signatureCheck = await verifyLineWebhookSignature(env, rawText, signature).catch(error => ({
+      configured: !!getLineChannelSecret(env), valid: false, reason: error?.message || String(error),
+    }));
+    if (!signatureCheck.valid) {
+      await safePutKV(env, "LINE_WEBHOOK_REJECT_LAST", {
+        receivedAt: new Date().toISOString(),
+        reason: signatureCheck.reason || "invalid_signature",
+      }, { expirationTtl: 86400 }).catch(() => {});
+      return new Response(signatureCheck.configured ? "INVALID_SIGNATURE" : "WEBHOOK_NOT_CONFIGURED", { status: signatureCheck.configured ? 403 : 503 });
+    }
+    let parsedPayload;
     try {
-      let parsedPayload = {};
-      if (rawText) parsedPayload = JSON.parse(rawText);
-      const events = Array.isArray(parsedPayload?.events) ? parsedPayload.events : [];
-      if (!events.length) {
-        await safePutKV(env, "LINE_WEBHOOK_PING_LAST", {
-          receivedAt: new Date().toISOString(),
-          method: request.method,
-          signaturePresent: !!signature,
-          tokenConfigured: !!getLineChannelAccessToken(env),
-        }, { expirationTtl: 86400 }).catch(() => {});
-        return new Response("OK", { status: 200 });
-      }
-      const signatureCheck = await verifyLineWebhookSignature(env, rawText, signature).catch(error => ({
-        configured: !!getLineChannelSecret(env),
-        valid: false,
-        reason: error?.message || String(error),
-      }));
-      if (signatureCheck.configured && !signatureCheck.valid) {
-        await safePutKV(env, "LINE_WEBHOOK_REJECT_LAST", {
-          receivedAt: new Date().toISOString(),
-          eventCount: events.length,
-          reason: signatureCheck.reason || "invalid_signature",
-          texts: events.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean).slice(0, 10),
-        }, { expirationTtl: 86400 }).catch(() => {});
-        return new Response("INVALID_SIGNATURE", { status: 403 });
-      }
-      const unhandledEvents = [];
+      parsedPayload = JSON.parse(rawText);
+      if (!parsedPayload || !Array.isArray(parsedPayload.events)) throw new Error("missing_events");
+    } catch (_) {
+      return new Response("INVALID_PAYLOAD", { status: 400 });
+    }
+    const events = parsedPayload.events;
+    if (!events.length) {
+      await safePutKV(env, "LINE_WEBHOOK_PING_LAST", {
+        receivedAt: new Date().toISOString(), signatureVerified: true,
+      }, { expirationTtl: 86400 }).catch(() => {});
+      return new Response("OK", { status: 200 });
+    }
+    try {
       await safePutKV(env, "LINE_WEBHOOK_LAST", {
         receivedAt: new Date().toISOString(),
         eventCount: events.length,
         tokenConfigured: !!getLineChannelAccessToken(env),
-        signatureVerified: signatureCheck.configured ? signatureCheck.valid : null,
+        signatureVerified: true,
         texts: events.map(event => ({
           type: event?.type || "",
           userId: event?.source?.userId || "",
           messageType: event?.message?.type || "",
           text: event?.message?.type === "text" ? String(event.message.text || "").slice(0, 80) : "",
         })).slice(0, 10),
-      }, { expirationTtl: 86400 });
+      }, { expirationTtl: 86400 }).catch(() => {});
 
-      const hookTeaCheckinTemplateForWebhook = await getHookTeaCheckinTemplate(env).catch(() => null);
-      const motherKeywordEvents = events.filter(event => event?.type === "message" && event?.message?.type === "text" && isMotherSiteKeyword(event.message.text) && !isHookTeaDailySigninKeyword(event.message.text) && !isHookTeaCheckinTemplateTrigger(hookTeaCheckinTemplateForWebhook, event.message.text));
-      if (motherKeywordEvents.length) {
-        const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
-        const allEventsAreMotherKeywords = motherKeywordEvents.length === events.length;
-        const preflightTask = Promise.all(motherKeywordEvents.map(async event => {
-          const lineUid = String(event?.source?.userId || "").trim();
-          const keyword = String(event?.message?.text || "").trim();
-          if (!lineUid) return;
-          await ensureLineOnlyCrmMember(env, ctx, lineUid, null, `mother_keyword_forward_only_${motherSiteKeywordType(keyword)}`).catch(() => {});
-          await appendLineMonitorEvent(env, ctx, event).catch(e => console.error("LINE Monitor Append Error:", e));
-          await safePutKV(env, `MOTHER_KEYWORD_RECEIVED_${lineUid}`, {
-            lineUserId: lineUid,
-            keyword,
-            keywordType: motherSiteKeywordType(keyword),
-            route: "forward_only",
-            receivedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 * 7 }).catch(() => {});
-        }));
-        if (ctx) ctx.waitUntil(preflightTask);
-        else preflightTask.catch(() => {});
-
-        await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
-          receivedAt: new Date().toISOString(),
-          route: "mother_keyword_forward_only",
-          totalEvents: events.length,
-          forwardedCount: motherKeywordEvents.length,
-          localHandledCount: 0,
-          texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-          keywordTypes: motherKeywordEvents.map(event => motherSiteKeywordType(event?.message?.text || "")),
-        }, { expirationTtl: 86400 }).catch(() => {});
-
-        const forwardPayload = allEventsAreMotherKeywords ? parsedPayload : { ...parsedPayload, events: motherKeywordEvents };
-        const forwardBody = allEventsAreMotherKeywords ? rawText : JSON.stringify(forwardPayload);
-        const forwardHeaders = {
-          "Content-Type": "application/json",
-          "x-hooktea-forwarded-by": "hooktea-mother-keyword-forward-only",
-        };
-        if (allEventsAreMotherKeywords && signature) forwardHeaders["x-line-signature"] = signature;
-        const forwardTask = (async () => {
-          await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
-            url: forwardWebhook,
-            route: "mother_keyword_forward_only",
-            eventCount: motherKeywordEvents.length,
-            allEventsAreMotherKeywords,
-            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-            attemptedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
-          const response = await fetch(forwardWebhook, {
-            method: "POST",
-            headers: forwardHeaders,
-            body: forwardBody,
-            redirect: "follow",
-            signal: AbortSignal.timeout(8000)
-          });
-          const responseText = await response.text().catch(error => `response_text_error:${error?.message || String(error)}`);
-          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-            url: forwardWebhook,
-            route: "mother_keyword_forward_only",
-            status: response.status,
-            ok: response.ok,
-            fallback: false,
-            eventCount: motherKeywordEvents.length,
-            texts: motherKeywordEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-            response: responseText.slice(0, 300),
-            forwardedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
-        })().catch(async error => {
-          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-            url: forwardWebhook,
-            route: "mother_keyword_forward_only",
-            ok: false,
-            error: error?.message || String(error),
-            fallback: false,
-            eventCount: motherKeywordEvents.length,
-            forwardedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
-        });
-        await forwardTask;
-        return new Response("OK", { status: 200 });
-      }
+      const webhookSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+      const template = await getHookTeaCheckinTemplate(env).catch(() => null);
+      const unhandledEvents = [];
       for (const event of events) {
+        // Selecting an owner is separate from success: a local handler may have
+        // spent its reply token or awarded points before returning/throwing.
+        let owner = "mother";
         let handled = false;
-        if (event?.type === "message" && event?.message?.type === "text") {
-          const text = String(event?.message?.text || "").trim();
-          const uid = String(event?.source?.userId || "").trim();
-          await safePutKV(env, "LINE_WEBHOOK_TEXT_LAST", {
-            lineUserId: uid,
-            text: text.slice(0, 160),
-            eventType: event?.type || "",
-            messageType: event?.message?.type || "",
-            receivedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 * 7 }).catch(() => {});
-          await safePutKV(env, "WEBHOOK_BEFORE_TEMPLATE_LAST", {
-  lineUserId: uid,
-  text: text.slice(0, 160),
-  replyTokenPresent: !!String(event?.replyToken || "").trim(),
-  reachedAt: new Date().toISOString(),
-}, { expirationTtl: 86400 * 7 }).catch(() => {});
-try {
-  handled = await maybeReplyHookTeaCheckinTemplate(env, event, text);
-  await safePutKV(env, "WEBHOOK_AFTER_TEMPLATE_LAST", {
-    lineUserId: uid,
-    text: text.slice(0, 160),
-    handled: !!handled,
-    reachedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 7 }).catch(() => {});
-} catch (e) {
-  await safePutKV(env, "WEBHOOK_TEMPLATE_ERROR_LAST", {
-    lineUserId: uid,
-    text: text.slice(0, 160),
-    error: e?.message || String(e),
-    failedAt: new Date().toISOString(),
-  }, { expirationTtl: 86400 * 7 }).catch(() => {});
-  console.error("HookTea Checkin Template Reply Error:", e);
-  handled = false;
-}
-          if (!handled) handled = await handleHookTeaDailySigninReward(env, ctx, event).catch(e => {
-            console.error("HookTea Daily Signin Reward Error:", e);
-            safePutKV(env, "HOOKTEA_DAILY_SIGNIN_LAST", {
-              lineUserId: uid,
-              keyword: HOOKTEA_DAILY_SIGNIN_KEYWORD,
-              text,
-              status: "handler_exception",
-              error: e?.message || String(e),
+        const isText = event?.type === "message" && event?.message?.type === "text";
+        const text = isText ? String(event.message.text || "").trim() : "";
+        const uid = String(event?.source?.userId || "").trim();
+        if (isText) {
+          if (isConfiguredShopKeywordReward(webhookSettings, text)) owner = "keyword_reward";
+          else if (isHookTeaCheckinTemplateTrigger(template, text)) owner = "checkin_template";
+          else if (isHookTeaDailySigninKeyword(text)) owner = "daily_signin";
+          else if (isMotherSiteKeyword(text)) owner = "mother_keyword";
+          else if (isReferralInviteKeyword(text)) owner = "referral";
+          else owner = "member_bind";
+
+          try {
+            if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event);
+            else if (owner === "checkin_template") handled = await maybeReplyHookTeaCheckinTemplate(env, event, text);
+            else if (owner === "daily_signin") handled = await handleHookTeaDailySigninReward(env, ctx, event);
+            else if (owner === "mother_keyword") {
+              await safePutKV(env, `MOTHER_KEYWORD_RECEIVED_${uid}`, {
+                lineUserId: uid, keyword: text, keywordType: motherSiteKeywordType(text),
+                route: "forward_only", receivedAt: new Date().toISOString(),
+              }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            } else if (owner === "referral") {
+              const inviteUrl = buildReferralInviteUrl("2007674851-lQljb6Cm", uid, uid);
+              const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid);
+              const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
+              const reply = await replyLineMessage(env, event?.replyToken || "", [
+                referralShareFlexMessage({ inviteUrl, shareUrl, qrUrl }),
+              ]).catch(error => ({ ok: false, error: error?.message || String(error) }));
+              handled = true;
+              await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, {
+                lineUid: uid, memberUid: uid, inviteUrl, shareUrl, qrUrl, reply, updatedAt: new Date().toISOString(),
+              }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            } else {
+              handled = await handleLineMemberBindText(env, ctx, event);
+              // Only an explicit no-match can release ownership to the mother.
+              if (!handled) owner = "mother";
+            }
+            if (!handled && !owner.startsWith("mother")) {
+              await safePutKV(env, "WEBHOOK_EVENT_ERROR_LAST", {
+                lineUserId: uid, eventId: event?.webhookEventId || event?.message?.id || "",
+                owner, status: "local_handler_declined", updatedAt: new Date().toISOString(),
+              }, { expirationTtl: 86400 * 7 }).catch(() => {});
+            }
+          } catch (error) {
+            console.error("LINE local event handler failed:", owner, error);
+            await safePutKV(env, "WEBHOOK_EVENT_ERROR_LAST", {
+              lineUserId: uid, eventId: event?.webhookEventId || event?.message?.id || "",
+              owner, status: "handler_exception", error: error?.message || String(error),
               updatedAt: new Date().toISOString(),
-            }, { expirationTtl: 86400 * 14 }).catch(() => {});
-            return false;
-          });
-          if (!handled) handled = await handleShopKeywordReward(env, ctx, event, this.updatePoints.bind(this)).catch(e => {
-            console.error("Keyword Reward Error:", e);
-            return false;
-          });
-          if (!handled && isReferralInviteKeyword(text)) {
-            const inviteUrl = buildReferralInviteUrl("2007674851-lQljb6Cm", uid, uid);
-            const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid);
-            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=18&data=${encodeURIComponent(inviteUrl)}`;
-            const replyToken = event?.replyToken || "";
-            await safePutKV(env, `REFERRAL_WEBHOOK_DIRECT_${uid}`, { text, inviteUrl, qrUrl, receivedAt: new Date().toISOString() }, { expirationTtl: 86400 }).catch(() => {});
-            const reply = await replyLineMessage(env, replyToken, [
-              referralShareFlexMessage({ inviteUrl, shareUrl, qrUrl })
-            ]).catch(e => ({ ok: false, error: e.message || String(e) }));
-            await safePutKV(env, `REFERRAL_INVITE_LAST_${uid}`, { lineUid: uid, memberUid: uid, inviteUrl, shareUrl, qrUrl, reply, updatedAt: new Date().toISOString() }, { expirationTtl: 86400 * 7 }).catch(() => {});
-            handled = true;
+            }, { expirationTtl: 86400 * 7 }).catch(() => {});
           }
         }
-        await appendLineMonitorEvent(env, ctx, event).catch(e => {
-          console.error("LINE Monitor Append Error:", e);
-        });
-        if (!handled && event?.type === "message" && event?.message?.type === "text") {
-          handled = await handleLineMemberBindText(env, ctx, event).catch(e => {
-            console.error("LINE Bind Error:", e);
-            return false;
-          });
-        }
-        if (!handled) unhandledEvents.push(event);
+        if (owner.startsWith("mother")) unhandledEvents.push(event);
       }
 
-      const forwardPayload = { ...parsedPayload, events: unhandledEvents };
+      // Monitoring also establishes LINE-only members for follow events. It has
+      // no reply ownership and must not delay the reply/forward critical path.
+      const monitorTask = Promise.all(events.map(event => appendLineMonitorEvent(env, ctx, event).catch(error => {
+        console.error("LINE Monitor Append Error:", error);
+      })));
+      if (ctx) ctx.waitUntil(monitorTask);
+      else await monitorTask;
+
       await safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
         receivedAt: new Date().toISOString(),
+        route: "per_event_owner",
         totalEvents: events.length,
         unhandledCount: unhandledEvents.length,
+        localHandledCount: events.length - unhandledEvents.length,
+        gasMirrorSkipped: !!env.GAS_URL,
         texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
       }, { expirationTtl: 86400 }).catch(() => {});
-      ctx.waitUntil((async () => {
-        const promises = [];
-
-        if (env.GAS_URL) {
-          promises.push(
-            fetch(env.GAS_URL, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "LINE_WEBHOOK", payload: forwardPayload }),
-              redirect: "follow"
-            }).catch(e => console.error("GAS Webhook Error:", e))
-          );
-        }
-
-        const sets = await safeGetKV(env, "SYSTEM_SETTINGS", {});
-        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || sets.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
-        
-        if (forwardWebhook && unhandledEvents.length) {
+      if (unhandledEvents.length) {
+        const forwardWebhook = env.FORWARD_WEBHOOK_URL || env.SECOND_WEBHOOK_URL || webhookSettings.second_webhook_url || "https://aiwe.cc/index.php/line_login/9890/";
+        // The verified original signature is valid only for the exact original
+        // bytes. Filtered batches are re-signed for the same OA channel.
+        const forwardRequest = await buildLineWebhookForwardRequest(env, parsedPayload, rawText, signature, unhandledEvents);
+        const forwardTask = (async () => {
           await safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
-            url: forwardWebhook,
-            eventCount: unhandledEvents.length,
+            url: forwardWebhook, route: "per_event_owner", eventCount: unhandledEvents.length,
             texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             attemptedAt: new Date().toISOString(),
           }, { expirationTtl: 86400 }).catch(() => {});
-          promises.push(
-            fetch(forwardWebhook, {
-              method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-line-signature": signature
-            },
-              body: rawText,
-              redirect: "follow",
-              signal: AbortSignal.timeout(8000)
-            }).then(async response => {
-              await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-                url: forwardWebhook,
-                status: response.status,
-                ok: response.ok,
-                eventCount: unhandledEvents.length,
-                texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-                forwardedAt: new Date().toISOString(),
-              }, { expirationTtl: 86400 }).catch(() => {});
-              const responseText = await response.text().catch(() => "");
-              await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-                url: forwardWebhook,
-                status: response.status,
-                ok: response.ok,
-                eventCount: unhandledEvents.length,
-                texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
-                response: responseText.slice(0, 300),
-                forwardedAt: new Date().toISOString(),
-              }, { expirationTtl: 86400 }).catch(() => {});
-            }).catch(async e => {
-              console.error("Forward Webhook Error:", e);
-              await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-                url: forwardWebhook,
-                ok: false,
-                error: e.message || String(e),
-                eventCount: unhandledEvents.length,
-                forwardedAt: new Date().toISOString(),
-              }, { expirationTtl: 86400 }).catch(() => {});
-            })
-          );
-        }
-
-        await Promise.all(promises);
-      })().catch(async error => {
-        console.error("Webhook Forward WaitUntil Error:", error);
-        await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
-          ok: false,
-          error: error?.message || String(error),
-          eventCount: unhandledEvents.length,
-          forwardedAt: new Date().toISOString(),
-        }, { expirationTtl: 86400 }).catch(() => {});
-      }));
-    } catch (err) {
-      console.error("Webhook processing error:", err);
+          try {
+            // A second downstream handler (such as GAS) must not receive these
+            // reply tokens or run another point mutation for the same events.
+            const response = await fetch(forwardWebhook, forwardRequest);
+            const responseText = await response.text().catch(() => "");
+            await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+              url: forwardWebhook, route: "per_event_owner", status: response.status, ok: response.ok,
+              eventCount: unhandledEvents.length,
+              texts: unhandledEvents.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
+              response: responseText.slice(0, 300), forwardedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 }).catch(() => {});
+          } catch (error) {
+            console.error("Forward Webhook Error:", error);
+            await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+              url: forwardWebhook, route: "per_event_owner", ok: false, error: error?.message || String(error),
+              eventCount: unhandledEvents.length, forwardedAt: new Date().toISOString(),
+            }, { expirationTtl: 86400 }).catch(() => {});
+          }
+        })();
+        if (ctx) ctx.waitUntil(forwardTask);
+        else await forwardTask;
+      }
+      return new Response("OK", { status: 200 });
+    } catch (error) {
+      console.error("Webhook processing error:", error);
+      await safePutKV(env, "WEBHOOK_PROCESSING_ERROR_LAST", {
+        error: error?.message || String(error), eventCount: events.length, failedAt: new Date().toISOString(),
+      }, { expirationTtl: 86400 }).catch(() => {});
+      return new Response("WEBHOOK_PROCESSING_FAILED", { status: 500 });
     }
-
-    return new Response("OK", { status: 200 });
   },
 
   async handleLinePayConfirm(request, env, ctx) {
+    return withHookTeaOrderLock(env, () => this.confirmLinePayOnce(request, env, ctx));
+  },
+
+  async confirmLinePayOnce(request, env, ctx) {
     const url = new URL(request.url);
     const orderId = String(url.searchParams.get("orderId") || "").trim();
     const redirectUrl = url.searchParams.get("redirect") || "";
@@ -9616,7 +9429,13 @@ try {
       const orders = await safeGetKV(env, "ORDERS", []);
       const order = (Array.isArray(orders) ? orders : []).find(o => o && String(o.orderId) === orderId);
       if (!order) throw new Error("找不到 LINE Pay 訂單");
-      const transactionId = queryTransactionId || String(order.linePayTransactionId || "").trim();
+      if (String(order.paymentMethod).toUpperCase() !== 'LINEPAY') throw new Error('付款方式不符');
+      if (isHookTeaPaidOrder(order)) return hookTeaPaymentReturn(request, 'success', orderId);
+      const restoration = await createHookTeaPointService(env).get('order-restore:' + orderId);
+      if (order.status !== 'PENDING' || order.pointsRestoreOperationId || order.pointsRestoredAt || restoration) throw new Error('訂單不可付款');
+      const transactionId = String(order.linePayTransactionId || '').trim();
+      if (queryTransactionId && queryTransactionId !== transactionId) throw new Error('付款交易編號不符');
+      if (Number(order.pointsUsed) > 0 && !order.pointsDeductedAt) throw new Error('折抵點數尚未確認');
       if (!transactionId) throw new Error("缺少 LINE Pay transactionId");
       const amount = Math.max(0, Math.floor(Number(order.amount || 0)));
       const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
@@ -9643,7 +9462,7 @@ try {
         tradeNo: transactionId,
         source: "LINEPAY_CONFIRM",
       });
-      if (redirectUrl) return Response.redirect(redirectUrl, 302);
+      if (redirectUrl) return hookTeaPaymentReturn(request, 'success', orderId);
       return new Response("LINE Pay OK", { status: 200 });
     } catch (e) {
       await appendPaymentLog(env, {
@@ -9655,50 +9474,15 @@ try {
         tradeNo: queryTransactionId,
         source: "LINEPAY_CONFIRM",
       });
-      if (redirectUrl) return Response.redirect(`${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}linepay=error`, 302);
+      if (redirectUrl) return hookTeaPaymentReturn(request, 'error', orderId);
       return new Response(`LINE Pay confirm failed: ${e.message}`, { status: 500 });
     }
   },
 
   async handleLinePayCancel(request, env, ctx) {
-    const url = new URL(request.url);
-    const orderId = String(url.searchParams.get("orderId") || "").trim();
-    const redirectUrl = url.searchParams.get("redirect") || "";
-    if (orderId) {
-      try {
-        const orders = await safeGetKV(env, "ORDERS", []);
-        const order = (Array.isArray(orders) ? orders : []).find(o => o && String(o.orderId) === orderId);
-        const pointsToRestore = Math.max(0, Math.floor(Number(order?.pointsUsed || 0)));
-        const restoreUid = String(order?.pointsMemberUid || order?.memberUid || order?.userId || "").trim();
-        const restorePatch = {};
-        if (pointsToRestore > 0 && order?.pointsDeductedAt && !order?.pointsRestoredAt && restoreUid) {
-          await this.updatePoints(env, ctx, restoreUid, pointsToRestore, `LINE Pay 取消回補：${orderId}`, {
-            source: "linepay_cancel_restore",
-            targetName: order?.name || order?.recipientName || "",
-          });
-          restorePatch.pointsRestoredAt = new Date().toISOString();
-          restorePatch.pointRestoreReason = "LINEPAY_CANCEL";
-        }
-        await updateLinePayOrder(env, ctx, orderId, "", {
-          paymentStatus: "CANCELLED",
-          linePayStatus: "CANCELLED",
-          ...restorePatch,
-        });
-        await appendPaymentLog(env, {
-          timestamp: new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false }),
-          orderNo: orderId,
-          amount: 0,
-          status: "CANCELLED",
-          message: "使用者取消 LINE Pay 付款",
-          tradeNo: "",
-          source: "LINEPAY_CANCEL",
-        });
-      } catch (e) {
-        console.error("LINE Pay cancel update failed", e);
-      }
-    }
-    if (redirectUrl) return Response.redirect(`${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}linepay=cancel`, 302);
-    return new Response("LINE Pay cancelled", { status: 200 });
+    // LINE Pay's browser return is not authorization to cancel an order or refund points.
+    const orderId = String(new URL(request.url).searchParams.get('orderId') || '').trim();
+    return hookTeaPaymentReturn(request, 'cancel', orderId);
   },
 
   async handleNewebpayNotify(request, env, ctx) {
