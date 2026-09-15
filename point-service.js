@@ -21,7 +21,8 @@ export function createPointService({ db, query, insert }) {
   const requireIdentity = (lineUid, member) => {
     const ids = [member?.lineUserId, member?.linkedLineUid, member?.lineUid,
       /^U[0-9a-f]{32}$/i.test(member?.userId || '') ? member.userId : ''].filter(Boolean);
-    if (!ids.length || ids.some(id => String(id) !== lineUid)) throw new Error('POINT_IDENTITY_CONFLICT');
+    if (!ids.length) throw new Error('POINT_MEMBER_REQUIRES_LINE_BINDING');
+    if (ids.some(id => String(id) !== lineUid)) throw new Error('POINT_IDENTITY_CONFLICT');
   };
   // Check the current row in the DELETE itself. A stale read of a queued row
   // must never release a lock after another attempt starts its POST.
@@ -56,11 +57,11 @@ export function createPointService({ db, query, insert }) {
     await run(`INSERT OR IGNORE INTO point_legacy_snapshots(point_uid,line_user_id,snapshot_json)
       VALUES(?,?,?)`, pointUid, lineUid, JSON.stringify(legacy));
   }
-  async function read(lineUid, member) {
+  async function read(lineUid, member, { readOnly = false } = {}) {
     requireIdentity(lineUid, member);
     const shared = await query(member).catch(() => ({ok:false, reason:'mother_unavailable'}));
     const lock = await first('SELECT operation_id FROM point_sync_locks WHERE line_user_id = ?', lineUid);
-    if (lock) {
+    if (lock && !readOnly) {
       const row = await get(lock.operation_id);
       if (row?.status === 'confirmed' || row?.status === 'rejected') await release(row);
       else if (row) await reconcile(row, shared);

@@ -2285,12 +2285,14 @@ function createHookTeaPointService(env) {
   });
 }
 
-async function readAuthoritativePoints(env, lineUid, member, limit = 50) {
+async function readAuthoritativePoints(env, lineUid, member, limit = 50, { readOnly = false } = {}) {
   const service = createHookTeaPointService(env);
-  const local = await getPointDataForUid(env, member.userId || lineUid, { balance: 0, logs: [] });
-  await service.snapshot(lineUid, local.pointUid, local.data);
-  await service.resume(lineUid, member);
-  const result = await service.read(lineUid, member);
+  if (!readOnly) {
+    const local = await getPointDataForUid(env, member.userId || lineUid, { balance: 0, logs: [] });
+    await service.snapshot(lineUid, local.pointUid, local.data);
+    await service.resume(lineUid, member);
+  }
+  const result = await service.read(lineUid, member, { readOnly });
   return { ...result, logs: result.shared.ok ? buildPointDataFromWetw(result.shared, limit).logs : [],
     shared: { ok: result.shared.ok, reason: result.shared.reason || '', balance: result.balance } };
 }
@@ -7313,7 +7315,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-reward-controls-v1' }),
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-crm-point-read-v1' }),
         { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
@@ -7585,7 +7587,18 @@ export default {
           const pointUid = access.isAdmin ? (payload?.targetUid || userId) : userId;
           const member = await safeGetKV(env, 'USER_' + pointUid, null);
           const lineUid = getMemberLineUid(member, pointUid);
-          result.data = await readAuthoritativePoints(env, lineUid, member || { userId: pointUid, lineUserId: lineUid });
+          // CRM lookup must never resume a reward or fabricate a missing member.
+          if (!member) {
+            result.data = { available: false, balance: null, logs: [], error: 'POINT_MEMBER_NOT_FOUND' };
+            break;
+          }
+          try {
+            result.data = await readAuthoritativePoints(env, lineUid, member, 50, { readOnly: true });
+            if (!result.data.available) result.data.balance = null;
+          } catch (error) {
+            if (!['POINT_MEMBER_REQUIRES_LINE_BINDING', 'POINT_IDENTITY_CONFLICT'].includes(error.message)) throw error;
+            result.data = { available: false, balance: null, logs: [], error: error.message };
+          }
           break;
         }
           
