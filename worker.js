@@ -6,6 +6,7 @@
  */
 
 import { createPointService } from './point-service.js';
+import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
 
 const utils = {
   hexToBytes: (hex) => {
@@ -2876,6 +2877,22 @@ function getMemberLineUid(member, fallback = "") {
   return String(direct || (userId.startsWith("U") ? userId : "") || fallback || "").trim();
 }
 
+// Migration evidence must fail on source errors, never fall back to a fabricated
+// empty record. Existing general-purpose safeGetKV intentionally masks errors.
+async function readCrmExportSource(env, key) {
+  if (key !== 'USERS_INDEX' && !key.startsWith('USER_')) throw new Error('CRM_EXPORT_KEY_NOT_ALLOWED');
+  if (key.startsWith('USER_')) {
+    if (!env['act-image']) throw new Error('CRM_EXPORT_STORAGE_MISSING');
+    const object = await env['act-image'].get(getHighRiskLiveKey(key));
+    if (object) return object.json();
+    const settings = await env.ACTION_DATA.get('SYSTEM_SETTINGS', 'json') || {};
+    if (String(env.WASABI_READ_HIGH_RISK || '').toLowerCase() === 'true' ||
+        String(settings.high_risk_wasabi_read_enabled || '').toLowerCase() === 'true')
+      throw new Error('CRM_EXPORT_WASABI_SOURCE_REQUIRES_REVIEW');
+  }
+  return env.ACTION_DATA.get(key, 'json');
+}
+
 async function queryWetwPointList(settings, member, env = {}) {
   const cfg = getWetwConfig(settings, env);
   if (!cfg.enabled) return { ok: false, reason: "wp_disabled", message: "WordPress 點數同步目前未啟用。" };
@@ -3296,7 +3313,7 @@ function normalizeRichMenuSwitchActions(richMenuConfig) {
   return richMenuConfig;
 }
 
-async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) {
+async function resolveAccess(env, claimedUserId, payload, idToken, accessToken, { readOnlyProfile = false } = {}) {
   const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
   const adminPassword = envValue(env, [
     "ADMIN_PASSWORD",
@@ -3352,7 +3369,7 @@ async function resolveAccess(env, claimedUserId, payload, idToken, accessToken) 
   const userId = identityConflict ? "GUEST" : resolvedIdentity?.memberUid || verifiedUserId || "GUEST";
   const identityMismatch = claimedUserId && claimedUserId !== "GUEST" && verifiedUserId && ![verifiedUserId, userId].includes(claimedUserId);
   let userData = !identityConflict && !identityMismatch ? resolvedIdentity?.member || null : null;
-  if (userData && verifiedLineProfile && ((!String(userData.name || userData.displayName || "").trim() && verifiedLineProfile.name) || (!String(userData.pictureUrl || userData.avatar || "").trim() && verifiedLineProfile.picture))) {
+  if (!readOnlyProfile && userData && verifiedLineProfile && ((!String(userData.name || userData.displayName || "").trim() && verifiedLineProfile.name) || (!String(userData.pictureUrl || userData.avatar || "").trim() && verifiedLineProfile.picture))) {
     userData = {
       ...userData,
       name: userData.name || verifiedLineProfile.name,
@@ -7302,8 +7319,16 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/admin.html' && url.searchParams.get('pointExport') === '1') {
+      const settings = await safeGetKV(env, 'SYSTEM_SETTINGS', {});
+      return new Response(renderCrmPointExportPage(getCrmLiffId(env, settings)), { headers: {
+        'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+        'X-HookTea-Static-Source': 'worker-inline-history-export',
+      } });
+    }
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-retire-course-booking-v1' }),
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-history-export-v1' }),
         { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
@@ -7406,7 +7431,8 @@ export default {
           throw new Error("【Cloudflare 設定遺漏】尚未綁定 KV 空間！");
       }
 
-      const access = await resolveAccess(env, claimedUserId, payload, idToken, accessToken);
+      const access = await resolveAccess(env, claimedUserId, payload, idToken, accessToken,
+        { readOnlyProfile: ['ADMIN_EXPORT_POINT_ROSTER', 'ADMIN_EXPORT_POINT_HISTORY_PAGE'].includes(action) });
       if (access.identityConflict) return json({ status: "error", code: "MEMBER_IDENTITY_REVIEW_REQUIRED", message: "會員綁定資料需要確認，請聯絡客服" }, 409);
       if (access.identityMismatch) return json({ status: "error", code: "LINE_IDENTITY_MISMATCH", message: "會員身分不一致，請重新登入" }, 403);
       const userId = access.userId;
@@ -7438,6 +7464,18 @@ export default {
       }
 
       switch (action) {
+        case 'ADMIN_EXPORT_POINT_ROSTER': {
+          result.data = await exportCrmPointRoster({ access, payload,
+            read: key => readCrmExportSource(env, key) });
+          break;
+        }
+        case 'ADMIN_EXPORT_POINT_HISTORY_PAGE': {
+          const config = getWetwConfig(access.settings || {}, env);
+          result.data = await exportCrmPointHistory({ access, payload,
+            read: key => readCrmExportSource(env, key),
+            config: { ...config, endpoint: getWetwPointUrl(access.settings || {}, 'query', env) } });
+          break;
+        }
         case "CHECK_UPDATES":
           result.data = { lastUpdate: await env.ACTION_DATA.get("SYS_LAST_UPDATE") || "0" };
           break;
