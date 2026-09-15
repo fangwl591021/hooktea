@@ -1482,27 +1482,15 @@ function getOrderCourseKey(order) {
 }
 
 async function deductTeacherCommissionForOrder(env, ctx, order, operatorUid, operatorName = "", updatePointsFn) {
-  if (!order || order.teacherCommissionDeductedAt) return order;
-  const teacherUidForCommission = String(order.teacher?.userId || order.teacherUid || "").trim();
-  if (!teacherUidForCommission) return order;
-  const teacherForCommission = await safeGetKV(env, `USER_${teacherUidForCommission}`, null);
-  const commissionRate = Math.max(0, Number(teacherForCommission?.config?.comm || 0));
-  const baseAmount = Number(order.originalAmount || order.service?.price || order.teacherCollectAmount || order.amount || 0) || 0;
-  const commissionPoints = Math.floor(baseAmount * commissionRate / 100);
-  if (commissionPoints <= 0) return order;
-  if (typeof updatePointsFn !== "function") return order;
-  await updatePointsFn(env, ctx, teacherUidForCommission, -commissionPoints, `諮詢完成抽成：${order.courseName || order.service?.name || order.courseId || order.orderId}`, {
-    source: "teacher_commission",
-    operatorUid,
-    operatorName,
-    targetName: teacherForCommission?.name || order.teacher?.name || "",
-  });
-  return {
-    ...order,
-    teacherCommissionDeductedAt: new Date().toISOString(),
-    teacherCommissionPoints: commissionPoints,
-    teacherCommissionRate: commissionRate,
-  };
+  // Retired: historical order edits must never charge teachers or create receipts.
+  return order;
+}
+
+function isRetiredHookTeaAction(action) {
+  return ['CREATE_BOOKING', 'REGISTER', 'TEACHER_COMPLETE_BOOKING',
+    'TEACHER_DEDUCT_POINTS', 'TEACHER_UPDATE_COURSE', 'TEACHER_DELETE_COURSE',
+    'ADMIN_BATCH_TOGGLE_SLOTS', 'ADMIN_TRANSFER_ORDER_COURSE', 'ADMIN_UPDATE_COURSE',
+    'ADMIN_DELETE_COURSE', 'ADMIN_APPROVE_TEACHER', 'ADMIN_REMOVE_TEACHER'].includes(action);
 }
 
 function uniqueTeachers(users) {
@@ -7315,7 +7303,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-crm-point-read-v1' }),
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-retire-course-booking-v1' }),
         { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
@@ -7442,6 +7430,11 @@ export default {
 
       if (action === "LOG_ADMIN_EVENT" && !(access.isAdmin || access.canCrmLogin || access.isTeacher)) {
         throw new Error("Admin authorization required");
+      }
+      // Reject old entry points before writes or forwarding; preserve historical reads.
+      if (isRetiredHookTeaAction(action)) {
+        return json({ status: 'error', code: 'LEGACY_FEATURE_RETIRED',
+          message: '課程、預約與講師功能已停用；歷史資料保留查詢。' }, 410);
       }
 
       switch (action) {
@@ -9292,6 +9285,9 @@ export default {
   },
 
   async updatePoints(env, ctx, uid, amount, reason, options = {}) {
+    if (['teacher_commission', 'teacher_deduct', 'slot_open'].includes(options.source)) {
+      throw new Error('LEGACY_FEATURE_RETIRED');
+    }
     if (options.skipWpSync) throw new Error('共用點數已直接採用母站餘額，不可再補登為新贈點');
     const member = await safeGetKV(env, 'USER_' + uid, null);
     const lineUid = getMemberLineUid(member, /^U[0-9a-f]{32}$/i.test(uid) ? uid : '');
