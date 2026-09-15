@@ -20,11 +20,14 @@ export async function exportCrmPointRoster({access,payload,read}) {
   if(payload?.rosterHash && payload.rosterHash!==hash)throw new Error('CRM_EXPORT_ROSTER_CHANGED');
   const members=[];
   // Bounded per-request storage reads; keep records with no LINE for review.
-  for(const row of rows.slice(offset,offset+40)) {
-    const member=await read('USER_'+row.userId);
-    members.push({crmId:row.userId,name:member?.name||member?.displayName||row.name||row.displayName||'',
-      lineUids:lineIds(member),memberFound:!!member,identityMatches:member?.userId===row.userId,
-      deleted:!!(member?.deleted||member?.isDeleted)});
+  const selected=rows.slice(offset,offset+40);
+  for(let start=0;start<selected.length;start+=4) {
+    members.push(...await Promise.all(selected.slice(start,start+4).map(async row=>{
+      const member=await read('USER_'+row.userId);
+      return {crmId:row.userId,name:member?.name||member?.displayName||row.name||row.displayName||'',
+        lineUids:lineIds(member),memberFound:!!member,identityMatches:member?.userId===row.userId,
+        deleted:!!(member?.deleted||member?.isDeleted)};
+    })));
   }
   return {members,total:rows.length,offset,nextOffset:offset+members.length<rows.length?offset+members.length:null,
     rosterHash:hash,observedAt:new Date().toISOString(),readOnly:true};
@@ -56,10 +59,16 @@ export async function exportCrmPointHistory({access,payload,read,config,fetcher=
   if(url.origin!=='https://aiwe.cc'||url.pathname!=='/index.php/wp-json/wetw-point/v1/query-user-point-list'||url.search)
     throw new Error('CRM_HISTORY_SOURCE_NOT_ALLOWED');
   let response;
+  const sourceTimeout = AbortSignal.timeout(30000);
   try { response=await fetcher(url.toString(),{method:'POST',redirect:'error',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey,LINE_user_id:uids[0],
-      shop_id:shopId,point_type:pointType,page,per_page:perPage}),signal:AbortSignal.timeout(12000)});
-  } catch {throw new Error('CRM_HISTORY_SOURCE_UNAVAILABLE');}
+      shop_id:shopId,point_type:pointType,page,per_page:perPage}),signal:sourceTimeout});
+  } catch (error) {
+    // Do not expose arbitrary upstream error text (it can contain credentials).
+    if(sourceTimeout.aborted||error?.name==='TimeoutError'||error?.name==='AbortError')
+      throw new Error('CRM_HISTORY_SOURCE_TIMEOUT');
+    throw new Error('CRM_HISTORY_SOURCE_CONNECTION_FAILED');
+  }
   if(!response.ok)throw new Error('CRM_HISTORY_SOURCE_HTTP_'+response.status);
   const data=await boundedJson(response);
   if(data?.success!==true||!Array.isArray(data?.data?.list))throw new Error('CRM_HISTORY_SOURCE_INVALID');

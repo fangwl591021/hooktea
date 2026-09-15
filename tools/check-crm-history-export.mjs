@@ -48,6 +48,13 @@ await check('wrong owner/shop and oversized/malformed responses are rejected',as
   await assert.rejects(exportCrmPointHistory({...args,fetcher:async()=>new Response('x'.repeat(2*1024*1024+1))}),/TOO_LARGE/);
   await assert.rejects(exportCrmPointHistory({...args,fetcher:async()=>new Response('not json')}),/INVALID_JSON/);
 });
+await check('source timeout and connection errors are distinguishable without leaking error text',async()=>{
+  for(const [name,code] of [['TimeoutError','TIMEOUT'],['AbortError','TIMEOUT'],['TypeError','CONNECTION_FAILED']]) {
+    const failure=Object.assign(new Error(config.apiKey),{name});
+    await assert.rejects(exportCrmPointHistory({...args,fetcher:async()=>{throw failure;}}),
+      new RegExp('^Error: CRM_HISTORY_SOURCE_'+code+'$'));
+  }
+});
 
 // Real generated client script, mocked LIFF and read-only backend. No DOM tokens
 // extracted and no production resource is touched by this test.
