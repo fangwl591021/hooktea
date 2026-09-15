@@ -60,7 +60,7 @@ export async function exportCrmPointHistory({access,payload,read,config,fetcher=
     throw new Error('CRM_HISTORY_SOURCE_NOT_ALLOWED');
   let response;
   const sourceTimeout = AbortSignal.timeout(30000);
-  try { response=await fetcher(url.toString(),{method:'POST',redirect:'error',
+  try { response=await fetcher(url.toString(),{method:'POST',redirect:'manual',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey,LINE_user_id:uids[0],
       shop_id:shopId,point_type:pointType,page,per_page:perPage}),signal:sourceTimeout});
   } catch (error) {

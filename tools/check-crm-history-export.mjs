@@ -8,7 +8,7 @@ const config={apiKey:'test-private-key',shopId:35,pointType:'system_point',endpo
 const values={USERS_INDEX:[member],USER_legacy:member};let reads=0,calls=0;
 const read=async key=>{reads++;return structuredClone(values[key]??null);};
 const data={success:true,data:{list:[{id:'1',get_point:'-5',point_balance:'778',event_content:'Original reason',created_at:'2026-09-01',extra_detail:'preserve'}],pagination:{total:1,page:1,per_page:100}}};
-const fetcher=async(url,options)=>{calls++;assert.equal(url,endpoint);assert.equal(options.redirect,'error');const body=JSON.parse(options.body);assert.equal(body.shop_id,35);assert.equal(body.LINE_user_id,uid);assert(!url.includes(config.apiKey));return Response.json(data);};
+const fetcher=async(url,options)=>{calls++;assert.equal(url,endpoint);assert.equal(options.redirect,'manual');const body=JSON.parse(options.body);assert.equal(body.shop_id,35);assert.equal(body.LINE_user_id,uid);assert(!url.includes(config.apiKey));return Response.json(data);};
 const args={access:admin,payload:{crmId:'legacy'},read,config,fetcher};
 let passed=0;async function check(name,fn){await fn();passed++;console.log('PASS '+name);}
 await check('unauthorized requests do not read storage or contact mother',async()=>{
@@ -49,6 +49,7 @@ await check('wrong owner/shop and oversized/malformed responses are rejected',as
   await assert.rejects(exportCrmPointHistory({...args,fetcher:async()=>new Response('not json')}),/INVALID_JSON/);
 });
 await check('source timeout and connection errors are distinguishable without leaking error text',async()=>{
+  await assert.rejects(exportCrmPointHistory({...args,fetcher:async()=>new Response(null,{status:302,headers:{location:'https://example.test/blocked'}})}),/CRM_HISTORY_SOURCE_HTTP_302/);
   for(const [name,code] of [['TimeoutError','TIMEOUT'],['AbortError','TIMEOUT'],['TypeError','CONNECTION_FAILED']]) {
     const failure=Object.assign(new Error(config.apiKey),{name});
     await assert.rejects(exportCrmPointHistory({...args,fetcher:async()=>{throw failure;}}),
