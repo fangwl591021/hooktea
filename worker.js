@@ -2211,7 +2211,7 @@ function configuredKeywordRewards(settings = {}) {
     .split(/[,\n，;；]/)
     .map(item => item.trim())
     .filter(Boolean);
-  return { points, keywords };
+  return { points, keywords, enabled: !['false', '0'].includes(String(settings.shop_keyword_reward_enabled ?? 'true').toLowerCase()) };
 }
 
 function normalizeShopKeywordRewardText(value) {
@@ -2220,7 +2220,7 @@ function normalizeShopKeywordRewardText(value) {
 
 function isConfiguredShopKeywordReward(settings = {}, text = "") {
   const reward = configuredKeywordRewards(settings);
-  if (!reward.points || !reward.keywords.length) return false;
+  if (!reward.keywords.length) return false;
   const normalizedText = normalizeShopKeywordRewardText(text);
   return reward.keywords.some(keyword => normalizeShopKeywordRewardText(keyword) === normalizedText);
 }
@@ -2264,9 +2264,11 @@ function isHookTeaDailySigninKeyword(text) {
 }
 
 function hookTeaDailySigninPoints(settings = {}, env = {}) {
-  const raw = env.HOOKTEA_DAILY_SIGNIN_POINTS || settings.hooktea_daily_signin_points || settings.shop_checkin_reward_points || 5;
-  const points = Math.floor(Number(raw) || 0);
-  return points > 0 ? points : 5;
+  if (['false', '0'].includes(String(settings.hooktea_daily_signin_enabled ?? 'true').toLowerCase())) return 0;
+  const raw = [env.HOOKTEA_DAILY_SIGNIN_POINTS, settings.hooktea_daily_signin_points, settings.shop_checkin_reward_points]
+    .find(value => value !== undefined && value !== null && value !== '');
+  const points = Number(raw ?? 5);
+  return Number.isSafeInteger(points) && points >= 0 ? points : 0;
 }
 
 // Rewards use deterministic journal IDs. Old claim records remain duplicate barriers.
@@ -2322,7 +2324,9 @@ async function claimHookTeaReward(env, ctx, { lineUid, kind, key, amount, reason
   let result = priorOperation
     ? await service.attempt(id, member)
     : await service.submit(input, member);
-  result = { ...result, duplicate: !!priorOperation };
+  // An existing pending intent is not an already delivered reward.
+  result = { ...result, duplicate: priorOperation ? priorOperation.status === 'confirmed' : !!result.duplicate,
+    recovered: !!priorOperation && priorOperation.status !== 'confirmed' && result.ok };
   if (recordKey) await putKvJsonOnly(env, recordKey, {
     lineUserId: lineUid, memberUid: resolved.memberUid, points: amount,
     status: result.ok ? 'claimed' : 'pending', balanceAfter: result.balance,
@@ -2338,6 +2342,7 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
   if (!lineUid) return false;
   const date = taipeiDateKey();
   const points = hookTeaDailySigninPoints(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), env);
+  if (!points) return true; // Keep ownership; paused activities never fall through to mother.
   let result;
   try {
     result = await claimHookTeaReward(env, ctx, { lineUid, kind: 'daily_signin', key: date, amount: points,
@@ -2348,7 +2353,7 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     console.error('Daily reward journal unavailable', error);
   }
   const message = result.ok
-    ? (result.duplicate ? '今天已經完成簽到，不能重複領取。' : '簽到成功，已贈送 ' + points + ' 點。')
+    ? (result.duplicate ? '今天已經完成簽到，不能重複領取。' : (result.recovered ? '先前待確認的簽到已入帳，共 ' : '簽到成功，已贈送 ') + (result.amount ?? points) + ' 點。')
     : '簽到點數尚待確認，請稍後至會員專區查看；系統不會重複加點。';
   if (!event.hookTeaSuppressReply) await deliverKeywordRewardReplyFast(env, lineUid, event.replyToken || '', textLineMessage(message), 2200).catch(() => {});
   return true;
@@ -2360,7 +2365,8 @@ async function handleShopKeywordReward(env, ctx, event, settings = null) {
   const text = normalizeShopKeywordRewardText(event.message.text);
   const reward = configuredKeywordRewards(settings || await safeGetKV(env, 'SYSTEM_SETTINGS', {}));
   const keyword = reward.keywords.find(value => normalizeShopKeywordRewardText(value) === text);
-  if (!lineUid || !keyword || !reward.points) return false;
+  if (!lineUid || !keyword) return false;
+  if (!reward.enabled || !reward.points) return true;
   const hash = await sha256HexBody(text);
   let result;
   try {
@@ -2372,7 +2378,7 @@ async function handleShopKeywordReward(env, ctx, event, settings = null) {
     console.error('Keyword reward journal unavailable', error);
   }
   const message = result.ok
-    ? (result.duplicate ? '這組活動關鍵字已領取過，不能重複領取。' : '恭喜您獲得 ' + reward.points + ' 點。')
+    ? (result.duplicate ? '這組活動關鍵字已領取過，不能重複領取。' : (result.recovered ? '先前待確認的活動點數已入帳，共 ' : '恭喜您獲得 ') + (result.amount ?? reward.points) + ' 點。')
     : '活動點數尚待確認，請稍後至會員專區查看；系統不會重複加點。';
   await deliverKeywordRewardReply(env, lineUid, event.replyToken || '', textLineMessage(message)).catch(() => {});
   return true;
@@ -2958,6 +2964,21 @@ function resolveDisplayPointData(localPointData, sharedPointData, limit = 50) {
   };
 }
 
+function validateHookTeaRewardSettings(settings, template) {
+  const reward = configuredKeywordRewards(settings);
+  for (const field of ['shop_keyword_reward_points', 'hooktea_daily_signin_points', 'shop_checkin_reward_points']) {
+    const value = settings[field];
+    if (value !== undefined && value !== null && value !== '' && (!Number.isSafeInteger(Number(value)) || Number(value) < 0))
+      throw new Error('贈點點數必須是非負整數：' + field);
+  }
+  for (const keyword of reward.keywords) {
+    if (isMotherSiteKeyword(keyword) || isHookTeaDailySigninKeyword(keyword) || isReferralInviteKeyword(keyword) || isLineMemberBindInput(keyword))
+      throw new Error('活動關鍵字與會員／簽到保留指令衝突：' + keyword);
+    if (isHookTeaCheckinTemplateTrigger(template, keyword))
+      throw new Error('活動關鍵字與簽到模板入口衝突：' + keyword);
+  }
+}
+
 async function insertWetwPoint(settings, uid, amount, reason, env = {}, member = null) {
   const cfg = getWetwConfig(settings, env);
   const lineUid = getMemberLineUid(member, String(uid || "").startsWith("U") ? uid : "");
@@ -3515,6 +3536,7 @@ async function getHookTeaCheckinTemplate(env) {
 
 async function saveHookTeaCheckinTemplate(env, input) {
   const data = normalizeHookTeaCheckinTemplate(input);
+  validateHookTeaRewardSettings(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), data);
   await safePutKV(env, HOOKTEA_CHECKIN_TEMPLATE_KEY, data);
   return data;
 }
@@ -5307,6 +5329,7 @@ async function handleHuaxuMemberCheckin(request, env, ctx) {
   if (!identity.ok) return identity.response;
   const date = taipeiDateKey();
   const points = hookTeaDailySigninPoints(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), env);
+  if (!points) return json({ ok: false, pending: false, disabled: true, points: 0, message: '簽到贈點活動目前已停用' }, 409);
   try {
     const result = await claimHookTeaReward(env, ctx, {
       lineUid: identity.lineUid, kind: 'daily_signin', key: date, amount: points,
@@ -7290,7 +7313,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260914-keyword-router-v2' }),
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-reward-controls-v1' }),
         { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
@@ -8369,6 +8392,7 @@ export default {
         }
 
         case "ADMIN_UPDATE_SETTINGS":
+          validateHookTeaRewardSettings(payload, await getHookTeaCheckinTemplate(env));
           await safePutKV(env, "SYSTEM_SETTINGS", payload);
           if (env.GAS_URL) ctx.waitUntil(fetch(env.GAS_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
           touchLastUpdate(env, ctx, "Settings");
