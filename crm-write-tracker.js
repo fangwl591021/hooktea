@@ -5,8 +5,7 @@ const unavailable = code => Response.json({status:'error',code,
   message:'服務暫時無法處理，請稍後再試。'}, {status:503,headers:{
   'Retry-After':'60','Cache-Control':'no-store','Access-Control-Allow-Origin':'*'}});
 
-export async function trackCrmRequest({db,ctx,run}) {
-  const id=crypto.randomUUID();
+export async function trackCrmRequest({db,ctx,run,id=crypto.randomUUID(),onIssue=()=>{}}) {
   try {
     // Admission and pause check are one SQL transaction through the trigger.
     const result=await db.prepare("INSERT INTO crm_request_leases(lease_id,release,state) VALUES(?,?,'active')")
@@ -14,12 +13,13 @@ export async function trackCrmRequest({db,ctx,run}) {
     if(result.success!==true||result.meta?.changes!==1)throw Error('ADMISSION_NOT_RECORDED');
   } catch(error) {
     const paused=String(error?.message).includes('CRM_REQUESTS_PAUSED');
+    if(!paused)onIssue({category:'tracking',code:'admission_failed'});
     console.error(JSON.stringify({event:'crm_request_admission_failed',paused}));
     return unavailable(paused?'CRM_REQUESTS_PAUSED':'CRM_REQUEST_TRACKING_UNAVAILABLE');
   }
   const pending=[];let uncertain=false;
   const trackedCtx={waitUntil(promise){
-    const observed=Promise.resolve(promise).catch(()=>{uncertain=true;});
+    const observed=Promise.resolve(promise).catch(()=>{uncertain=true;onIssue({category:'background',code:'background_failed'});});
     pending.push(observed);ctx.waitUntil(observed);
   }};
   try {
@@ -36,6 +36,7 @@ export async function trackCrmRequest({db,ctx,run}) {
           .bind(uncertain?'uncertain':'done',id).run();
         if(result.success!==true||result.meta?.changes!==1)throw Error('FINISH_NOT_RECORDED');
       } catch {
+        onIssue({category:'tracking',code:'finish_failed'});
         // Keep the active record. A bookkeeping outage must not replace a
         // successful checkout response and encourage a duplicate purchase.
         console.error(JSON.stringify({event:'crm_request_finish_unconfirmed',release:TRACKING_RELEASE}));

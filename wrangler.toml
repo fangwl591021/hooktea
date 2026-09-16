@@ -7,6 +7,7 @@ account_id = "8058cf61f0cd44c4edd78080b193033a"
 # New profiles only. Keep enabled after the first child wallet; disabling this
 # is NOT a rollback. Existing accounts keep their original authority for review.
 HOOKTEA_NEW_MEMBER_CHILD_POINTS = "true"
+HOOKTEA_TELEGRAM_ALERTS = "true"
 LINEPAY_ENV = "production"
 LINEPAY_CHANNEL_ID = "2004409296"
 LINEPAY_CURRENCY = "TWD"
@@ -42,3 +43,6 @@ bucket_name = "hooktea-image"
 binding = "DB"
 database_name = "hooktea"
 database_id = "1a144f54-3b58-4587-8c1a-db42c848ef0e"
+
+[triggers]
+crons = ["* * * * *"]

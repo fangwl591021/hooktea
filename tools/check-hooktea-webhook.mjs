@@ -3,6 +3,7 @@ import { createHmac, webcrypto } from "node:crypto";
 import fs from "node:fs";
 import vm from "node:vm";
 import { execFileSync } from "node:child_process";
+import { reportIssue } from '../operational-alerts.js';
 
 const source = process.argv.includes("--baseline")
   ? execFileSync("git", ["show", "HEAD:worker.js"], { cwd: new URL("../", import.meta.url), encoding: "utf8", maxBuffer: 4 * 1024 * 1024 })
@@ -33,6 +34,7 @@ function harness(options = {}) {
     return options[name] ?? true;
   };
   const sandbox = {
+    reportIssue,
     crypto: webcrypto, TextEncoder, Uint8Array, btoa, atob, Request, Response, AbortSignal, URLSearchParams,
     console: { error: (...args) => calls.errors.push(args) },
     getLineChannelSecret: env => env.LINE_CHANNEL_SECRET,

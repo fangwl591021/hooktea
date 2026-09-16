@@ -7,6 +7,7 @@
 
 import { createPointService } from './point-service.js';
 import { createNewMemberPointService } from './new-member-points.js';
+import { reportIssue, observePointService, alertStatus, enqueueAlert } from './operational-alerts.js';
 import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
 
 const utils = {
@@ -78,6 +79,7 @@ async function safeGetR2Json(env, objectKey, defaultVal) {
     return JSON.parse(await obj.text());
   } catch (e) {
     console.error(`[SafeGetR2] read failed: ${objectKey}`, e);
+    reportIssue(env,'storage','storage_failed');
     return defaultVal;
   }
 }
@@ -125,6 +127,7 @@ async function safeGetKV(env, key, defaultVal, options = {}) {
       return val ? JSON.parse(val) : defaultVal;
   } catch (e) {
       console.error(`[SafeGetKV] 解析失敗 Key: ${key}`, e);
+      reportIssue(env,'storage','storage_failed');
       return defaultVal;
   }
 }
@@ -1814,6 +1817,7 @@ async function appendPointsLedger(env, entry) {
 }
 
 async function appendPaymentLog(env, entry) {
+  if(/ERROR|FAIL/.test(String(entry?.status||'')))reportIssue(env,'payment','payment_failed');
   const logs = await safeGetKV(env, "PAYMENT_LOGS", [], { preferWasabi: false });
   const list = Array.isArray(logs) ? logs : [];
   const next = [entry, ...list].slice(0, 1000);
@@ -2119,8 +2123,8 @@ async function fetchLineApiWithTimeout(url, init, timeoutMs = 4500) {
 async function replyLineMessage(env, replyToken, messages) {
   const token = getLineChannelAccessToken(env);
   const lineReplyToken = String(replyToken || "").trim();
-  if (!token || !lineReplyToken) return { ok: false, skipped: true };
-  return fetchLineApiWithTimeout("https://api.line.me/v2/bot/message/reply", {
+  if (!token || !lineReplyToken) {reportIssue(env,'line','line_reply_failed');return { ok: false, skipped: true };}
+  const result = await fetchLineApiWithTimeout("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -2128,6 +2132,8 @@ async function replyLineMessage(env, replyToken, messages) {
       messages: Array.isArray(messages) ? messages : [messages],
     }),
   });
+  if(!result.ok)reportIssue(env,'line','line_reply_failed');
+  return result;
 }
 
 async function pushLineMessage(env, userId, messages) {
@@ -2355,8 +2361,8 @@ function createHookTeaPointService(env) {
         transactionId: result?.data?.data?.insert_row?.id || null };
     },
   });
-  return String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true'
-    ? createNewMemberPointService({ db: env.DB, mother }) : mother;
+  return observePointService(String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true'
+    ? createNewMemberPointService({ db: env.DB, mother }) : mother, env);
 }
 
 async function assertNewChildCrmIdentity(env, memberUid, lineUid) {
@@ -7699,6 +7705,14 @@ export default {
       }
 
       switch (action) {
+        case 'ADMIN_GET_ALERT_STATUS': {
+          result.data = await alertStatus(env);
+          break;
+        }
+        case 'ADMIN_TEST_TELEGRAM_ALERT': {
+          result.data = await enqueueAlert(env,{category:'test',code:'test',route:'/api'});
+          break;
+        }
         case 'ADMIN_EXPORT_POINT_ROSTER': {
           result.data = await exportCrmPointRoster({ access, payload,
             read: key => readCrmExportSource(env, key) });
@@ -9671,6 +9685,7 @@ export default {
         } catch (error) {
           // Identity/storage failure is not permission to fall back to mother.
           console.error('LINE account routing unavailable', error?.message);
+          reportIssue(env,'member','enrollment_failed');
           return {event,owner:'silent'};
         }
       }));
@@ -9692,6 +9707,7 @@ export default {
             }, { expirationTtl: 86400 }).catch(() => {}),
           ]);
           const responseText = await response.text().catch(() => "");
+          if(!response.ok)reportIssue(env,'line','line_forward_failed');
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook, route: "per_event_owner", status: response.status, ok: response.ok,
             eventCount: batch.length,
@@ -9700,6 +9716,7 @@ export default {
           }, { expirationTtl: 86400 }).catch(() => {});
         } catch (error) {
           console.error("Forward Webhook Error:", error);
+          reportIssue(env,'line','line_forward_failed');
           await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook, route: "per_event_owner", ok: false, error: error?.message || String(error),
             eventCount: batch.length, forwardedAt: new Date().toISOString(),
@@ -9745,6 +9762,7 @@ export default {
               if (!handled) owner = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' ? 'silent' : 'mother';
             }
             if (!handled && !owner.startsWith("mother")) {
+              if(owner!=='silent')reportIssue(env,'line','line_handler_failed');
               await safePutKV(env, "WEBHOOK_EVENT_ERROR_LAST", {
                 lineUserId: uid, eventId: event?.webhookEventId || event?.message?.id || "",
                 owner, status: "local_handler_declined", updatedAt: new Date().toISOString(),
@@ -9752,6 +9770,7 @@ export default {
             }
           } catch (error) {
             console.error("LINE local event handler failed:", owner, error);
+            reportIssue(env,'line','line_handler_failed');
             await safePutKV(env, "WEBHOOK_EVENT_ERROR_LAST", {
               lineUserId: uid, eventId: event?.webhookEventId || event?.message?.id || "",
               owner, status: "handler_exception", error: error?.message || String(error),
@@ -9781,6 +9800,7 @@ export default {
       // no reply ownership and must not delay the reply/forward critical path.
       const monitorTask = Promise.all(events.map(event => appendLineMonitorEvent(env, ctx, event).catch(error => {
         console.error("LINE Monitor Append Error:", error);
+        reportIssue(env,'member','enrollment_failed');
       })));
       if (ctx) ctx.waitUntil(monitorTask);
       else await monitorTask;
