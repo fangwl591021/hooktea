@@ -2616,7 +2616,6 @@ async function buildMemberAreaLineMessage(env, lineUid, member = null) {
         layout: "vertical",
         spacing: "sm",
         contents: [
-          { type: "button", style: "primary", color: "#06C755", action: { type: "uri", label: "會員註冊", uri: `https://liff.line.me/${encodeURIComponent(liffId)}?open=register` } },
           { type: "button", style: "primary", color: "#06C755", action: { type: "uri", label: "開啟會員專區", uri: memberUrl } }
         ]
       }
@@ -7142,7 +7141,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         memberAvatar.src = avatar || "https://placehold.co/160x160/e6f7ff/0f172a?text=LINE";
       }
       if (checkin) checkin.textContent = shopConfig.checkinLabel || "每日簽到領點";
-      if (registration) registration.textContent = member.registrationStatus === "registered" ? "查看註冊資料" : "會員註冊";
+      if (registration) registration.textContent = member.registrationStatus === "registered" ? "查看註冊資料" : "完成會員註冊";
       if (actions) {
         const actionDefs = [
           { key:"點數記錄", icon:"點" },

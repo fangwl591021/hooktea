@@ -356,7 +356,7 @@ test("child registration reply failure never releases its event or duplicates a 
   assert.deepEqual(forwardedIds(h.calls.fetch[0]),['area']);assert.equal(h.calls.fetch.length,1);
 });
 
-test("child member area replies once with child registration and member links, without rewarding or binding", async () => {
+test("child member area replies once with a single member link, without rewarding or binding", async () => {
   const h = harness({rewardKeywords:["會員專區"], templateKeywords:["會員專區"]});
   await h.post([message("會員專區","area"), message("daily","daily"), follow, message("會員中心","mother")]);
   assert.equal(h.calls.memberArea.length,1);
@@ -366,15 +366,14 @@ test("child member area replies once with child registration and member links, w
   assert.equal(h.calls.fetch[0].headers["x-line-signature"],sign(h.calls.fetch[0].body));
   const card = h.calls.memberArea[0].messages[0];
   const buttons = JSON.parse(JSON.stringify(card.contents.footer.contents));
-  assert.deepEqual(buttons.map(b=>b.action.label),["會員註冊","開啟會員專區"]);
+  assert.deepEqual(buttons.map(b=>b.action.label),["開啟會員專區"]);
   for (const button of buttons) {
     const url = new URL(button.action.uri);
     assert.equal(url.origin,"https://liff.line.me");
     assert.equal(url.pathname,"/2007674851-test");
     assert.equal(url.searchParams.has("lineUid"),false);
   }
-  assert.equal(new URL(buttons[0].action.uri).searchParams.get("open"),"register");
-  assert.equal(new URL(buttons[1].action.uri).searchParams.get("open"),"member");
+  assert.equal(new URL(buttons[0].action.uri).searchParams.get("open"),"member");
 });
 
 test("child member area exception or rejected reply never falls through to mother", async () => {

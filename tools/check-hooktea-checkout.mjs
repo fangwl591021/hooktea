@@ -318,6 +318,21 @@ test("pending registration permits points and signin but blocks checkout while p
   assert.match(app.run('renderProfileDetail()'),/完成會員註冊/);
 });
 
+test("single member entry offers registration by status without restricting member points", async () => {
+  const app=storefront({search:'?open=member&source=line_member_area'});
+  let memberOpened=false;
+  app.getElement('member').classList.toggle=(name,open)=>{ if(name==='open') memberOpened=open; };
+  await app.run('initLineIdentity()');
+  assert.equal(memberOpened,true);
+  assert.equal(app.getElement('memberRegistrationButton').textContent,'查看註冊資料');
+  app.run('memberData.member.registrationStatus="pending"; renderMemberPanel()');
+  assert.equal(app.getElement('memberRegistrationButton').textContent,'完成會員註冊');
+  assert.equal(app.run('requireReadyMember()'),true);
+  app.run('openRegistration()');
+  assert.equal(app.run('memberEditMode'),true);
+  assert.match(app.getElement('memberRows').innerHTML,/完成會員註冊/);
+});
+
 test("keyword registration deep link opens same member form after verified login", async () => {
   const app=storefront({search:'?open=register'}); await app.ready();
   app.run('memberData.member.registrationStatus="pending"; openRegistration()');
