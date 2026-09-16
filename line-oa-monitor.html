@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookTea LINE 聊天室監控</title>
+  <meta name="hooktea-release" content="20260916-monitor-auth-v1">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { box-sizing: border-box; }
@@ -15,7 +16,13 @@
   </style>
 </head>
 <body class="bg-slate-100 text-slate-950">
-  <div class="h-screen overflow-hidden flex">
+  <section id="monitor-auth" hidden class="max-w-lg mx-auto my-16 p-6 bg-white rounded-2xl">
+    <h1 class="text-xl font-black">聊天室監控需要管理員登入</h1>
+    <p id="monitor-auth-message" role="status" class="my-4 text-slate-600"></p>
+    <a href="/admin.html" class="inline-block rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white">回後台登入／重新授權</a>
+    <p class="mt-4 text-sm text-slate-500">登入後，點選「AI 後台監控」即可進入，不需另外輸入密碼。</p>
+  </section>
+  <div id="monitor-app" class="h-screen overflow-hidden flex">
     <aside class="w-[360px] shrink-0 bg-white border-r border-slate-200 flex flex-col">
       <div class="p-4 border-b border-slate-100">
         <div class="flex items-start justify-between gap-4">
@@ -172,12 +179,10 @@
 
   <script>
     const WORKER_URL = location.protocol === "file:" ? "https://hooktea.fangwl591021.workers.dev" : location.origin;
-    const params = new URLSearchParams(location.search);
-    const urlPassword = params.get("adminPassword") || "";
-    if (urlPassword) sessionStorage.setItem("act_admin_pwd", urlPassword);
-
     const state = {
-      password: urlPassword || sessionStorage.getItem("act_admin_pwd") || "",
+      adminSession: sessionStorage.getItem("hooktea_admin_session") || "",
+      password: sessionStorage.getItem("act_admin_pwd") || "",
+      authBlocked: false,
       threads: [],
       audience: null,
       active: null,
@@ -204,29 +209,50 @@
       closed: "bg-emerald-50 text-emerald-700",
     }[value] || "bg-slate-950 text-white");
 
-    async function fetchJson(url, options = {}, retry = true) {
-      if (!state.password) promptPassword();
-      const headers = { ...(options.headers || {}), "x-hooktea-admin-password": state.password };
+    function requireLogin(message) {
+      state.authBlocked = true;
+      state.threads = [];
+      state.active = null;
+      state.audience = null;
+      state.learningCases = [];
+      $("monitor-app").hidden = true;
+      $("monitor-app").style.display = "none";
+      $("monitor-auth").hidden = false;
+      $("monitor-auth-message").textContent = message;
+      const error = new Error(message);
+      error.authRequired = true;
+      return error;
+    }
+
+    function notifyError(error) {
+      if (!error.authRequired) alert(error.message || "讀取失敗，請稍後重試");
+    }
+
+    async function fetchJson(url, options = {}) {
+      if (state.authBlocked || (!state.adminSession && !state.password)) {
+        throw requireLogin("請從後台完成 LINE 管理員登入，再開啟聊天室監控。");
+      }
+      const target = new URL(url, WORKER_URL);
+      if (target.origin !== new URL(WORKER_URL).origin) throw new Error("不允許傳送後台授權至其他網站");
+      const headers = { ...(options.headers || {}) };
+      if (state.adminSession) headers["x-hooktea-admin-session"] = state.adminSession;
+      else headers["x-hooktea-admin-password"] = state.password;
       if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-      const res = await fetch(url, { ...options, headers });
+      const res = await fetch(target.href, { ...options, headers, redirect: "error" });
       const data = await res.json().catch(() => null);
+      if (res.status === 401 || res.status === 403) {
+        sessionStorage.removeItem("hooktea_admin_session");
+        sessionStorage.removeItem("act_admin_pwd");
+        state.adminSession = "";
+        state.password = "";
+        // Never retry a mutation automatically or downgrade an expired session to a password.
+        throw requireLogin("管理員授權已失效或沒有此頁權限，請回後台重新登入／授權。");
+      }
+      if (state.authBlocked) throw requireLogin("請回後台重新登入／授權。");
       if (!res.ok || data?.success === false) {
-        if ((res.status === 401 || res.status === 403) && retry) {
-          sessionStorage.removeItem("act_admin_pwd");
-          state.password = "";
-          promptPassword();
-          if (state.password) return fetchJson(url, options, false);
-        }
         throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
       }
       return data;
-    }
-
-    function promptPassword() {
-      const password = prompt("HookTea 後台密碼") || "";
-      if (password) sessionStorage.setItem("act_admin_pwd", password);
-      state.password = password;
-      return password;
     }
 
     function normalizeThread(row) {
@@ -321,7 +347,7 @@
           </div>
         </button>
       `).join("") || `<div class="rounded-3xl border border-dashed border-slate-200 p-8 text-center font-bold text-slate-400">沒有符合條件的聊天室</div>`;
-      document.querySelectorAll(".thread-card").forEach(btn => btn.addEventListener("click", () => loadThread(btn.dataset.id)));
+      document.querySelectorAll(".thread-card").forEach(btn => btn.addEventListener("click", () => loadThread(btn.dataset.id).catch(notifyError)));
     }
 
     function renderAudience() {
@@ -367,7 +393,7 @@
           <div class="mt-2 flex justify-between text-xs text-slate-400"><span>${esc(dateText(thread.lastMessageAt))}</span><span>${thread.unread || 0} 未讀</span></div>
         </button>
       `).join("") || `<p class="text-sm font-bold text-slate-400">目前沒有高風險名單</p>`;
-      document.querySelectorAll(".risk-card").forEach(btn => btn.addEventListener("click", () => loadThread(btn.dataset.id)));
+      document.querySelectorAll(".risk-card").forEach(btn => btn.addEventListener("click", () => loadThread(btn.dataset.id).catch(notifyError)));
     }
 
     function renderActive() {
@@ -560,7 +586,7 @@
         }, 2400);
       } catch (err) {
         btn.textContent = "同步失敗";
-        alert(err.message || "同步失敗");
+        notifyError(err);
         setTimeout(() => {
           if (!btn.disabled) btn.textContent = original;
         }, 2400);
@@ -658,10 +684,10 @@
       state.filter = btn.dataset.filter;
       renderThreads();
     }));
-    document.querySelectorAll(".status-btn").forEach(btn => btn.addEventListener("click", () => saveThread(btn.dataset.status).catch(err => alert(err.message))));
+    document.querySelectorAll(".status-btn").forEach(btn => btn.addEventListener("click", () => saveThread(btn.dataset.status).catch(notifyError)));
     $("search").addEventListener("input", renderThreads);
     $("refresh").addEventListener("click", () => refreshNow());
-    $("analyze-top").addEventListener("click", () => backfillSignals().catch(err => alert(err.message)));
+    $("analyze-top").addEventListener("click", () => backfillSignals().catch(notifyError));
     $("import-members").addEventListener("click", () => alert("會員資料已由 Worker/D1 讀取；若要重新匯入 Excel，請回管理站執行匯入。"));
     $("show-risk").addEventListener("click", () => {
       state.riskExpanded = !state.riskExpanded;
@@ -675,11 +701,11 @@
       $("new-tag").value = "";
       renderActive();
     });
-    $("save-thread").addEventListener("click", () => saveThread().catch(err => alert(err.message)));
-    $("preview-broadcast").addEventListener("click", () => previewBroadcast().catch(err => alert(err.message)));
-    $("create-broadcast").addEventListener("click", () => createBroadcast().catch(err => alert(err.message)));
+    $("save-thread").addEventListener("click", () => saveThread().catch(notifyError));
+    $("preview-broadcast").addEventListener("click", () => previewBroadcast().catch(notifyError));
+    $("create-broadcast").addEventListener("click", () => createBroadcast().catch(notifyError));
     $("fill-learning").addEventListener("click", fillLearningFromThread);
-    $("save-learning").addEventListener("click", () => saveLearningCase().catch(err => alert(err.message)));
+    $("save-learning").addEventListener("click", () => saveLearningCase().catch(notifyError));
 
     const style = document.createElement("style");
     style.textContent = `
@@ -699,7 +725,7 @@
     `;
     document.head.appendChild(style);
 
-    loadAll(false).catch(err => alert(err.message));
+    loadAll(false).catch(notifyError);
   </script>
 </body>
 </html>

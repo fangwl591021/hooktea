@@ -99,7 +99,7 @@
                         <div @click="toggleGroup('groupB')" class="nav-group-header"><span>🛠️ 營運工具</span><i class="fas" :class="groups.groupB ? 'fa-chevron-down' : 'fa-chevron-right'"></i></div>
                         <div v-show="groups.groupB" class="animate-fade-in">
                             <a v-if="false" href="./consult_admin.html" class="nav-item text-indigo-600"><i class="fas fa-calendar-check w-6 text-center"></i>講師排班</a>
-                            <a href="./line-oa-monitor.html" class="nav-item text-emerald-600"><i class="fas fa-brain w-6 text-center"></i>AI 後台監控</a>
+                            <a href="./line-oa-monitor.html" @click.prevent="openLineMonitor" class="nav-item text-emerald-600"><i class="fas fa-brain w-6 text-center"></i>AI 後台監控</a>
                             <div v-if="canManageRichMenu" @click="switchView('richmenu')" class="nav-item" :class="{'nav-active': view === 'richmenu'}"><i class="fas fa-layer-group w-6 text-center"></i>圖文選單</div>
                             <div v-if="isAdminRole" @click="switchView('paid_broadcast')" class="nav-item" :class="{'nav-active': view === 'paid_broadcast'}"><i class="fas fa-bullhorn w-6 text-center"></i>付費推播</div>
                             <div v-if="isAdminRole" @click="switchView('flex_rules')" class="nav-item" :class="{'nav-active': view === 'flex_rules'}"><i class="fas fa-robot w-6 text-center"></i>機器人與專區卡片</div>
@@ -2318,6 +2318,25 @@
                             alert(`登入失敗: ${e.message}`);
                         } finally {
                             isLoading.value = false;
+                        }
+                    };
+
+                    let openingLineMonitor = false;
+                    const openLineMonitor = async () => {
+                        if (openingLineMonitor) return;
+                        openingLineMonitor = true;
+                        try {
+                            // Reuse the existing server-verified admin/system session contract.
+                            // Neither a cached role flag nor a UID grants access to the monitor.
+                            const session = await callApi('CREATE_ADMIN_SESSION', {}, true);
+                            if (!session?.token) throw new Error('後台授權建立失敗，請重新登入');
+                            sessionStorage.setItem('hooktea_admin_session', session.token);
+                            window.location.href = './line-oa-monitor.html';
+                        } catch (e) {
+                            sessionStorage.removeItem('hooktea_admin_session');
+                            alert('聊天室監控授權失敗：' + (e.message || e));
+                        } finally {
+                            openingLineMonitor = false;
                         }
                     };
 
@@ -4690,7 +4709,7 @@
                         showOrdersModal, selectedCourseForOrders, selectedCourseOrders, currentCourseOrders,
                         showReservationCourseModal, selectedTeacherForReservation, teacherReservationCourses, isTeacherCourse,
                         activeMember, activeMemberPoints, memberPointsLoading, memberPointsMessage, editingPointAction,
-                        lineLogin, handleLogin, openCheckinTemplate, toggleGroup, switchView, logout, fetchData, manualRefreshData,
+                        lineLogin, handleLogin, openCheckinTemplate, openLineMonitor, toggleGroup, switchView, logout, fetchData, manualRefreshData,
                         triggerBackup, runHealthCheck, openMemberDetail, displayMemberName, memberLineUid, memberAvatarUrl, memberInitial, ledgerMemberName, copyText, openLedgerMember, memberRoleTags, toggleMemberSystem, toggleMemberOperator, toggleMemberTeacher, saveMemberDetail, deleteMember, restoreMember, openPointActionModal, submitPointAction,
                         openNewCourseModal, openEditModal, saveCourse, deleteCourse, copyCourse, openNewProductModal, openEditProductModal, saveProduct, deleteProduct, importWpProducts, syncToCalendar,
                         handleBannerUpload, handleProductImageUpload, handleCourseImageUpload, handleFlexRuleImageUpload, saveSettings, addCourseLocation, openEnrollments, openCourseOrdersModal,
