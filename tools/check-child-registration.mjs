@@ -47,6 +47,20 @@ test('verified login creates one pending CRM, repeat login does not complete reg
   assert.equal(h.writes.some(k=>k.includes('points/')),false);
   assert(h.network.every(url=>url.startsWith('https://api.line.me/')));
 });
+
+test('registration projection verifies identity but never reads points or orders',async()=>{
+  const h=harness();
+  h.sandbox.getPointDataForUid=async()=>{throw Error('must not query points');};
+  h.sandbox.readAuthoritativePoints=async()=>{throw Error('must not query mother');};
+  h.sandbox.getHuaxuShopOrders=async()=>{throw Error('must not query orders');};
+  const response=await h.invoke('handleHuaxuMemberProfile',h.req(null,{profileOnly:true}));
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.member.registrationStatus,'pending');assert.equal(body.lineUserId,UID);
+  assert.equal(body.profileOnly,true);assert.equal('points' in body,false);assert.equal('orders' in body,false);
+  const rejected=await h.invoke('handleHuaxuMemberProfile',h.req(null,{profileOnly:true,lineUserId:OTHER}));
+  assert.equal(rejected.status,403);
+});
 test('registration completes same UID, preserves private CRM fields/history, ignores role and identity injection',async()=>{
   const current={userId:UID,lineUserId:UID,linkedLineUid:UID,registrationStatus:'pending',adminNote:'preserve',role:'member',history:[{old:true}]};
   const h=harness({['USER_'+UID]:current});

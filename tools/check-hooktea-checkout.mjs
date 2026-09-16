@@ -7,7 +7,8 @@ const worker = fs.readFileSync(new URL("../worker.js", import.meta.url), "utf8")
 const renderStart = worker.indexOf("function renderHuaxuShopHtml(");
 const renderEnd = worker.indexOf("\nexport default", renderStart);
 assert.ok(renderStart > 0 && renderEnd > renderStart);
-const html = vm.runInNewContext(worker.slice(renderStart, renderEnd) + '\nrenderHuaxuShopHtml("test-liff");');
+const renderHtml = entry => vm.runInNewContext(worker.slice(renderStart, renderEnd) + '\nrenderHuaxuShopHtml("test-liff", '+JSON.stringify(entry)+');', {URL});
+const html = renderHtml("https://shop.example.test/");
 const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(match => match[1]).filter(Boolean);
 const script = scripts.find(value => value.includes("function checkout()"));
 assert.ok(script, "execute the actual rendered storefront script");
@@ -26,7 +27,7 @@ function storage(initial = {}) {
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) };
 }
 
-function storefront({ local = {}, session = {}, search = "", request = null, loggedIn = true, pathname = "/", sdkInit = null } = {}) {
+function storefront({ local = {}, session = {}, search = "", request = null, loggedIn = true, pathname = "/", sdkInit = null, registrationEntry = false } = {}) {
   const elements = new Map();
   const events = new Map();
   const calls = [];
@@ -53,7 +54,7 @@ function storefront({ local = {}, session = {}, search = "", request = null, log
     window: { liff, addEventListener() {}, scrollTo() {} }, setTimeout: () => 1, clearTimeout() {}, alert() {}, confirm: () => true,
   };
   const context = vm.createContext(sandbox);
-  new vm.Script(script.replace(/^\s*init\(\);\s*$/m, ""), { filename: "rendered-storefront.js" }).runInContext(context);
+  new vm.Script(script.replace('const REGISTRATION_ENTRY = false;', 'const REGISTRATION_ENTRY = '+registrationEntry+';').replace(/^\s*init\(\);\s*$/m, ""), { filename: "rendered-storefront.js" }).runInContext(context);
   const run = expression => vm.runInContext(expression, context);
   const ready = async () => { run('lineProfile = { userId: ' + JSON.stringify(uid) + ', displayName: "Test" }; products = [{id:"tea",name:"茶",price:300,pointsPrice:300}];'); await run('loadMemberData("verified-test-token")'); };
   const fill = (values = fields) => Object.entries(values).forEach(([key, value]) => { getElement(key).value = value; });
@@ -235,6 +236,35 @@ test("LIFF primary redirect keeps its endpoint and state intact until SDK initia
   assert.equal(app.run("memberVerified"),true);
   assert.equal(app.run("activeMemberSection"),"個人基本資料");
   assert.equal(app.run("memberEditMode"),false,"registered users reuse their existing profile");
+});
+
+test("registration HTML has an immediate dedicated shell before the blocking SDK, for both LIFF redirect phases", () => {
+  for(const query of ["?open=register","?liff.state=%3Fopen%3Dregister"]){
+    const page=renderHtml("https://shop.example.test/huaxu-shop.html"+query);
+    assert.match(page,/<body class="registration-entry">/);
+    assert.match(page,/<title>HookTea 會員註冊<\/title>/);
+    assert(page.indexOf('正在確認 LINE 身分') < page.indexOf('https://static.line-scdn.net/liff/edge/2/sdk.js'));
+    assert.match(page,/返回商城/);
+  }
+  assert.match(html,/<body class="">/);
+});
+
+test("registration starts verified profile without waiting for catalog or diagnostic requests", async () => {
+  const app=storefront({registrationEntry:true,search:"?open=register",local:{huaxu_cart:cart,huaxu_points_used:"100"},request:(url,options)=>{
+    if(url==="/api/huaxu/liff-debug") return new Promise(()=>{});
+    if(url==="/api/huaxu/config"||url==="/api/huaxu/products") throw Error('catalog must not be requested');
+    if(url==="/api/huaxu/member") {
+      assert.equal(JSON.parse(options.body).profileOnly,true);
+      return {body:{ok:true,lineUserId:uid,memberUid:uid,member:{registrationStatus:"pending"},profileOnly:true}};
+    }
+  }});
+  await app.run("init()");
+  assert.equal(app.run("memberVerified"),true);
+  assert.match(app.getElement("memberRows").innerHTML,/完成會員註冊/);
+  assert.equal(app.localStorage.getItem("huaxu_points_used"),"100");
+  assert.equal(app.run("cart.length"),1);
+  assert.doesNotMatch(app.getElement("memberRows").innerHTML,/點數記載|訂單查詢/);
+  assert.equal(app.calls.some(c=>c.url.includes('products')||c.url.includes('config')||c.url.includes('orders')),false);
 });
 
 test("OAuth callback restores saved registration intent after verified login", async () => {

@@ -5251,11 +5251,6 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
     }
   }
   const registeredShipping = registeredShippingFromMember(member || {});
-  const pointLookup = await getPointDataForUid(env, memberUid, { balance: 0, logs: [] });
-  const pointUid = pointLookup.pointUid;
-  const localPoints = pointLookup.data;
-  const orders = await getHuaxuShopOrders(env);
-  const memberOrders = orders.filter(order => huaxuOrderOwnedBy(order, { lineUid, memberUid }));
   const safeMember = member ? {
     userId: member.userId || memberUid,
     lineUserId: member.lineUserId || lineUid,
@@ -5295,6 +5290,17 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
     pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
     registrationStatus: "pending",
   };
+  // Registration needs verified CRM fields, not point/history/order services.
+  // This is a projection only: authentication and member provisioning above
+  // remain identical to the full member endpoint.
+  if (payload.profileOnly === true) return json({
+    ok: true, bound: !!member, lineUserId: lineUid, memberUid, member: safeMember, profileOnly: true,
+  });
+  const pointLookup = await getPointDataForUid(env, memberUid, { balance: 0, logs: [] });
+  const pointUid = pointLookup.pointUid;
+  const localPoints = pointLookup.data;
+  const orders = await getHuaxuShopOrders(env);
+  const memberOrders = orders.filter(order => huaxuOrderOwnedBy(order, { lineUid, memberUid }));
   const displayPoints = await readAuthoritativePoints(env, lineUid, safeMember, 10);
   return json({
     ok: true,
@@ -5980,21 +5986,27 @@ async function handleHuaxuShopRoute(request, env, ctx, apiHandler) {
   if (url.pathname === "/huaxu-shop.html" || url.pathname === "/huaxu-shop") {
     const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
     const shopLiffId = String(settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8").trim();
-    return new Response(renderHuaxuShopHtml(shopLiffId), {
+    return new Response(renderHuaxuShopHtml(shopLiffId, request.url), {
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
     });
   }
   return null;
 }
 
-function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
+function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "https://hooktea.invalid/") {
+  const entry = new URL(entryUrl);
+  let registrationEntry = entry.searchParams.get("open") === "register";
+  // Presentation only. Do not redirect or change the URL/SDK parameters.
+  const state = entry.searchParams.get("liff.state");
+  if (state) {
+    try { registrationEntry = new URL(state, entry).searchParams.get("open") === "register"; } catch (_) {}
+  }
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>HookTea 購物商城</title>
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <title>${registrationEntry ? "HookTea 會員註冊" : "HookTea 購物商城"}</title>
   <style>
     *{box-sizing:border-box}body{margin:0;background:#050505;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:480px;min-height:100vh;margin:0 auto;background:#050505;padding-bottom:88px}.top{position:sticky;top:0;z-index:20;background:#050505;padding:18px 18px 14px;display:flex;align-items:center;gap:18px;border-bottom:1px solid #161616}.icon{width:38px;height:38px;border:0;background:transparent;color:#fff;font-size:28px}.brand{flex:1;font-weight:900;letter-spacing:.02em}.brand small{display:block;color:#8d8d8d;font-size:12px;margin-top:2px}.tabs{padding:22px 18px 12px}.tabs h2{margin:0 0 14px;font-size:20px}.tabrow{display:flex;gap:10px;overflow:auto;padding-bottom:4px}.pill{white-space:nowrap;border:1px solid #1b1b1b;background:#111;color:#fff;border-radius:8px;padding:10px 14px;font-weight:800}.pill.active{background:#09251f;border-color:#16c7a2;color:#7fffe2}.hero{position:relative;min-height:310px;background:linear-gradient(135deg,#083172,#07142f 55%,#000);overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 75% 20%,rgba(255,210,92,.32),transparent 28%)}.hero-content{position:relative;padding:26px 22px}.hero-kicker{display:inline-block;background:#d7ae4f;color:#101010;border-radius:7px;padding:7px 11px;font-weight:900}.hero h1{font-size:38px;line-height:1.05;margin:18px 0 10px;color:#ffe28d;text-shadow:0 3px 0 #1a1a1a}.hero p{font-size:15px;line-height:1.5;max-width:300px;color:#f3f3f3}.section{padding:22px 16px}.section h2{margin:0 0 14px;font-size:22px}.products{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:#111;border:1px solid #202020;border-radius:10px;overflow:hidden}.product-link,.product-title{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;text-decoration:none}.card img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}.card-body{padding:12px}.badge{display:inline-block;background:#062a22;color:#78ffde;border:1px solid #0b6f5a;border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900}.card h3{font-size:16px;line-height:1.25;margin:10px 0 4px}.card p{color:#aaa;font-size:12px;line-height:1.45;margin:0 0 10px;min-height:32px;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.price{font-weight:900;color:#ffe28d;font-size:20px}.original{font-size:12px;color:#777;text-decoration:line-through;margin-left:4px}.buy{width:100%;margin-top:10px;border:0;border-radius:7px;background:#13b99a;color:#04100d;font-weight:900;padding:10px}.source-link{display:block;width:100%;border:0;background:transparent;text-align:center;color:#8d8d8d;text-decoration:none;font-size:12px;font-weight:800;margin-top:8px;padding:4px}.source-link:hover{color:#fff}.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;background:#050505;border-top:1px solid #151515;display:grid;grid-template-columns:repeat(4,1fr);padding:9px 0 calc(9px + env(safe-area-inset-bottom));z-index:25}.nav button{background:transparent;border:0;color:#fff;font-size:25px;position:relative}.nav small{display:block;font-size:11px;margin-top:2px}.count{position:absolute;top:-2px;right:28%;background:#13b99a;color:#00110d;border-radius:999px;font-size:12px;min-width:20px;padding:2px 5px}.drawer,.cart,.detail{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.45);display:none}.panel{width:82%;max-width:370px;height:100%;background:#050505;padding:24px 18px;overflow:auto}.panel.right{margin-left:auto}.cart .panel{width:100%;max-width:480px;margin:0 auto;padding-bottom:104px}.drawer.open,.cart.open,.detail.open{display:block}.cart-head{position:sticky;top:-24px;z-index:3;margin:-24px -18px 16px;padding:18px;background:#050505;border-bottom:1px solid #161616;display:flex;align-items:center;justify-content:space-between}.cart-head h2{margin:0}.cart-close{width:42px;height:42px;border:1px solid #2a2a2a;border-radius:10px;background:#111;color:#fff;font-size:24px;font-weight:900}.menu-logo{font-weight:900;margin-bottom:32px}.menu-item{border-bottom:1px solid #333;padding:16px 0;font-size:20px;font-weight:800}.cart-item{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #222;padding:14px 0}.cart-item button{background:#222;color:#fff;border:0;border-radius:6px;padding:7px 10px}.field{width:100%;background:#111;border:1px solid #2a2a2a;color:#fff;border-radius:7px;padding:12px;margin:8px 0;font-size:16px}.form-title{margin:18px 0 8px;color:#f7d979;font-size:14px;font-weight:900}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.required-hint{color:#8d8d8d;font-size:12px;line-height:1.5;margin:4px 0 8px}.checkout{width:100%;border:0;border-radius:8px;background:#13b99a;color:#04100d;font-weight:900;padding:14px;font-size:16px;margin-top:12px}.detail-card img{width:100%;border-radius:10px;aspect-ratio:1/1;object-fit:cover}.detail-card h2{font-size:24px;line-height:1.2;margin:16px 0 8px}.detail-desc{white-space:pre-wrap;color:#d7d7d7;font-size:14px;line-height:1.7;margin-top:14px}.detail-close{border:0;background:#151515;color:#fff;border-radius:8px;padding:10px 12px;font-weight:900}.empty{color:#888;padding:24px 0}.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#13b99a;color:#04100d;border-radius:999px;padding:12px 18px;font-weight:900;display:none;z-index:60}.toast.show{display:block}
     .profile-button{width:42px;height:42px;border:1px solid #242424;border-radius:999px;background:#111;color:#fff;display:grid;place-items:center;overflow:hidden}.profile-button.ready{border-color:#13b99a}.profile-button img{width:100%;height:100%;object-fit:cover;display:none}.profile-button.ready img{display:block}.profile-button.ready span{display:none}.profile-button span{font-size:18px;font-weight:900}.category-head{position:relative;display:inline-block}.category-trigger{border:0;background:transparent;color:#fff;font-size:20px;font-weight:900;padding:0 24px 0 0}.category-trigger:after{content:"";position:absolute;right:0;top:50%;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #fff;transform:translateY(-25%)}.category-menu{position:absolute;left:0;top:30px;z-index:30;min-width:178px;background:#fff;color:#111;border-radius:2px;box-shadow:0 8px 18px rgba(0,0,0,.28);padding:8px 0;display:none}.category-menu.open{display:block}.category-menu button{display:block;width:100%;border:0;background:#fff;color:#111;text-align:left;font-size:16px;font-weight:900;padding:12px 20px}.category-menu button.active,.category-menu button:hover{background:#f1f5f9}.same-member{display:flex;align-items:center;gap:9px;border:1px solid #2a2a2a;background:#101010;border-radius:8px;padding:10px 12px;margin:10px 0 8px;color:#fff;font-weight:900}.same-member input{width:18px;height:18px;accent-color:#13b99a}.same-member-hint{display:none;color:#9ca3af;font-size:12px;line-height:1.45;margin:-2px 0 8px}.same-member-hint.warn{display:block;color:#fbbf24}.same-member-hint.ok{display:block;color:#5eead4}.pay-title{color:#aaa;font-size:12px;font-weight:900;margin:12px 0 8px}.pay-options{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.pay-option{border:1px solid #2a2a2a;border-radius:7px;background:#111;color:#fff;font-weight:900;padding:10px 6px}.pay-option.active{background:#13b99a;color:#04100d;border-color:#13b99a}.pay-option:disabled{opacity:.38}.checkout-block{border:1px solid #242424;background:#0f0f0f;border-radius:10px;padding:12px;margin:14px 0}.summary-row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;color:#d1d5db;font-size:14px}.summary-row.total{border-top:1px solid #262626;margin-top:6px;padding-top:10px;color:#fff;font-size:17px;font-weight:900}.point-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.point-row .field{margin:0}.mini-button{border:0;border-radius:7px;background:#243127;color:#7fffe2;font-weight:900;padding:12px 10px}.point-note{color:#9ca3af;font-size:12px;line-height:1.45;margin-top:8px}.point-note.warn{color:#fbbf24}.field.error{border-color:#ef4444!important;box-shadow:0 0 0 2px rgba(239,68,68,.25);background:#180b0b}.field-error-text{display:none;color:#fca5a5;font-size:12px;line-height:1.45;margin:-2px 0 8px}.field-error-text.show{display:block}
@@ -6002,7 +6014,16 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     .member{position:fixed;inset:0;z-index:50;background:#f4f6f8;color:#020b1c;display:none;overflow:auto}.member.open{display:block}.member-sheet{max-width:480px;min-height:100%;margin:0 auto;padding:20px 18px 96px}.member-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.member-top h2{margin:0;font-size:24px}.member-close{width:42px;height:42px;border:1px solid #d5dde8;border-radius:10px;background:#fff;color:#020b1c;font-size:24px;font-weight:900}.member-profile{position:relative;background:#fff;border:1px solid #d5dde8;border-radius:18px;text-align:center;overflow:hidden;margin-bottom:18px;box-shadow:0 8px 24px rgba(15,23,42,.06)}.member-cover{height:112px;background:#0d1728;background-image:radial-gradient(#24344e 1px,transparent 1px);background-size:18px 18px}.member-avatar{width:96px;height:96px;border-radius:999px;border:5px solid #fff;object-fit:cover;background:#e6f7ff;margin:-48px auto 8px;display:block}.member-name{font-size:24px;font-weight:900;line-height:1.2;padding:0 14px}.member-tier{display:inline-block;margin:10px 0 20px;border:1px solid #9fe9ca;background:#dcffef;color:#00925f;border-radius:7px;padding:6px 14px;font-size:13px;font-weight:900}.member-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.member-action{border:0;border-radius:14px;background:#fff;color:#020b1c;padding:18px 8px;box-shadow:0 10px 24px rgba(15,23,42,.07);font-weight:900}.member-action b{display:block;color:#14b99a;font-size:32px;line-height:1}.member-action span{display:block;margin-top:8px;font-size:13px}.checkin-button{width:78%;margin:6px auto 18px;display:block;border:1px solid #d5dde8;border-radius:999px;background:#fff;color:#14213d;padding:14px;font-weight:900;font-size:15px}.member-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:12px;background:#fff;border:1px solid #d5dde8;border-radius:12px;padding:14px 16px;margin:10px 0;font-weight:900}.member-row small{color:#13b99a;margin-right:6px}.member-row button,.toggle-badge{border:0;border-radius:999px;background:#06c755;color:#fff;font-weight:900;padding:7px 12px;display:inline-flex;align-items:center;justify-content:center;min-width:54px;line-height:1.15}.member-detail{background:#fff;border:1px solid #d5dde8;border-radius:16px;margin:12px 0 16px;padding:16px;box-shadow:0 10px 24px rgba(15,23,42,.05)}.member-detail-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.member-detail-title{font-size:17px;font-weight:900}.member-edit{border:0;border-radius:999px;background:#2563eb;color:#fff;font-weight:900;padding:8px 12px}.member-save{width:100%;border:0;border-radius:12px;background:#06c755;color:#fff;font-weight:900;padding:14px;margin-top:12px;font-size:15px}.member-grid{display:grid;gap:10px}.member-field label{display:block;color:#64748b;font-size:12px;font-weight:900;margin:0 0 5px}.member-field input,.member-field select{width:100%;border:1px solid #d8e0ec;background:#f8fafc;border-radius:10px;padding:12px;color:#020b1c;font-weight:800;font-size:15px}.member-info-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #eef2f7;padding:10px 0;font-weight:900}.member-info-row span:first-child{color:#64748b}.points-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}.points-card{background:#f8fafc;border:1px solid #edf2f7;border-radius:14px;padding:14px}.points-card small{display:block;color:#64748b;font-weight:900;margin-bottom:6px}.points-card b{font-size:24px}.point-log{display:grid;grid-template-columns:1fr auto;gap:10px;background:#f8fafc;border:1px solid #edf2f7;border-radius:12px;padding:12px;margin:8px 0}.point-log-title{font-weight:900}.point-log-date{color:#94a3b8;font-size:12px;margin-top:4px}.point-log-amount{font-weight:900;font-size:18px;color:#06a657}.point-log-amount.spend{color:#dc2626}.member-empty{color:#64748b;background:#f8fafc;border-radius:12px;padding:16px;text-align:center;font-weight:800}
   </style>
 </head>
-<body>
+<body class="${registrationEntry ? "registration-entry" : ""}">
+  <style>
+    .registration-entry{background:#f4f6f8;color:#020b1c}
+    .registration-entry>.app,.registration-entry>.nav{display:none!important}
+    .registration-entry #member{display:block}
+    .registration-entry .member-profile,.registration-entry #memberActions,.registration-entry #memberRegistrationButton,.registration-entry #checkinButton{display:none}
+    .registration-entry .member-top{position:sticky;top:0;background:#f4f6f8;padding:8px 0;z-index:2}
+    .registration-entry .member-close{width:auto;font-size:14px;padding:8px 12px}
+    .registration-entry .member-detail{margin-top:0}
+  </style>
   <div class="app">
     <header class="top">
       <button class="icon" onclick="toggleDrawer(true)">☰</button>
@@ -6100,8 +6121,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
   <div class="member" id="member" onclick="toggleMember(false)">
     <div class="member-sheet" onclick="event.stopPropagation()">
       <div class="member-top">
-        <h2 id="memberPanelTitle">會員專區</h2>
-        <button class="member-close" onclick="toggleMember(false)">×</button>
+        <h2 id="memberPanelTitle">${registrationEntry ? "會員註冊" : "會員專區"}</h2>
+        <button class="member-close" onclick="toggleMember(false)">${registrationEntry ? "返回商城" : "×"}</button>
       </div>
       <div class="member-profile">
         <div class="member-cover"></div>
@@ -6112,11 +6133,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       <div class="member-actions" id="memberActions"></div>
       <button class="checkin-button" id="memberRegistrationButton" onclick="openRegistration()">會員註冊</button>
       <button class="checkin-button" id="checkinButton" onclick="dailyCheckin()">每日簽到領點</button>
-      <div id="memberRows"></div>
+      <div id="memberRows">${registrationEntry ? '<section class="member-detail" role="status"><h3>會員註冊</h3><p>正在確認 LINE 身分，請稍候…</p></section>' : ""}</div>
     </div>
   </div>
   <div class="toast" id="toast"></div>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script>
+    const REGISTRATION_ENTRY = ${registrationEntry};
     let products = [];
     const hookTeaCategories = ["虎克茶商品全品項","虎克茶系列","女王饗樂系列","禮盒開運茶系列","傳統茶系列"];
     let shopConfig = { categories: hookTeaCategories };
@@ -6265,6 +6288,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       restoreCheckoutDraft();
       bindCheckoutDraftPersistence();
       entryContext = restoreEntryContext();
+      if (REGISTRATION_ENTRY) {
+        await initLineIdentity();
+        return;
+      }
       const loaded = await Promise.all([
         fetch("/api/huaxu/config").then(r => r.json()).catch(() => null),
         fetch("/api/huaxu/products").then(r => r.json())
@@ -6340,7 +6367,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     async function initLineIdentity(forceLogin){
       if (lineIdentityLoading) return;
       if (!window.liff) {
-        await logShopLiff("no_sdk", "LIFF SDK not available");
+        void logShopLiff("no_sdk", "LIFF SDK not available");
+        if (REGISTRATION_ENTRY) renderMemberPanel();
         toast("LINE 登入元件尚未載入，請重新整理；收件資料已保留。");
         return;
       }
@@ -6357,28 +6385,29 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         // The SDK owns primary/secondary redirects. Read entry parameters only
         // after initialization, without rewriting its endpoint or liff.state.
         entryContext = restoreEntryContext();
-        await logShopLiff("init_done", "", { liffId });
+        void logShopLiff("init_done", "", { liffId });
         if (!liff.isLoggedIn()) {
-          await logShopLiff(forceLogin ? "login_manual" : "login_redirect", "", { liffId });
+          void logShopLiff(forceLogin ? "login_manual" : "login_redirect", "", { liffId });
           saveCheckoutDraft();
           liff.login({ redirectUri: entryContext.url || location.href.split("#")[0] });
           return;
         }
         lineProfile = await liff.getProfile();
-        await logShopLiff("profile_done", "", { liffId, userId: lineProfile.userId || "" });
+        void logShopLiff("profile_done", "", { liffId, userId: lineProfile.userId || "" });
         renderLineProfile();
         await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
         renderLineProfile();
-        if (memberVerified) await verifyPaymentReturn();
+        if (memberVerified && !REGISTRATION_ENTRY) await verifyPaymentReturn();
         const openTarget = new URLSearchParams(location.search).get("open") || requestedOpen;
         if (memberVerified && openTarget === "member") openMember();
         if (memberVerified && openTarget === "register") openRegistration();
       } catch (error) {
         console.warn("LIFF init failed", error);
-        await logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
+        void logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
         toast("LINE 身分確認失敗，請點「我的」重試；收件資料已保留。");
       } finally {
         lineIdentityLoading = false;
+        if (REGISTRATION_ENTRY) renderMemberPanel();
       }
     }
     function currentMemberAccessToken(){
@@ -6670,6 +6699,9 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       renderPayOptions();
     }
     function renderCart(){
+      // The registration projection deliberately has no catalog or balance.
+      // Do not clamp an existing checkout discount against missing data.
+      if (REGISTRATION_ENTRY) return;
       document.getElementById("cartCount").textContent = cart.reduce((sum,item)=>sum+item.quantity,0);
       const rows = cart.map(item => {
         const p = products.find(product => product.id === item.id);
@@ -7030,7 +7062,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         const res = await memberRequest("/api/huaxu/member", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile }),
+          body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile, profileOnly: REGISTRATION_ENTRY }),
           signal: controller.signal
         }, accessToken).finally(() => clearTimeout(timeoutId));
         if (!res?.ok || res.lineUserId !== requestedUid || lineProfile.userId !== requestedUid) throw new Error(res?.message || "會員身分確認失敗，請重新登入。");
@@ -7074,11 +7106,19 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       toggleMember(true);
     }
     function toggleMember(open){
+      if (!open && REGISTRATION_ENTRY) { location.assign("/huaxu-shop.html"); return; }
       const panel = document.getElementById("member");
       if (panel) panel.classList.toggle("open", !!open);
     }
     function renderMemberPanel(){
       const member = memberData?.member || {};
+      if (REGISTRATION_ENTRY) {
+        const title = document.getElementById("memberPanelTitle");
+        const rows = document.getElementById("memberRows");
+        if (title) title.textContent = memberVerified && member.registrationStatus === "registered" ? "會員資料" : "會員註冊";
+        if (rows) rows.innerHTML = memberVerified ? renderProfileDetail() : '<section class="member-detail" role="status"><p>'+(lineIdentityLoading || memberLoading ? '正在確認 LINE 身分，請稍候…' : '尚未完成身分驗證，請重新登入。')+'</p><button class="member-save" onclick="initLineIdentity(true)">重新登入／重試</button></section>';
+        return;
+      }
       const name = member.name || member.displayName || lineProfile.displayName || "LINE 會員";
       const avatar = member.pictureUrl || lineProfile.pictureUrl || "";
       const tier = member.memberTier || "一般會員";
@@ -7536,7 +7576,7 @@ export default {
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
       const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
       const shopLiffId = String(settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8").trim();
-      return new Response(renderHuaxuShopHtml(shopLiffId), {
+      return new Response(renderHuaxuShopHtml(shopLiffId, request.url), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }

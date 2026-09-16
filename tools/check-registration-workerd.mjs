@@ -45,6 +45,11 @@ try {
   const call=(path,method='POST',body={})=>mf.dispatchFetch('http://127.0.0.1:8796'+path,{method,headers:{authorization:'Bearer local-synthetic','content-type':'application/json'},body:JSON.stringify({lineUserId:UID,...body})});
   const first=await call('/api/huaxu/member');assert.equal(first.status,200);assert.equal((await first.json()).member.registrationStatus,'pending');
   console.log('PASS workerd verified login persists pending CRM in local R2');
+  const minimal=await call('/api/huaxu/member','POST',{profileOnly:true});
+  assert.equal(minimal.status,200);
+  const minimalData=await minimal.json();assert.equal(minimalData.profileOnly,true);assert.equal(minimalData.member.registrationStatus,'pending');
+  assert.equal('points' in minimalData,false);assert.equal('orders' in minimalData,false);
+  console.log('PASS workerd registration projection returns verified profile without balance/order placeholders');
   const blocked=await call('/api/huaxu/orders','POST',{items:[{id:'test-tea',quantity:1}],pointsUsed:0});
   assert.equal(blocked.status,409);assert.equal((await blocked.json()).code,'MEMBER_REGISTRATION_REQUIRED');
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM checkout_requests').first()).n,0);
@@ -58,7 +63,7 @@ try {
     assert.equal((await db.prepare('SELECT COUNT(*) n FROM point_operations').first()).n,0);
     console.log('PASS workerd conditional writes preserve registered state and no point awards');
     assert(network.every(url=>url.startsWith('https://api.line.me/')));
-    console.log('3 workerd groups passed; no production bindings or external side effects');
+    console.log('4 workerd groups passed; no production bindings or external side effects');
   } else {
     console.log('LOCAL_BROWSER_ACCEPTANCE '+await mf.ready+'?open=register');
     await new Promise(resolve=>{process.once('SIGINT',resolve);process.once('SIGTERM',resolve);});
