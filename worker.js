@@ -6,6 +6,7 @@
  */
 
 import { createPointService } from './point-service.js';
+import { createNewMemberPointService } from './new-member-points.js';
 import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
 
 const utils = {
@@ -830,7 +831,13 @@ async function writeVerifiedCrmProfile(env, ctx, memberUid, lineUid, build) {
     const raw = object ? await object.text() : await env.ACTION_DATA.get(`USER_${memberUid}`);
     const current = raw ? JSON.parse(raw) : null;
     if (current && !isTrustedHuaxuMemberBinding(current, memberUid, lineUid)) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
-    const next = build(current);
+    let next = build(current);
+    if (!current && String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true') {
+      if (String(env.HOOKTEA_NEW_MEMBER_ENROLLMENT_PAUSED) === 'true') throw new Error('CHILD_ENROLLMENT_PAUSED');
+      await assertNewChildCrmIdentity(env, memberUid, lineUid);
+      next = { ...next, pointAuthority: 'child', pointEnrollmentId: 'new-child:' + crypto.randomUUID(),
+        crmBindingStatus: 'CHILD_LINE_VERIFIED', bindingStatus: 'LINE 已驗證' };
+    }
     if (!object || next !== current) {
       const saved = await bucket.put(key, JSON.stringify(next), {
         onlyIf: object ? { etagMatches: object.etag } : { etagDoesNotMatch: "*" },
@@ -838,6 +845,9 @@ async function writeVerifiedCrmProfile(env, ctx, memberUid, lineUid, build) {
       });
       if (!saved) continue;
     }
+    // Repair an interrupted enrollment using the SAME durable server receipt.
+    // A D1 failure must not downgrade this profile to mother authority.
+    if (next.pointAuthority === 'child') await createHookTeaPointService(env).enroll(next);
     // R2 is authoritative. Refresh projections even on a repeated login after a partial failure.
     await bucket.put(`live/child-crm/${encodeURIComponent(memberUid)}.json`, JSON.stringify({ userId: memberUid }));
     await env.ACTION_DATA.put(`USER_${memberUid}`, JSON.stringify(next)).catch(() => console.error("CRM KV projection failed"));
@@ -1134,6 +1144,9 @@ async function mergePointDataForLineBind(env, ctx, legacyUid, lineUid) {
 async function bindLegacyMemberToLine(env, ctx, lineUid, payload = {}, lineProfile = null) {
   const verifiedLineUid = String(lineUid || "").trim();
   if (!verifiedLineUid || verifiedLineUid === "GUEST") return { bound: false, reason: "missing_line_uid" };
+  if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' &&
+    await createHookTeaPointService(env).wallet(verifiedLineUid))
+    return { bound: false, reason: 'child_account_legacy_merge_requires_review' };
   const existing = await safeGetKV(env, `LINE_BIND_${verifiedLineUid}`, null, { preferWasabi: false });
   if (existing?.legacyUserId) {
     const member = await safeGetKV(env, `USER_${existing.legacyUserId}`, null);
@@ -2328,16 +2341,43 @@ function hookTeaDailySigninPoints(settings = {}, env = {}) {
 
 // Rewards use deterministic journal IDs. Old claim records remain duplicate barriers.
 function createHookTeaPointService(env) {
-  return createPointService({
+  const mother = createPointService({
     db: env.DB,
-    query: async member => queryWetwPointList(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), member, env),
+    query: async member => {
+      if (member?.pointAuthority === 'child') throw new Error('CHILD_AUTHORITY_REQUIRED');
+      return queryWetwPointList(await safeGetKV(env, 'SYSTEM_SETTINGS', {}), member, env);
+    },
     insert: async (member, amount, reason) => {
+      if (member?.pointAuthority === 'child') throw new Error('CHILD_AUTHORITY_REQUIRED');
       const result = await insertWetwPoint(await safeGetKV(env, 'SYSTEM_SETTINGS', {}),
         member.userId, amount, reason, env, member);
       return { ...result, balance: extractWetwInsertBalance(result),
         transactionId: result?.data?.data?.insert_row?.id || null };
     },
   });
+  return String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true'
+    ? createNewMemberPointService({ db: env.DB, mother }) : mother;
+}
+
+async function assertNewChildCrmIdentity(env, memberUid, lineUid) {
+  if (memberUid !== lineUid || !/^U[0-9a-f]{32}$/.test(lineUid)) throw new Error('MEMBER_IDENTITY_REVIEW_REQUIRED');
+  const indexRaw = await env.ACTION_DATA.get('USERS_INDEX');
+  const index = indexRaw ? JSON.parse(indexRaw) : null;
+  if (!Array.isArray(index)) throw new Error('CRM_IDENTITY_INDEX_UNAVAILABLE');
+  if (index.some(m => [m.userId,m.lineUserId,m.linkedLineUid,m.lineUid].includes(lineUid)))
+    throw new Error('MEMBER_IDENTITY_REVIEW_REQUIRED');
+  const binding = await env.ACTION_DATA.get('LINE_BIND_' + lineUid);
+  if (binding) throw new Error('MEMBER_IDENTITY_REVIEW_REQUIRED');
+  const bucket = getDataBucket(env);
+  const pointObject = await bucket.get(getHighRiskLiveKey('POINTS_' + lineUid));
+  const pointRaw = pointObject ? await pointObject.text() : await env.ACTION_DATA.get('POINTS_' + lineUid);
+  // Even a zero old point document is existing evidence, not a new account.
+  if (pointRaw) throw new Error('MEMBER_IDENTITY_REVIEW_REQUIRED');
+  for (const prefix of ['HOOKTEA_DAILY_SIGNIN_' + lineUid, 'KEYWORD_REWARD_' + lineUid,
+    'CHECKIN_' + lineUid, 'LINE_BIND_REVIEW_FOR_' + lineUid]) {
+    const page = await env.ACTION_DATA.list({prefix,limit:1});
+    if (page.keys.length) throw new Error('MEMBER_IDENTITY_REVIEW_REQUIRED');
+  }
 }
 
 async function readAuthoritativePoints(env, lineUid, member, limit = 50, { readOnly = false } = {}) {
@@ -2875,6 +2915,13 @@ async function getPointsLedger(env, limit = 50, options = {}) {
   const maxRows = Math.max(1, Math.min(Number(limit) || 50, 2000));
   const stored = await safeGetKV(env, "POINT_LEDGER", []);
   const storedList = Array.isArray(stored) ? stored : [];
+  if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true') {
+    const rows = await env.DB.prepare('SELECT * FROM child_point_ledger ORDER BY rowid DESC LIMIT ?').bind(maxRows).all();
+    storedList.unshift(...rows.results.map(e => ({uid:e.member_id,logId:e.operation_id,amount:e.amount,
+      points:Math.abs(e.amount),reason:e.reason,type:e.amount<0?'SPEND':'EARN',source:e.source_kind,
+      authority:'child',balanceAfter:e.balance_after,operatorUid:e.actor_id,
+      createdAt:e.created_at,createdTs:Date.parse(e.created_at.replace(' ','T')+'Z')})));
+  }
   let userMap = new Map();
   let legacy = [];
   if (options.includeLegacy === true) {
@@ -2965,6 +3012,7 @@ async function readCrmExportSource(env, key) {
 }
 
 async function queryWetwPointList(settings, member, env = {}) {
+  if (member?.pointAuthority === 'child') return {ok:false,reason:'CHILD_AUTHORITY_REQUIRED'};
   const cfg = getWetwConfig(settings, env);
   if (!cfg.enabled) return { ok: false, reason: "wp_disabled", message: "WordPress 點數同步目前未啟用。" };
   if (!cfg.apiKey || !cfg.shopId) return { ok: false, reason: "missing_credentials", message: "缺少 WordPress API Key 或 shop_id。" };
@@ -3058,6 +3106,7 @@ function validateHookTeaRewardSettings(settings, template) {
 }
 
 async function insertWetwPoint(settings, uid, amount, reason, env = {}, member = null) {
+  if (member?.pointAuthority === 'child') throw new Error('CHILD_AUTHORITY_REQUIRED');
   const cfg = getWetwConfig(settings, env);
   const lineUid = getMemberLineUid(member, String(uid || "").startsWith("U") ? uid : "");
   if (!cfg.enabled || !cfg.apiKey || !cfg.shopId || !lineUid || !amount) return { ok: false, skipped: true };
@@ -4662,7 +4711,11 @@ async function getHookTeaMonitorThread(env, id) {
   const orders = await safeGetKV(env, "ORDERS", []);
   const userIdForData = String(user?.userId || user?.uid || d1ThreadId || uid).trim();
   const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === userIdForData);
-  const pointData = await safeGetKV(env, `POINTS_${userIdForData}`, { logs: [] });
+  let pointData = await safeGetKV(env, `POINTS_${userIdForData}`, { logs: [] });
+  if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' &&
+    (user?.pointAuthority === 'child' || await createHookTeaPointService(env).wallet(userIdForData))) {
+    pointData = await readAuthoritativePoints(env, getMemberLineUid(user, userIdForData), user, 50, {readOnly:true});
+  }
   const overlay = await safeGetKV(env, `MONITOR_THREAD_${d1ThreadId}`, {});
   const paymentLogs = await safeGetKV(env, "PAYMENT_LOGS", []);
   const tags = Array.from(new Set([
@@ -5126,10 +5179,18 @@ async function findHuaxuMemberByLineUid(env, lineUid) {
 async function findHuaxuMemberByLineUidFast(env, lineUid) {
   const uid = String(lineUid || "").trim();
   if (!uid) return { memberUid: "", member: null, binding: null };
-  const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
+  const strict = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true';
+  const strictJson = async key => {
+    const liveKey = getHighRiskLiveKey(key);
+    const object = liveKey ? await getDataBucket(env).get(liveKey) : null;
+    const raw = object ? await object.text() : await env.ACTION_DATA.get(key);
+    return raw ? JSON.parse(raw) : null;
+  };
+  const binding = strict ? await strictJson(`LINE_BIND_${uid}`)
+    : await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
   const candidateIds = [binding?.legacyUserId, uid].map(value => String(value || "").trim()).filter(Boolean);
   for (const candidateId of candidateIds) {
-    const member = await safeGetKV(env, `USER_${candidateId}`, null);
+    const member = strict ? await strictJson(`USER_${candidateId}`) : await safeGetKV(env, `USER_${candidateId}`, null);
     if (member) {
       if (!isTrustedHuaxuMemberBinding(member, candidateId, uid, binding)) return { memberUid: uid, member: null, binding, identityConflict: true };
       return { memberUid: candidateId, member, binding };
@@ -5160,6 +5221,7 @@ async function scanHuaxuLegacyMemberByLineUid(env, lineUid) {
 async function repairHuaxuLineBindingInBackground(env, ctx, lineUid, profile = null) {
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return null;
+  if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' && await createHookTeaPointService(env).wallet(uid)) return null;
   let resolved = await findHuaxuMemberByLineUidFast(env, uid).catch(() => ({ memberUid: uid, member: null }));
   if (resolved.identityConflict) return { identityConflict: true };
   const legacyResolved = await scanHuaxuLegacyMemberByLineUid(env, uid).catch(() => ({ memberUid: "", member: null }));
@@ -5199,7 +5261,10 @@ async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source
   if (!uid || !uid.startsWith("U")) return null;
   const resolved = await findHuaxuMemberByLineUid(env, uid);
   if (resolved.identityConflict) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
-  if (resolved?.member) return resolved.member;
+  if (resolved?.member) {
+    if (resolved.member.pointAuthority === 'child') await createHookTeaPointService(env).enroll(resolved.member);
+    return resolved.member;
+  }
   let lineProfile = profile;
   if (!lineProfile || (!lineProfile.displayName && !lineProfile.name && !lineProfile.pictureUrl && !lineProfile.picture)) {
     lineProfile = await fetchLineBotProfile(env, uid).catch(() => profile || {});
@@ -5756,10 +5821,11 @@ async function createHuaxuOrderOnce(request, env, ctx, apiHandler, verifiedIdent
   }
   if (pointsUsed > 0 && apiHandler?.updatePoints) {
     try {
-      await apiHandler.updatePoints(env, ctx, memberUidForPoints, -pointsUsed, `購物車點數折抵：${order.orderId}`, {
+      const deduction = await apiHandler.updatePoints(env, ctx, memberUidForPoints, -pointsUsed, `購物車點數折抵：${order.orderId}`, {
         source: "huaxu_shop_checkout", operationId: 'order-spend:' + order.orderId,
         targetName: customer.name,
       });
+      order.pointBalanceAfter = deduction.balance;
     } catch (error) {
       order.status = 'POINTS_PENDING';
       order.paymentStatus = 'POINTS_PENDING';
@@ -5768,7 +5834,7 @@ async function createHuaxuOrderOnce(request, env, ctx, apiHandler, verifiedIdent
       return json({ ok: false, pending: true, message: '折抵點數尚待確認，付款連結未開放，請聯絡客服確認此單。', order }, 409);
     }
     order.pointsDeductedAt = new Date().toISOString();
-    order.pointBalanceAfter = Math.max(0, Math.floor(Number(pointDataForOrder.balance || 0))) - pointsUsed;
+    if (order.pointBalanceAfter == null) order.pointBalanceAfter = Math.max(0, Math.floor(Number(pointDataForOrder.balance || 0))) - pointsUsed;
     const refreshedOrders = await safeGetKV(env, "ORDERS", []);
     const orderIndex = Array.isArray(refreshedOrders) ? refreshedOrders.findIndex(item => item?.orderId === order.orderId) : -1;
     if (orderIndex >= 0) {
@@ -7642,6 +7708,7 @@ export default {
           const config = getWetwConfig(access.settings || {}, env);
           result.data = await exportCrmPointHistory({ access, payload,
             read: key => readCrmExportSource(env, key),
+            readChildHistory: (member,page,perPage) => createHookTeaPointService(env).history(member,page,perPage),
             config: { ...config, endpoint: getWetwPointUrl(access.settings || {}, 'query', env) } });
           break;
         }
@@ -7949,6 +8016,18 @@ export default {
         }
 
         case "REGISTER_USER": {
+          if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true') {
+            const resolved = await ensureFastLineCheckinMember(env, ctx, access.lineUserId || userId, access.lineProfile, 'child_registration');
+            if (resolved.member?.pointAuthority === 'child') {
+              const response = await handleHuaxuUpdateMemberProfile(new Request(request.url, {
+                method: 'PUT', headers: request.headers, body: JSON.stringify({profile:payload}),
+              }), env, ctx);
+              const data = await response.json();
+              if (!response.ok) throw new Error(data.message || 'MEMBER_REGISTRATION_FAILED');
+              result.data = {success:true,userId:resolved.memberUid,legacyBound:false,memberData:data.member,reward:null};
+              break;
+            }
+          }
           const bindResult = await bindLegacyMemberToLine(env, ctx, access.lineUserId || userId, payload, access.lineProfile);
           const memberUid = bindResult.bound ? bindResult.userId : userId;
           const currentMember = bindResult.bound ? bindResult.member : await safeGetKV(env, `USER_${memberUid}`, {});
@@ -8003,9 +8082,11 @@ export default {
           const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
           const pts = Math.max(0, Math.floor(Number(settings.reward_daily ?? 10)));
           if (!pts) { result.data = { earned: 0 }; break; }
-          const member = await safeGetKV(env, 'USER_' + userId, null);
+          const childResolved = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true'
+            ? await ensureFastLineCheckinMember(env, ctx, lineUid, access.lineProfile, 'verified_daily_api') : null;
+          const member = childResolved?.member || await safeGetKV(env, 'USER_' + userId, null);
           const reward = await createHookTeaPointService(env).submit({
-            id: 'legacy-daily:' + lineUid + ':' + today, lineUid, memberUid: userId,
+            id: 'legacy-daily:' + lineUid + ':' + today, lineUid, memberUid: childResolved?.memberUid || userId,
             kind: 'legacy_daily', amount: pts, reason: '每日登入紅包',
           }, member || { userId, lineUserId: lineUid });
           if (reward.ok) await safePutKV(env, checkKey, true, { expirationTtl: secondsUntilNextTaipeiMidnight() });
@@ -8994,14 +9075,20 @@ export default {
           break;
           
         case "ADMIN_MANAGE_POINTS":
+          if (!access.isAdmin && !access.canSystemTools) throw new Error('Admin authorization required');
           const val = payload.type === 'MANUAL_DEDUCT' ? -Math.abs(payload.amount) : Math.abs(payload.amount);
-          await this.updatePoints(env, ctx, payload.uid, val, payload.reason || "管理員手動調整");
+          await this.updatePoints(env, ctx, payload.uid, val, payload.reason || "管理員手動調整", {
+            source: 'admin_adjustment', operationId: 'admin-adjust:' + (payload.operationId || crypto.randomUUID()),
+            actorId: userId,
+          });
           result.data = { success: true };
           break;
 
         case "ADMIN_RECONCILE_LOCAL_POINTS": {
           if (!access.isAdmin) throw new Error("Admin authorization required");
           const targetUid = String(payload?.targetUid || payload?.uid || "").trim();
+          if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' && await createHookTeaPointService(env).wallet(targetUid))
+            throw new Error('子站會員請使用贈點／扣點，不能用舊站餘額覆寫帳本');
           const targetBalance = Number(payload?.targetBalance);
           if (!targetUid) throw new Error("缺少會員 UID");
           if (!Number.isFinite(targetBalance) || targetBalance < 0) throw new Error("校正餘額格式錯誤");
@@ -9506,6 +9593,7 @@ export default {
     const result = await service.submit({
       id: options.operationId || crypto.randomUUID(), lineUid, memberUid: target.userId || uid,
       kind: options.source || 'system', amount: Number(amount), reason,
+      metadata: { actorId: options.actorId || '' },
     }, target);
     if (!result.ok) {
       const error = new Error(result.pending ? '點數異動待確認，請勿重複操作' : '點數異動未完成：' + result.error);
@@ -9560,7 +9648,32 @@ export default {
 
       const webhookSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
       const template = await getHookTeaCheckinTemplate(env).catch(() => null);
-      const routedEvents = events.map(event => ({ event, owner: selectLineWebhookEventOwner(event, webhookSettings, template) }));
+      const routedEvents = await Promise.all(events.map(async event => {
+        let owner = selectLineWebhookEventOwner(event, webhookSettings, template);
+        if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) !== 'true') return {event,owner};
+        const uid = event?.source?.userId;
+        if (!/^U[0-9a-f]{32}$/.test(uid || '')) return {event,owner:'silent'};
+        try {
+          // Enrollment happens before either branch: follow/new message cannot
+          // create a mother account or trigger a mother welcome reward first.
+          const member = ['follow','message'].includes(event.type)
+            ? await ensureLineOnlyCrmMember(env, ctx, uid, null, 'verified_webhook')
+            : (await findHuaxuMemberByLineUidFast(env, uid)).member;
+          if (member?.pointAuthority === 'child' || await createHookTeaPointService(env).wallet(uid)) {
+            if (owner === 'mother_keyword') {
+              const kind = motherSiteKeywordType(event.message?.text);
+              owner = {checkin:'child_daily_alias',register:'child_registration',member_area:'child_member_area',share:'referral'}[kind] || 'silent';
+            } else if (owner === 'mother' || owner === 'member_bind') owner = 'silent';
+          }
+          // Free text must not trigger the mother's AI even for legacy accounts.
+          if (owner === 'mother' && event.type === 'message') owner = 'silent';
+          return {event,owner};
+        } catch (error) {
+          // Identity/storage failure is not permission to fall back to mother.
+          console.error('LINE account routing unavailable', error?.message);
+          return {event,owner:'silent'};
+        }
+      }));
       const motherEvents = routedEvents.filter(item => item.owner.startsWith("mother")).map(item => item.event);
       const localEvents = routedEvents.filter(item => !item.owner.startsWith("mother"));
       const forwardEvents = async (batch) => {
@@ -9599,6 +9712,7 @@ export default {
       if (ctx) ctx.waitUntil(motherTask);
       const releasedEvents = new Set();
       const handleLocalEvent = async ({ event, owner }) => {
+        if (owner === 'silent') return;
         // Selecting an owner is separate from success: a local handler may have
         // spent its reply token or awarded points before returning/throwing.
         let handled = false;
@@ -9612,6 +9726,8 @@ export default {
             else if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event, webhookSettings);
             else if (owner === "checkin_template") handled = await maybeReplyHookTeaCheckinTemplate(env, event, text, template);
             else if (owner === "daily_signin") handled = await handleHookTeaDailySigninReward(env, ctx, event);
+            else if (owner === 'child_daily_alias') handled = await handleHookTeaDailySigninReward(env, ctx,
+              {...event,message:{...event.message,text:HOOKTEA_DAILY_SIGNIN_KEYWORD}});
             else if (owner === "referral") {
               const inviteUrl = buildReferralInviteUrl("2007674851-lQljb6Cm", uid, uid);
               const shareUrl = buildReferralShareUrl("2007674851-lQljb6Cm", uid, uid);
@@ -9626,7 +9742,7 @@ export default {
             } else {
               handled = await handleLineMemberBindText(env, ctx, event);
               // Only an explicit no-match can release ownership to the mother.
-              if (!handled) owner = "mother";
+              if (!handled) owner = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' ? 'silent' : 'mother';
             }
             if (!handled && !owner.startsWith("mother")) {
               await safePutKV(env, "WEBHOOK_EVENT_ERROR_LAST", {

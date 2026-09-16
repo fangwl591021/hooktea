@@ -1,12 +1,15 @@
 import worker from './worker.js';
 import {trackCrmRequest,TRACKING_RELEASE} from './crm-write-tracker.js';
+import {NEW_MEMBER_POINTS_RELEASE} from './new-member-points.js';
 
 export default {
   async fetch(request,env,ctx) {
     const url=new URL(request.url);
     if(request.method==='GET'&&url.pathname==='/api/health')return Response.json({
-      ok:true,service:'hooktea',release:'20260916-member-single-entry-v4',trackingRelease:TRACKING_RELEASE,
+      ok:true,service:'hooktea',release:NEW_MEMBER_POINTS_RELEASE,trackingRelease:TRACKING_RELEASE,
       registrationRelease:'20260916-child-registration-v1',
+      newMemberPointsAuthority:String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS)==='true'?'child':'disabled',
+      legacyPointsAuthority:'unchanged',
     },{headers:{'Cache-Control':'no-store'}});
     if(request.method==='OPTIONS')return worker.fetch(request,env,ctx);
     // GET callbacks may mutate orders too. Do not exempt them as read-only.

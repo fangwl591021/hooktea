@@ -8,6 +8,7 @@ const require = createRequire(process.env.WRANGLER_PACKAGE || import.meta.url);
 const { Miniflare } = require('miniflare'), { build } = require('esbuild');
 const root = new URL('../', import.meta.url), UID = 'U' + 'c'.repeat(32);
 const browserMode = process.argv.includes('--browser');
+const childMode = process.argv.includes('--child');
 const fakeSdk = `window.liff={init:async()=>{},isLoggedIn:()=>true,isInClient:()=>true,getAccessToken:()=>"local-synthetic",getProfile:async()=>({userId:"${UID}",displayName:"本機驗收會員"}),login:()=>{}};`;
 const bundle = await build({stdin:{resolveDir:fileURLToPath(root),contents:`
 import worker from './tracked-worker.js';
@@ -24,7 +25,7 @@ const network=[];
 const mf=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-04-06',
   host:'127.0.0.1',port:browserMode ? 8796 : 0,
   r2Buckets:{'act-image':'isolated-registration'},kvNamespaces:{ACTION_DATA:'isolated-registration'},d1Databases:{DB:'isolated-registration'},
-  bindings:{SHOP_MODULE:'huaxu',LINE_LOGIN_CHANNEL_ID:'2007674851',SHOP_LIFF_ID:'2007674851-test',HOOKTEA_DAILY_SIGNIN_POINTS:'1',WP_SYNC_ENABLED:'false'},
+  bindings:{SHOP_MODULE:'huaxu',LINE_LOGIN_CHANNEL_ID:'2007674851',SHOP_LIFF_ID:'2007674851-test',HOOKTEA_DAILY_SIGNIN_POINTS:'1',WP_SYNC_ENABLED:'false',HOOKTEA_NEW_MEMBER_CHILD_POINTS:String(childMode)},
   outboundService:async request=>{
     const url=new URL(request.url);network.push(url.origin+url.pathname);
     if(url.origin==='https://api.line.me' && url.pathname==='/oauth2/v2.1/verify')return Response.json({client_id:'2007674851',expires_in:3600});
@@ -39,6 +40,10 @@ try {
   }
   const trackingSql=readFileSync(new URL('migrations/0006_crm_write_tracking.sql',root),'utf8').replace(/^--.*$/gm,'').trim();
   for(const statement of trackingSql.split(/;\s*(?=CREATE\s|INSERT\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
+  if(childMode) {
+    const sql=readFileSync(new URL('migrations/0007_new_member_points.sql',root),'utf8').replace(/^--.*$/gm,'').trim();
+    for(const statement of sql.split(/;\s*(?=CREATE\s|INSERT\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
+  }
   await kv.put('SYSTEM_SETTINGS',JSON.stringify({shop_module:'huaxu',shop_liff_id:'2007674851-test',shop_payment_methods:'COD',shop_shipping_fee:0}));
   await kv.put('USERS_INDEX',JSON.stringify([{userId:'unrelated',name:'Existing'}]));
   await kv.put('PRODUCTS',JSON.stringify([{id:'test-tea',name:'本機驗收茶（非正式商品）',price:100,pointsPrice:20,isPublished:true,status:'販賣中'}]));

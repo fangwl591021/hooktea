@@ -4,6 +4,9 @@ compatibility_date = "2026-04-06"
 account_id = "8058cf61f0cd44c4edd78080b193033a"
 
 [vars]
+# New profiles only. Keep enabled after the first child wallet; disabling this
+# is NOT a rollback. Existing accounts keep their original authority for review.
+HOOKTEA_NEW_MEMBER_CHILD_POINTS = "true"
 LINEPAY_ENV = "production"
 LINEPAY_CHANNEL_ID = "2004409296"
 LINEPAY_CURRENCY = "TWD"

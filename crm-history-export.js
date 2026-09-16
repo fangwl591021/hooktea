@@ -42,7 +42,7 @@ async function boundedJson(response,maxBytes=2*1024*1024) {
   const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
   try{return JSON.parse(new TextDecoder().decode(bytes));}catch{throw new Error('CRM_HISTORY_INVALID_JSON');}
 }
-export async function exportCrmPointHistory({access,payload,read,config,fetcher=fetch}) {
+export async function exportCrmPointHistory({access,payload,read,config,fetcher=fetch,readChildHistory}) {
   admin(access);
   const crmId=payload?.crmId,page=payload?.page??1,perPage=payload?.perPage??100;
   if(typeof crmId!=='string'||!crmId||crmId.length>200||!Number.isSafeInteger(page)||page<1||page>10000||
@@ -52,6 +52,16 @@ export async function exportCrmPointHistory({access,payload,read,config,fetcher=
   const member=await read('USER_'+crmId),uids=lineIds(member);
   if(!member||member.userId!==crmId)throw new Error('CRM_HISTORY_MEMBER_MISSING');
   if(uids.length!==1||!uidPattern.test(uids[0]))throw new Error('CRM_HISTORY_LINE_REVIEW_REQUIRED');
+  if(member.pointAuthority==='child') {
+    if(!readChildHistory)throw new Error('CHILD_HISTORY_UNAVAILABLE');
+    const {records,total,balance:currentBalance}=await readChildHistory(member,page,perPage);
+    const balance=page===1?currentBalance:null;
+    const metadata={'pagination.page':page,'pagination.per_page':perPage,'pagination.total':total,
+      'pagination.total_pages':Math.max(1,Math.ceil(total/perPage))};
+    return {crmId,lineUid:uids[0],page,perPage,records,metadata,balance,balanceExplicit:balance!==null,
+      source:'child-d1',readOnly:true,redactions:0,pageHash:await digest({records,metadata,balance}),
+      observedAt:new Date().toISOString(),historyComplete:page===1&&total<=perPage};
+  }
   // Export remains evidence only. Never turns an ambiguous identity into a wallet.
   const {apiKey,shopId,pointType,endpoint}=config||{};
   if(!apiKey||shopId!==35||pointType!=='system_point')throw new Error('CRM_HISTORY_SOURCE_CONFIG_INVALID');
