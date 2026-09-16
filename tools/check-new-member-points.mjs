@@ -31,9 +31,9 @@ let groups=0;
 const pass=s=>{groups++;console.log('PASS '+s);};
 try {
   const db=await mf.getD1Database('DB'),kv=await mf.getKVNamespace('ACTION_DATA'),r2=await mf.getR2Bucket('act-image');
-  for(const file of readdirSync(new URL('migrations/',root)).filter(f=>/^000[1-7]_.*\.sql$/.test(f)).sort()) {
+  for(const file of readdirSync(new URL('migrations/',root)).filter(f=>/^000[1-9]_.*\.sql$/.test(f)).sort()) {
     const sql=readFileSync(new URL('migrations/'+file,root),'utf8').replace(/^--.*$/gm,'').trim();
-    for(const statement of sql.split(/;\s*(?=CREATE\s|INSERT\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
+    for(const statement of sql.split(/;\s*(?=CREATE\s|INSERT\s|DROP\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
   }
   await kv.put('SYSTEM_SETTINGS',JSON.stringify({shop_module:'huaxu',shop_liff_id:'2007674851-test',
     shop_payment_methods:'COD',shop_shipping_fee:0,shop_keyword_reward_keywords:'954e',shop_keyword_reward_points:100}));

@@ -44,7 +44,15 @@ export function createNewMemberPointService({db,mother}) {
   async function get(id) {
     const local=await first('SELECT * FROM child_point_ledger WHERE operation_id=?',id);
     const legacy=await mother.get(id);
-    if(local && legacy)throw Error('CHILD_CROSS_LEDGER_CONFLICT');
+    if(local && legacy) {
+      const review=await first('SELECT * FROM child_empty_account_reviews WHERE operation_id=?',id);
+      if(!review || legacy.status!=='rejected' || legacy.error_code!=='TRANSFERRED_TO_CHILD' ||
+        review.line_uid!==local.member_id || legacy.line_user_id!==local.member_id || legacy.member_uid!==local.member_id ||
+        review.amount!==local.amount || legacy.amount!==local.amount || review.kind!==local.source_kind ||
+        legacy.kind!==local.source_kind || review.reason!==local.reason || legacy.reason!==local.reason ||
+        local.kind!=='reward' || local.business_key!==id || local.actor_id!=='review-transfer:'+review.actor_id)
+        throw Error('CHILD_CROSS_LEDGER_CONFLICT');
+    }
     return local?operation(local):legacy;
   }
   async function read(uid,member,options) {
