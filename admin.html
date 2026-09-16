@@ -168,8 +168,15 @@
                 </div>
 
                 <div v-if="view === 'members'" class="animate-fade-in">
-                    <div class="px-6 py-4 flex gap-3 border-b border-slate-100 bg-white">
+                    <div class="px-6 py-4 flex flex-wrap items-center gap-3 border-b border-slate-100 bg-white">
                         <div class="relative w-full max-w-sm"><i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i><input type="text" v-model="memberSearch" placeholder="搜尋姓名、電話、ID..." class="w-full border border-slate-200 rounded px-9 py-2 text-sm font-bold outline-none focus:border-[#06C755]"></div>
+                        <label for="member-registration-sort" class="flex items-center gap-2 text-sm font-bold text-slate-500">
+                            註冊日期
+                            <select id="member-registration-sort" v-model="memberDateSort" class="border border-slate-200 rounded px-3 py-2 bg-white outline-none focus:border-[#06C755]">
+                                <option value="newest">最近註冊優先</option>
+                                <option value="oldest">最早註冊優先</option>
+                            </select>
+                        </label>
                         <button @click="showDeletedMembers = !showDeletedMembers" class="btn-outline !py-2" :class="showDeletedMembers ? 'text-red-600 border-red-200 bg-red-50' : 'text-slate-500 bg-white'">
                             <i class="fas fa-eye-slash mr-2"></i>{{ showDeletedMembers ? '返回一般名單' : '隱藏名單' }}
                         </button>
@@ -1881,6 +1888,7 @@
                     });
                     
                     const memberSearch = ref('');
+                    const memberDateSort = ref('newest');
                     const showDeletedMembers = ref(false);
                     const courseSearchQuery = ref('');
                     const courseTypeFilter = ref('course');
@@ -2516,16 +2524,32 @@
                         }).sort((a,b) => b.totalOrders - a.totalOrders);
                     });
 
+                    // Sort the displayed calendar date, including legacy US dates.
+                    // Unknown dates stay last; this changes no stored member data.
+                    const memberRegistrationDay = value => {
+                        const text = String(value || '').trim();
+                        const ymd = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?=$|[T\s,])/);
+                        const mdy = !ymd && text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?=$|[\s,])/);
+                        if (!ymd && !mdy) return null;
+                        const [year, month, day] = ymd ? ymd.slice(1).map(Number) : [Number(mdy[3]), Number(mdy[1]), Number(mdy[2])];
+                        if (year < 1000 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+                        const stamp = Date.UTC(year, month - 1, day), date = new Date(stamp);
+                        return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? stamp : null;
+                    };
                     const filteredMembers = computed(() => {
                         const visibleUsers = users.value.filter(u => u && (showDeletedMembers.value ? u.isDeleted === true : u.isDeleted !== true));
-                        if (!memberSearch.value) return visibleUsers;
                         const q = memberSearch.value.toLowerCase();
-                        return visibleUsers.filter(u => {
+                        const matches = !q ? visibleUsers : visibleUsers.filter(u => {
                             const haystack = [u.name, u.displayName, u.lineDisplayName, u.phone, u.mobile, u.tel, u.userId, u.legacyMemberId, u.lineUserId, u.linkedLineUid, u.bindingStatus, u.crmBindingStatus, u.memberTier, u.industry, normalizedMemberTags(u).join(' ')]
                                 .map(v => String(v || '').toLowerCase())
                                 .join(' ');
                             return haystack.includes(q);
                         });
+                        return matches.map((member, index) => ({ member, index, day: memberRegistrationDay(member.createdAt) }))
+                            .sort((a, b) => {
+                                if (a.day === null || b.day === null) return a.day === b.day ? a.index - b.index : a.day === null ? 1 : -1;
+                                return (memberDateSort.value === 'oldest' ? a.day - b.day : b.day - a.day) || a.index - b.index;
+                            }).map(row => row.member);
                     });
 
                     const filteredAdminCourses = computed(() => {
@@ -4700,7 +4724,7 @@
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
-                        memberSearch, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
+                        memberSearch, memberDateSort, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
                         orderSearch, orderTypeFilter, filteredOrders, cartActivitySearch, cartActivityStatus, loadCartActivity, cartActivityStatusText, cartActivityStatusClass, cartActivitySummaryText, bookingReportSearch, bookingReportStatus, filteredBookingReportRows, bookingReportSummary, pointsLedgerSearch, filteredPointsLedger, pointsLedgerSummary, auditLogSearch, filteredAuditLogs,
                         flexRuleSearch, flexRuleTypeFilter, flexRuleStatusFilter, flexRulePage, flexRuleTotalPages, filteredFlexRules, pagedFlexRules,
                         newBroadcastTag, selectedBroadcastTag, broadcastMemberSearch, broadcastSelectedModuleIds, broadcastForm, memberTierOptions, newMemberTag, memberTagOptions, audienceTagOptions, normalizedMemberTags, activeMemberHasTag, toggleActiveMemberTag, addActiveMemberTag, removeActiveMemberTag, broadcastAudiencePreview, filteredBroadcastMembers, memberBroadcastTags, memberHasBroadcastTag, broadcastAudienceHasTag, toggleBroadcastAudienceTag, activeMemberHasBroadcastTag, toggleActiveMemberBroadcastTag, broadcastTagCount, broadcastModuleOptions, broadcastMessageCount,
