@@ -9,6 +9,7 @@ import { createPointService } from './point-service.js';
 import { createNewMemberPointService } from './new-member-points.js';
 import { reportIssue, observePointService, alertStatus, enqueueAlert } from './operational-alerts.js';
 import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
+import {createLegacyPointTransfer, renderLegacyTransferPage} from './legacy-point-transfer.js';
 
 const utils = {
   hexToBytes: (hex) => {
@@ -2365,7 +2366,32 @@ function createHookTeaPointService(env) {
     },
   });
   return observePointService(String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true'
-    ? createNewMemberPointService({ db: env.DB, mother }) : mother, env);
+    ? createNewMemberPointService({ db: env.DB, mother, legacyTransfers:String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true' }) : mother, env);
+}
+
+function legacyTransferService(env,access) {
+  if(String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)!=='true')throw Error('LEGACY_TRANSFER_DISABLED');
+  const config=getWetwConfig(access.settings||{},env);
+  const read=async key=>{
+    if(key==='USERS_INDEX'||key.startsWith('USER_'))return readCrmExportSource(env,key);
+    const liveKey=getHighRiskLiveKey(key),o=liveKey?await getDataBucket(env).get(liveKey):null;
+    return o?o.json():env.ACTION_DATA.get(key,'json');
+  };
+  return createLegacyPointTransfer({db:env.DB,bucket:getDataBucket(env),read,
+    historyPage:(crmId,page,perPage)=>exportCrmPointHistory({access,payload:{crmId,page,perPage},read,
+      config:{...config,endpoint:getWetwPointUrl(access.settings||{},'query',env)}}),
+    project:async(member,receipt)=>{
+      const key=getHighRiskLiveKey('USER_'+member.userId),bucket=getDataBucket(env),object=await bucket.get(key);
+      const current=object?await object.json():await env.ACTION_DATA.get('USER_'+member.userId,'json');
+      if(current?.crmCanonicalReviewId!==receipt.identity_review_id||getMemberLineUid(current)!==receipt.line_uid)
+        throw Error('TRANSFER_PROFILE_CHANGED');
+      const updated={...current,pointAuthority:'child',pointEnrollmentId:'legacy-transfer:'+receipt.review_id,
+        pointTransferId:receipt.review_id,pointTransferredAt:receipt.observed_at};
+      if(!await bucket.put(key,JSON.stringify(updated),{onlyIf:object?{etagMatches:object.etag}:{etagDoesNotMatch:'*'},
+        httpMetadata:{contentType:'application/json'}}))throw Error('TRANSFER_PROFILE_CONCURRENT');
+      await env.ACTION_DATA.put('USER_'+member.userId,JSON.stringify(updated));
+      await bucket.put('live/child-crm/'+member.userId+'.json',JSON.stringify({userId:member.userId}));
+    }});
 }
 
 async function assertNewChildCrmIdentity(env, memberUid, lineUid) {
@@ -3022,6 +3048,8 @@ async function readCrmExportSource(env, key) {
 
 async function queryWetwPointList(settings, member, env = {}) {
   if (member?.pointAuthority === 'child') return {ok:false,reason:'CHILD_AUTHORITY_REQUIRED'};
+  if(String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true'&&await createHookTeaPointService(env).fence(getMemberLineUid(member)))
+    return {ok:false,reason:'CHILD_AUTHORITY_REQUIRED'};
   const cfg = getWetwConfig(settings, env);
   if (!cfg.enabled) return { ok: false, reason: "wp_disabled", message: "WordPress 點數同步目前未啟用。" };
   if (!cfg.apiKey || !cfg.shopId) return { ok: false, reason: "missing_credentials", message: "缺少 WordPress API Key 或 shop_id。" };
@@ -3115,6 +3143,8 @@ function validateHookTeaRewardSettings(settings, template) {
 }
 
 async function insertWetwPoint(settings, uid, amount, reason, env = {}, member = null) {
+  if(String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true'&&await createHookTeaPointService(env).fence(getMemberLineUid(member,uid)))
+    throw Error('CHILD_AUTHORITY_REQUIRED');
   if (member?.pointAuthority === 'child') throw new Error('CHILD_AUTHORITY_REQUIRED');
   const cfg = getWetwConfig(settings, env);
   const lineUid = getMemberLineUid(member, String(uid || "").startsWith("U") ? uid : "");
@@ -5389,7 +5419,7 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
   const localPoints = pointLookup.data;
   const orders = await getHuaxuShopOrders(env);
   const memberOrders = orders.filter(order => huaxuOrderOwnedBy(order, { lineUid, memberUid }));
-  const displayPoints = await readAuthoritativePoints(env, lineUid, safeMember, 10);
+  const displayPoints = await readAuthoritativePoints(env, lineUid, member || safeMember, 10);
   return json({
     ok: true,
     bound: !!member,
@@ -7578,6 +7608,11 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
     const url = new URL(request.url);
+    if(request.method==='GET'&&url.pathname==='/admin.html'&&url.searchParams.get('pointTransfer')==='1') {
+      const settings=await safeGetKV(env,'SYSTEM_SETTINGS',{});
+      return new Response(renderLegacyTransferPage(getCrmLiffId(env,settings)),{headers:{
+        'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'}});
+    }
     if (request.method === 'GET' && url.pathname === '/admin.html' && url.searchParams.get('pointExport') === '1') {
       const settings = await safeGetKV(env, 'SYSTEM_SETTINGS', {});
       return new Response(renderCrmPointExportPage(getCrmLiffId(env, settings)), { headers: {
@@ -7691,7 +7726,7 @@ export default {
       }
 
       const access = await resolveAccess(env, claimedUserId, payload, idToken, accessToken,
-        { readOnlyProfile: ['ADMIN_EXPORT_POINT_ROSTER', 'ADMIN_EXPORT_POINT_HISTORY_PAGE'].includes(action) });
+        { readOnlyProfile: ['ADMIN_EXPORT_POINT_ROSTER', 'ADMIN_EXPORT_POINT_HISTORY_PAGE','ADMIN_PREPARE_LEGACY_TRANSFER','ADMIN_ACTIVATE_LEGACY_TRANSFER','ADMIN_CANCEL_LEGACY_TRANSFER'].includes(action) });
       if (access.identityConflict) return json({ status: "error", code: "MEMBER_IDENTITY_REVIEW_REQUIRED", message: "會員綁定資料需要確認，請聯絡客服" }, 409);
       if (access.identityMismatch) return json({ status: "error", code: "LINE_IDENTITY_MISMATCH", message: "會員身分不一致，請重新登入" }, 403);
       const userId = access.userId;
@@ -7739,9 +7774,23 @@ export default {
         case 'ADMIN_EXPORT_POINT_HISTORY_PAGE': {
           const config = getWetwConfig(access.settings || {}, env);
           result.data = await exportCrmPointHistory({ access, payload,
-            read: key => readCrmExportSource(env, key),
+            read: async key => {
+              const value=await readCrmExportSource(env,key);
+              if(key.startsWith('USER_')&&String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true'&&
+                await createHookTeaPointService(env).wallet(value?.userId))return {...value,pointAuthority:'child'};
+              return value;
+            },
             readChildHistory: (member,page,perPage) => createHookTeaPointService(env).history(member,page,perPage),
             config: { ...config, endpoint: getWetwPointUrl(access.settings || {}, 'query', env) } });
+          break;
+        }
+        case 'ADMIN_PREPARE_LEGACY_TRANSFER':
+        case 'ADMIN_ACTIVATE_LEGACY_TRANSFER':
+        case 'ADMIN_CANCEL_LEGACY_TRANSFER': {
+          if(!access.isAdmin)throw Error('Admin authorization required');
+          const service=legacyTransferService(env,access);
+          result.data=action==='ADMIN_PREPARE_LEGACY_TRANSFER'?await service.prepare(access,payload?.crmId):
+            action==='ADMIN_CANCEL_LEGACY_TRANSFER'?await service.cancel(access,payload?.crmId):await service.activate(access,payload);
           break;
         }
         case "CHECK_UPDATES":
@@ -9691,7 +9740,9 @@ export default {
           const member = ['follow','message'].includes(event.type)
             ? await ensureLineOnlyCrmMember(env, ctx, uid, null, 'verified_webhook')
             : (await findHuaxuMemberByLineUidFast(env, uid)).member;
-          if (member?.pointAuthority === 'child' || await createHookTeaPointService(env).wallet(uid)) {
+          const pointService=createHookTeaPointService(env);
+          if (member?.pointAuthority === 'child' || await pointService.wallet(uid) ||
+              (String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true'&&await pointService.fence(uid))) {
             if (owner === 'mother_keyword') {
               const kind = motherSiteKeywordType(event.message?.text);
               owner = {checkin:'child_daily_alias',register:'child_registration',member_area:'child_member_area',share:'referral'}[kind] || 'silent';

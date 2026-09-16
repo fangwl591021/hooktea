@@ -110,7 +110,8 @@ export async function exportCrmPointHistory({access,payload,read,config,fetcher=
         metadata[group+'.'+key]=value[key];
   }
   const rawBalance=page===1?(data.data.point_balance??data.data.balance??records.find(r=>r.point_balance!=null)?.point_balance):null;
-  const balance=rawBalance!=null&&rawBalance!==''&&Number.isSafeInteger(Number(rawBalance))&&Number(rawBalance)>=0?Number(rawBalance):null;
+  const numeric=typeof rawBalance==='number'||(typeof rawBalance==='string'&&/^\d+$/.test(rawBalance));
+  const balance=numeric&&Number.isSafeInteger(Number(rawBalance))&&Number(rawBalance)>=0?Number(rawBalance):null;
   return {crmId,lineUid:uids[0],shopId,pointType,page,perPage,records,metadata,balance,balanceExplicit:balance!==null,
     responseFields:Object.keys(data.data),source:'mother',readOnly:true,redactions,
     pageHash:await digest({records,metadata,balance}),observedAt:new Date().toISOString(),historyComplete:false};

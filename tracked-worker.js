@@ -10,9 +10,11 @@ export default {
       ok:true,service:'hooktea',release:NEW_MEMBER_POINTS_RELEASE,trackingRelease:TRACKING_RELEASE,
       registrationRelease:'20260916-child-registration-v1',
       newMemberPointsAuthority:String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS)==='true'?'child':'disabled',
-      legacyPointsAuthority:'unchanged',
+      legacyPointsAuthority:String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true'?'per-account':'unchanged',
       reviewedEmptyAccountRelease:'20260916-reviewed-empty-v1',
       reviewedLegacyBindingRelease:'20260916-reviewed-legacy-v1',
+      legacyTransferRelease:'20260917-reviewed-legacy-transfer-v1',
+      legacyTransferEnabled:String(env.HOOKTEA_LEGACY_TRANSFER_ENABLED)==='true',
       alertRelease:ALERT_RELEASE,telegramAlertsEnabled:String(env.HOOKTEA_TELEGRAM_ALERTS)==='true',
     },{headers:{'Cache-Control':'no-store'}});
     if(request.method==='OPTIONS')return worker.fetch(request,env,ctx);
