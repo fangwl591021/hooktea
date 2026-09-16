@@ -22,7 +22,7 @@ const message = (text, id = text) => ({ type: "message", webhookEventId: id, rep
 const follow = { type: "follow", webhookEventId: "follow-new", replyToken: "reply-follow", source: { userId: "U-new" } };
 
 function harness(options = {}) {
-  const calls = { reward: [], daily: [], template: [], bind: [], monitor: [], referral: [], fetch: [], diagnostics: new Map(), errors: [] };
+  const calls = { registration: [], reward: [], daily: [], template: [], bind: [], monitor: [], referral: [], fetch: [], diagnostics: new Map(), errors: [] };
   const env = { LINE_CHANNEL_SECRET: secret, FORWARD_WEBHOOK_URL: "https://mother.invalid/webhook", ...(options.env || {}) };
   const runLocal = name => async (...args) => {
     const event = args[2] || args[1];
@@ -36,6 +36,7 @@ function harness(options = {}) {
     console: { error: (...args) => calls.errors.push(args) },
     getLineChannelSecret: env => env.LINE_CHANNEL_SECRET,
     getLineChannelAccessToken: () => "configured",
+    getHuaxuShopConfig: async () => ({ shopLiffId: "2007674851-test" }),
     safeGetKV: async () => ({ shop_keyword_reward_points: 100, shop_keyword_reward_keywords: (options.rewardKeywords || ["954e"]).map(actualText).join(",") }),
     safePutKV: async (_, key, value) => {
       calls.diagnostics.set(key, value);
@@ -58,7 +59,12 @@ function harness(options = {}) {
     buildReferralInviteUrl: () => "https://shop.invalid/invite",
     buildReferralShareUrl: () => "https://shop.invalid/share",
     referralShareFlexMessage: args => args,
-    replyLineMessage: async (_, replyToken) => {
+    replyLineMessage: async (_, replyToken, messages) => {
+      if (messages?.[0]?.text?.includes("會員註冊")) {
+        calls.registration.push({ replyToken, messages });
+        if (options.registrationError) throw Error("synthetic registration reply failure");
+        return { ok: true };
+      }
       calls.referral.push(replyToken);
       return { ok: true };
     },
@@ -228,7 +234,9 @@ test("all reserved mother commands survive overlapping child reward and template
   const h = harness({ rewardKeywords: keywords, templateKeywords: keywords });
   await h.post(keywords.map(text => message(text)));
   assert.equal(h.calls.reward.length + h.calls.template.length + h.calls.bind.length, 0);
-  assert.deepEqual(forwardedIds(h.calls.fetch[0]), keywords);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), keywords.filter(text => text !== "會員註冊"));
+  assert.equal(h.calls.registration.length, 1);
+  assert.match(h.calls.registration[0].messages[0].text, /open=register/);
 });
 
 test("exact template, actual daily claim and numeric reward all work in one batch", async () => {
@@ -331,6 +339,13 @@ test("postbacks and non-text events remain mother-owned alongside local keywords
   await h.post([message("954e"), postback, photo, follow]);
   assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["postback", "photo", "follow-new"]);
   assert.equal(h.calls.reward.length, 1);
+});
+
+test("child registration reply failure never releases its event or duplicates a mother's reply", async () => {
+  const h=harness({registrationError:true});
+  await h.post([message('會員註冊','registration'),message('會員專區','area'),message('daily','daily')]);
+  assert.equal(h.calls.registration.length,1);assert.equal(h.calls.daily.length,1);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]),['area']);assert.equal(h.calls.fetch.length,1);
 });
 
 const filter = process.argv.find(arg => arg.startsWith("--filter="))?.slice(9);

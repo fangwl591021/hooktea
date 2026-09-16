@@ -42,7 +42,7 @@ function storefront({ local = {}, session = {}, search = "", request = null, log
     calls.push({ url, options });
     const response = request ? await request(url, options) : null;
     if (response) return { status: response.status || 200, ok: (response.status || 200) < 400, json: async () => response.body };
-    const body = url === "/api/huaxu/config" ? {} : url === "/api/huaxu/products" ? [{ id: "tea", price: 300, name: "茶", pointsPrice: 300 }] : url === "/api/huaxu/member" ? { ok: true, lineUserId: uid, memberUid: uid, bound: true, member: {}, points: { balance: 100, source: "wetw", shared: { ok: true }, logs: [] }, orders: { count: 0, latest: [] } } : { ok: true };
+    const body = url === "/api/huaxu/config" ? {} : url === "/api/huaxu/products" ? [{ id: "tea", price: 300, name: "茶", pointsPrice: 300 }] : url === "/api/huaxu/member" ? { ok: true, lineUserId: uid, memberUid: uid, bound: true, member: { registrationStatus: "registered" }, points: { balance: 100, source: "wetw", shared: { ok: true }, logs: [] }, orders: { count: 0, latest: [] } } : { ok: true };
     return { status: 200, ok: true, json: async () => body };
   };
   const sandbox = {
@@ -227,6 +227,29 @@ test("checkout key is stable on retries but renewed for the next identical purch
   assert.equal(app.run('buildClientOrderKey({name:"A",phone:"0912345678"})'), first);
   app.run('clearCheckoutDraft()');
   assert.notEqual(app.run('buildClientOrderKey({name:"A",phone:"0912345678"})'), first);
+});
+
+test("pending registration permits points and signin but blocks checkout while preserving cart and draft", async () => {
+  const app = storefront({local:{huaxu_cart:cart,huaxu_points_used:'10'}}); await app.ready();app.fill();
+  app.run('memberData.member.registrationStatus="pending"');
+  assert.equal(app.run('requireReadyMember()'),true);
+  await app.run('dailyCheckin()');
+  assert.ok(app.calls.some(call=>call.url==='/api/huaxu/checkin'));
+  app.run('memberData.member.registrationStatus="pending"');
+  await app.run('checkout()');
+  assert.equal(app.calls.filter(call=>call.url==='/api/huaxu/orders').length,0);
+  assert.equal(app.run('memberEditMode'),true);
+  assert.equal(app.run('cart.length'),1);assert.equal(app.run('pointDeduction'),10);
+  assert.equal(JSON.parse(app.localStorage.getItem(userKey)).fields.name,fields.name);
+  assert.match(app.run('renderProfileDetail()'),/完成會員註冊/);
+});
+
+test("keyword registration deep link opens same member form after verified login", async () => {
+  const app=storefront({search:'?open=register'}); await app.ready();
+  app.run('memberData.member.registrationStatus="pending"; openRegistration()');
+  assert.equal(app.run('activeMemberSection'),'個人基本資料');assert.equal(app.run('memberEditMode'),true);
+  app.run('memberData.member.registrationStatus="registered"; openRegistration()');
+  assert.equal(app.run('memberEditMode'),false);
 });
 
 test("unavailable points preserve the intended discount and prevent silently ordering at full price", async () => {

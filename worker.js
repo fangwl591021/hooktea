@@ -810,6 +810,72 @@ async function putUserKV(env, ctx, uid, user) {
   else await observeHighRiskDualWrite(env, null, "users");
 }
 
+function childRegistrationStatus(member = {}) {
+  if (member.registrationStatus === "registered") return "registered";
+  if (member.registrationStatus === "pending") return "pending";
+  // Existing complete profiles remain registered; simply having a UID is not registration.
+  return String(member.name || member.displayName || "").trim()
+    && /^09\d{8}$/.test(normalizeMemberPhone(member.phone || member.mobile || member.tel || member.memberPhone))
+    ? "registered" : "pending";
+}
+
+async function writeVerifiedCrmProfile(env, ctx, memberUid, lineUid, build) {
+  const bucket = getDataBucket(env);
+  if (!bucket) throw new Error("CRM_STORAGE_UNAVAILABLE");
+  const key = getHighRiskLiveKey(`USER_${memberUid}`);
+  // Conditional writes prevent an overlapping login from replacing completed registration.
+  // Strict reads deliberately do not turn a storage failure into a new empty profile.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const object = await bucket.get(key);
+    const raw = object ? await object.text() : await env.ACTION_DATA.get(`USER_${memberUid}`);
+    const current = raw ? JSON.parse(raw) : null;
+    if (current && !isTrustedHuaxuMemberBinding(current, memberUid, lineUid)) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
+    const next = build(current);
+    if (!object || next !== current) {
+      const saved = await bucket.put(key, JSON.stringify(next), {
+        onlyIf: object ? { etagMatches: object.etag } : { etagDoesNotMatch: "*" },
+        httpMetadata: { contentType: "application/json; charset=utf-8" },
+      });
+      if (!saved) continue;
+    }
+    // R2 is authoritative. Refresh projections even on a repeated login after a partial failure.
+    await bucket.put(`live/child-crm/${encodeURIComponent(memberUid)}.json`, JSON.stringify({ userId: memberUid }));
+    await env.ACTION_DATA.put(`USER_${memberUid}`, JSON.stringify(next)).catch(() => console.error("CRM KV projection failed"));
+    await updateUsersIndexRecord(env, next);
+    if (ctx) observeHighRiskDualWrite(env, ctx, "users");
+    return next;
+  }
+  throw new Error("CRM_PROFILE_BUSY");
+}
+
+async function overlayChildCrmProfiles(env, users) {
+  const bucket = getDataBucket(env);
+  if (!bucket) return users;
+  const byId = new Map(users.map(user => [user.userId, user]));
+  let cursor;
+  do {
+    const page = await bucket.list({ prefix: "live/child-crm/", cursor });
+    for (let start = 0; start < page.objects.length; start += 20) {
+      await Promise.all(page.objects.slice(start, start + 20).map(async marker => {
+        const uid = decodeURIComponent(marker.key.slice("live/child-crm/".length).replace(/\.json$/, ""));
+        const object = await bucket.get(getHighRiskLiveKey(`USER_${uid}`));
+        if (!object) throw new Error("CRM_PROFILE_MISSING");
+        const member = JSON.parse(await object.text());
+        if (member.userId !== uid) throw new Error("CRM_PROFILE_IDENTITY_CONFLICT");
+        byId.set(uid, member);
+      }));
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return [...byId.values()];
+}
+
+function childRegistrationError(error) {
+  const conflict = error?.message === "MEMBER_IDENTITY_REVIEW_REQUIRED";
+  return json({ ok: false, code: conflict ? "MEMBER_IDENTITY_REVIEW_REQUIRED" : "CRM_PROFILE_RETRY_REQUIRED",
+    message: conflict ? "會員身分資料需要核對，請聯絡客服" : "會員資料暫時無法儲存，請稍後重試；尚未完成註冊" }, conflict ? 409 : 503);
+}
+
 async function putPointKV(env, ctx, uid, pointData) {
   await safePutKV(env, `POINTS_${uid}`, pointData || { balance: 0, logs: [] });
   await updatePointsIndexRecord(env, uid, pointData || { balance: 0, logs: [] });
@@ -1657,7 +1723,7 @@ async function importWpProductsFromActionEndpoint(siteUrl, postIds, authHeader) 
 
 async function listUserRecords(env) {
   const indexedUsers = await safeGetKV(env, "USERS_INDEX", []);
-  if (Array.isArray(indexedUsers) && indexedUsers.length) return indexedUsers.filter(user => user && user.userId);
+  if (Array.isArray(indexedUsers) && indexedUsers.length) return overlayChildCrmProfiles(env, indexedUsers.filter(user => user && user.userId));
 
   const users = [];
   try {
@@ -1683,7 +1749,7 @@ async function listUserRecords(env) {
   } catch (e) {
     console.error("[UserList] Failed to load user records", e);
   }
-  return users;
+  return overlayChildCrmProfiles(env, users);
 }
 
 function userScore(user) {
@@ -2451,9 +2517,12 @@ async function sendTelegramNotification(env, text, settings = null) {
 async function ensureFastLineCheckinMember(env, ctx, lineUid, profile = null, source = "mother_keyword_checkin_fast") {
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return { memberUid: "", member: null };
-  const resolved = await findHuaxuMemberByLineUidFast(env, uid);
+  const resolved = await findHuaxuMemberByLineUid(env, uid);
   if (resolved.identityConflict) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
-  if (resolved.member) return resolved;
+  if (resolved.member) {
+    if (resolved.member.registrationStatus) resolved.member = await writeVerifiedCrmProfile(env, ctx, resolved.memberUid, uid, current => current || resolved.member);
+    return resolved;
+  }
   let lineProfile = profile;
   if (!lineProfile || (!lineProfile.displayName && !lineProfile.name && !lineProfile.pictureUrl && !lineProfile.picture)) {
     lineProfile = await fetchLineBotProfile(env, uid).catch(() => profile || {});
@@ -2475,13 +2544,14 @@ async function ensureFastLineCheckinMember(env, ctx, lineUid, profile = null, so
     tel: "",
     memberTier: "\u4e00\u822c\u6703\u54e1",
     crmBindingStatus: "LINE_ONLY_PENDING_LEGACY",
+    registrationStatus: "pending",
     bindingStatus: "LINE \u5f85\u7d81\u5b9a",
     source,
     createdAt: now.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" }),
     updatedAt: now.toISOString(),
   };
-  await putUserKV(env, ctx, uid, member);
-  return { memberUid: uid, member, binding: null };
+  const saved = await writeVerifiedCrmProfile(env, ctx, uid, uid, current => current || member);
+  return { memberUid: uid, member: saved, binding: null };
 }
 
 async function ensureCrmMemberWithAiMatch(env, ctx, lineUid, source = "mother_keyword_fallback") {
@@ -3201,7 +3271,7 @@ async function requireHuaxuIdentity(request, env, payload = {}) {
     if (!/^U[a-f0-9]{32}$/i.test(lineUid)) return reject(401, "LINE_LOGIN_INVALID", "LINE 登入驗證失敗，請重新登入");
     const claimed = [payload?.lineUserId, payload?.lineProfile?.userId].map(value => String(value || "").trim()).filter(Boolean);
     if (claimed.some(uid => uid !== lineUid)) return reject(403, "LINE_IDENTITY_MISMATCH", "會員身分不一致，請重新登入");
-    const resolved = await findHuaxuMemberByLineUidFast(env, lineUid);
+    const resolved = await findHuaxuMemberByLineUid(env, lineUid);
     if (resolved.identityConflict) return reject(409, "MEMBER_IDENTITY_REVIEW_REQUIRED", "會員綁定資料需要確認，請聯絡客服");
     return { ok: true, lineUid, profile, memberUid: resolved.memberUid || lineUid, member: resolved.member || null, binding: resolved.binding || null };
   } catch (error) {
@@ -4227,9 +4297,20 @@ function isLineMemberBindInput(text) {
     || /^(?:09|\+?886[ -]?9)[\d -]+$/.test(value);
 }
 
+async function replyChildRegistration(env, event) {
+  const settings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+  const config = await getHuaxuShopConfig(env);
+  const liffId = String(config.shopLiffId || settings.shop_liff_id || env.SHOP_LIFF_ID || "2007674851-ijenzSk8").trim();
+  const url = `https://liff.line.me/${encodeURIComponent(liffId)}?open=register`;
+  await replyLineMessage(env, event.replyToken, [{ type: "text", text:
+    "請由此進入虎克茶會員註冊：\n" + url + "\n登入後補上姓名與手機即可完成。尚未完成註冊也能使用點數功能；網路購物前才需要完成註冊。" }]);
+  return true;
+}
+
 function selectLineWebhookEventOwner(event, settings, template) {
   if (event?.type !== "message" || event?.message?.type !== "text") return "mother";
   const text = String(event.message.text || "").trim();
+  if (text === "會員註冊") return "child_registration";
   // Reserve mother commands and the actual daily claim before configurable
   // campaign keywords, so configuration overlap cannot replace either flow.
   if (isMotherSiteKeyword(text)) return "mother_keyword";
@@ -5010,7 +5091,11 @@ async function findHuaxuMemberByLineUid(env, lineUid) {
   const resolved = await findHuaxuMemberByLineUidFast(env, uid);
   if (resolved.member || resolved.identityConflict) return resolved;
   const binding = resolved.binding;
-  const users = await listKVRecords(env, "USER_");
+  const indexRaw = await env.ACTION_DATA.get("USERS_INDEX");
+  const index = indexRaw ? JSON.parse(indexRaw) : [];
+  const users = Array.isArray(index) && index.length
+    ? index.map(data => ({ key: `USER_${data.userId}`, data }))
+    : await listKVRecords(env, "USER_");
   const matching = users.filter(row => {
     const member = row?.data || {};
     return [member.lineUserId, member.linkedLineUid, member.lineUid, member.userId]
@@ -5020,8 +5105,12 @@ async function findHuaxuMemberByLineUid(env, lineUid) {
   if (matching.length > 1) return { memberUid: uid, member: null, binding, identityConflict: true };
   const found = matching[0];
   if (!found?.data) return { memberUid: uid, member: null, binding };
-  if (!isTrustedHuaxuMemberBinding(found.data, String(found.key || "").replace(/^USER_/, ""), uid, binding)) return { memberUid: uid, member: null, binding, identityConflict: true };
-  return { memberUid: found.data.userId || String(found.key || "").replace(/^USER_/, ""), member: found.data, binding };
+  const memberUid = String(found.key || "").replace(/^USER_/, "");
+  const object = await getDataBucket(env)?.get(getHighRiskLiveKey(found.key));
+  const raw = object ? await object.text() : await env.ACTION_DATA.get(found.key);
+  const member = raw ? JSON.parse(raw) : null;
+  if (!isTrustedHuaxuMemberBinding(member, memberUid, uid, binding)) return { memberUid: uid, member: null, binding, identityConflict: true };
+  return { memberUid, member, binding };
 }
 
 async function findHuaxuMemberByLineUidFast(env, lineUid) {
@@ -5098,7 +5187,7 @@ async function repairHuaxuLineBindingInBackground(env, ctx, lineUid, profile = n
 async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source = "line_interaction") {
   const uid = String(lineUid || "").trim();
   if (!uid || !uid.startsWith("U")) return null;
-  const resolved = await findHuaxuMemberByLineUid(env, uid).catch(() => ({ memberUid: uid, member: null }));
+  const resolved = await findHuaxuMemberByLineUid(env, uid);
   if (resolved.identityConflict) throw new Error("MEMBER_IDENTITY_REVIEW_REQUIRED");
   if (resolved?.member) return resolved.member;
   let lineProfile = profile;
@@ -5122,13 +5211,13 @@ async function ensureLineOnlyCrmMember(env, ctx, lineUid, profile = null, source
     tel: "",
     memberTier: "一般會員",
     crmBindingStatus: "LINE_ONLY_PENDING_LEGACY",
+    registrationStatus: "pending",
     bindingStatus: "LINE 待綁定",
     source,
     createdAt: now.toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" }),
     updatedAt: now.toISOString(),
   };
-  await putUserKV(env, ctx, uid, member);
-  return member;
+  return writeVerifiedCrmProfile(env, ctx, uid, uid, current => current || member);
 }
 
 async function handleHuaxuMemberProfile(request, env, ctx = null) {
@@ -5138,18 +5227,18 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
   const verifiedProfile = identity.profile;
   const lineUid = identity.lineUid;
   let resolved = identity;
-  if (ctx) ctx.waitUntil(repairHuaxuLineBindingInBackground(env, ctx, lineUid, verifiedProfile || payload.lineProfile || {}).catch(error => console.error("Huaxu LINE binding repair failed", error)));
   let memberUid = resolved.memberUid || lineUid;
   let member = resolved.member || null;
-  if (!member) {
-    const lineOnlyMember = await ensureFastLineCheckinMember(env, ctx, lineUid, verifiedProfile || payload.lineProfile || {}, "huaxu_shop_liff_fast").catch(() => null);
+  {
+    let lineOnlyMember;
+    try { lineOnlyMember = await ensureFastLineCheckinMember(env, ctx, lineUid, verifiedProfile, "huaxu_shop_liff_fast"); }
+    catch (error) { return childRegistrationError(error); }
     if (lineOnlyMember?.member) {
       member = lineOnlyMember.member;
       memberUid = lineOnlyMember.memberUid || lineOnlyMember.member.userId || lineUid;
       resolved = { ...resolved, memberUid, member };
     }
   }
-  if (member && memberUid !== lineUid) await mergePointDataForLineBind(env, ctx, memberUid, lineUid).catch(() => null);
   const registeredShipping = registeredShippingFromMember(member || {});
   const pointLookup = await getPointDataForUid(env, memberUid, { balance: 0, logs: [] });
   const pointUid = pointLookup.pointUid;
@@ -5175,6 +5264,7 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
     pictureUrl: member.pictureUrl || member.avatar || verifiedProfile?.picture || "",
     createdAt: member.createdAt || "",
     updatedAt: member.updatedAt || "",
+    registrationStatus: childRegistrationStatus(member),
   } : {
     userId: lineUid,
     lineUserId: lineUid,
@@ -5192,6 +5282,7 @@ async function handleHuaxuMemberProfile(request, env, ctx = null) {
     industry: "",
     memberTier: "一般會員",
     pictureUrl: verifiedProfile?.picture || payload.lineProfile?.pictureUrl || "",
+    registrationStatus: "pending",
   };
   const displayPoints = await readAuthoritativePoints(env, lineUid, safeMember, 10);
   return json({
@@ -5271,20 +5362,33 @@ async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
   if (!identity.ok) return identity.response;
   const verifiedProfile = identity.profile;
   const lineUid = identity.lineUid;
-  const resolved = identity;
+  let resolved = identity;
+  if (!resolved.member) {
+    try { resolved = await ensureFastLineCheckinMember(env, ctx, lineUid, verifiedProfile, "huaxu_shop_liff_fast"); }
+    catch (error) { return childRegistrationError(error); }
+  }
   const memberUid = resolved.memberUid || lineUid;
   const profile = payload.profile || payload.member || {};
   const phone = normalizeMemberPhone(profile.phone || profile.mobile || profile.tel || profile.memberPhone || "");
+  const name = String(profile.name || profile.displayName || "").trim();
+  if (!name || name.length > 80 || !/^09\d{8}$/.test(phone)) {
+    return json({ ok: false, code: "REGISTRATION_FIELDS_REQUIRED", message: "請填寫姓名（80 字內）與有效的 10 碼手機號碼" }, 400);
+  }
+  if (profile.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(profile.email).trim())) {
+    return json({ ok: false, code: "REGISTRATION_FIELDS_INVALID", message: "請確認 Email 格式，或留空" }, 400);
+  }
   const now = new Date().toISOString();
-  const current = resolved.member || {};
-  const nextMember = {
+  let nextMember;
+  try { nextMember = await writeVerifiedCrmProfile(env, ctx, memberUid, lineUid, existing => {
+    const current = existing || resolved.member || {};
+    return {
     ...current,
     userId: current.userId || memberUid,
     lineUserId: current.lineUserId || lineUid,
     linkedLineUid: current.linkedLineUid || lineUid,
     lineDisplayName: verifiedProfile?.name || profile.displayName || current.lineDisplayName || "",
     displayName: String(profile.displayName || profile.name || current.displayName || verifiedProfile?.name || "").trim(),
-    name: String(profile.name || profile.displayName || current.name || verifiedProfile?.name || "").trim(),
+    name,
     phone,
     mobile: phone,
     gender: String(profile.gender || current.gender || "").trim().slice(0, 20),
@@ -5297,15 +5401,11 @@ async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
     createdAt: current.createdAt || now,
     updatedAt: now,
     source: current.source || "huaxu_shop_member",
-  };
-  await putUserKV(env, ctx, memberUid, nextMember);
-  await safePutKV(env, `LINE_BIND_${lineUid}`, {
-    lineUserId: lineUid,
-    legacyUserId: memberUid,
-    phone,
-    updatedAt: now,
-    source: "huaxu_shop_profile",
-  }, { expirationTtl: 86400 * 3650 }).catch(() => {});
+    registrationStatus: "registered",
+    registeredAt: current.registeredAt || now,
+    registrationSource: current.registrationSource || "child_member_profile",
+    };
+  }); } catch (error) { return childRegistrationError(error); }
   return json({
     ok: true,
     bound: true,
@@ -5326,6 +5426,7 @@ async function handleHuaxuUpdateMemberProfile(request, env, ctx) {
       pictureUrl: nextMember.pictureUrl,
       createdAt: nextMember.createdAt,
       updatedAt: nextMember.updatedAt,
+      registrationStatus: childRegistrationStatus(nextMember),
     },
   });
 }
@@ -5366,6 +5467,9 @@ async function handleHuaxuCreateOrder(request, env, ctx, apiHandler) {
   const payload = await request.clone().json().catch(() => ({}));
   const identity = await requireHuaxuIdentity(request, env, payload);
   if (!identity.ok) return identity.response;
+  if (childRegistrationStatus(identity.member || {}) !== "registered") {
+    return json({ ok: false, code: "MEMBER_REGISTRATION_REQUIRED", message: "網路購物前請先完成會員註冊；點數功能不受影響" }, 409);
+  }
   if (!env.DB) return json({ ok: false, message: '訂單系統暫時無法安全寫入' }, 503);
   const fingerprint = await sha256HexBody(JSON.stringify({
     items: payload.items, customer: payload.customer, points: payload.pointsUsed || payload.pointDeduction || 0,
@@ -6251,6 +6355,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         renderLineProfile();
         if (memberVerified) await verifyPaymentReturn();
         if (new URLSearchParams(location.search).get("open") === "member") openMember();
+        if (new URLSearchParams(location.search).get("open") === "register") openRegistration();
       } catch (error) {
         console.warn("LIFF init failed", error);
         await logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
@@ -6731,6 +6836,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
       if (!requireReadyMember()) return;
+      if (memberData?.member?.registrationStatus !== "registered") {
+        openRegistration();
+        return toast("網路購物前請先完成會員註冊；購物車與收件資料已保留。");
+      }
       if (pointDeduction > 0 && (!memberData?.points?.shared?.ok || memberData.points.available === false || memberData.points.reconciliationRequired)) return toast("目前無法確認折抵點數，請稍後重試，或自行將折抵設為 0 點後送出。");
       let pending = null;
       try { pending = JSON.parse(sessionStorage.getItem(PENDING_CHECKOUT_KEY) || "null"); } catch (error) {}
@@ -6939,6 +7048,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       renderMemberPanel();
       toggleMember(true);
     }
+    function openRegistration(){
+      if (!memberVerified) return loginLine();
+      activeMemberSection = "個人基本資料";
+      memberEditMode = memberData?.member?.registrationStatus !== "registered";
+      renderMemberPanel();
+      toggleMember(true);
+    }
     async function openOrders(){
       if (!requireReadyMember()) return;
       activeMemberSection = "訂單查詢";
@@ -6987,7 +7103,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       }
       if (rows) {
         const rowDefs = [
-          { label: modules.includes("個人基本資料") ? "個人基本資料" : modules[0] || "個人基本資料", value: memberData?.bound ? "已註冊" : "尚未綁定" },
+          { label: "個人基本資料", value: memberData?.member?.registrationStatus === "registered" ? "已註冊" : "待完成註冊" },
           { label: modules.includes("點數記錄") ? "點數記載" : modules[1] || "點數記載", value: balance },
           { label: "訂單查詢", value: Number(memberData?.orders?.count || 0) + " 筆" },
           { label: modules.includes("分享好友") ? "分享連結" : modules[2] || "分享連結", value: shareCount + " 人" }
@@ -7082,7 +7198,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
           + rows.map(row => '<div class="member-info-row"><span>'+escapeHtml(row[0])+'</span><b>'+escapeHtml(row[1] || "-")+'</b></div>').join("")
           + '</section>';
       }
-      return '<section class="member-detail"><div class="member-detail-head"><div class="member-detail-title">編輯個人資料</div><button class="member-edit" onclick="cancelMemberEdit()">取消</button></div>'
+      return '<section class="member-detail"><div class="member-detail-head"><div class="member-detail-title">'+(member.registrationStatus === "registered" ? "編輯個人資料" : "完成會員註冊")+'</div><button class="member-edit" onclick="cancelMemberEdit()">取消</button></div>'
+        + '<p>姓名與手機為必填；其他資料可稍後補充。未註冊仍可使用點數功能，網路購物前需完成註冊。</p>'
         + '<div class="member-grid">'
         + profileField("姓名", "editName", member.name || member.displayName || lineProfile.displayName || "", "text")
         + profileField("手機", "editPhone", member.phone || "", "tel")
@@ -7091,7 +7208,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         + profileField("Email", "editEmail", member.email || "", "email")
         + profileField("地址", "editAddress", member.address || "", "text")
         + profileField("業種", "editIndustry", member.industry || "", "text")
-        + '</div><button class="member-save" onclick="saveMemberProfile()">確認修改資料</button></section>';
+        + '</div><button class="member-save" onclick="saveMemberProfile()">'+(member.registrationStatus === "registered" ? "確認修改資料" : "完成註冊")+'</button></section>';
     }
     function profileField(label, id, value, type){
       return '<div class="member-field"><label>'+escapeHtml(label)+'</label><input id="'+escapeAttr(id)+'" type="'+escapeAttr(type || "text")+'" value="'+escapeAttr(value || "")+'"></div>';
@@ -7260,6 +7377,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     }
     async function saveMemberProfile(){
       if (!requireReadyMember()) return;
+      const completingRegistration = memberData?.member?.registrationStatus !== "registered";
       const profile = {
         name: fieldValue("editName"),
         phone: fieldValue("editPhone"),
@@ -7283,7 +7401,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         memberData = Object.assign({}, memberData || {}, { bound: true, memberUid: res.memberUid, lineUserId: res.lineUserId, member: res.member });
         memberEditMode = false;
         activeMemberSection = "個人基本資料";
-        toast("個人資料已更新");
+        toast(completingRegistration ? "會員註冊完成，可返回購物車繼續結帳" : "個人資料已更新");
       } catch (error) {
         toast(error.message || "資料儲存失敗");
       } finally {
@@ -7328,7 +7446,7 @@ export default {
       } });
     }
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-history-export-v1' }),
+      return new Response(JSON.stringify({ ok: true, service: 'hooktea', release: '20260916-child-registration-v1' }),
         { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && (url.pathname === "/checkin-template" || url.pathname === "/checkin-template.html")) {
@@ -9438,7 +9556,8 @@ export default {
         const uid = String(event?.source?.userId || "").trim();
         if (isText) {
           try {
-            if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event, webhookSettings);
+            if (owner === "child_registration") handled = await replyChildRegistration(env, event);
+            else if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event, webhookSettings);
             else if (owner === "checkin_template") handled = await maybeReplyHookTeaCheckinTemplate(env, event, text, template);
             else if (owner === "daily_signin") handled = await handleHookTeaDailySigninReward(env, ctx, event);
             else if (owner === "referral") {

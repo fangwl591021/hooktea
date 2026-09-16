@@ -10,7 +10,7 @@ const root = new URL('../', import.meta.url);
 const source = fs.readFileSync(new URL('worker.js', root), 'utf8');
 const UID = 'U' + 'a'.repeat(32);
 const OTHER = 'U' + 'b'.repeat(32);
-const member = { userId: UID, lineUserId: UID, linkedLineUid: UID, name: 'Test' };
+const member = { userId: UID, lineUserId: UID, linkedLineUid: UID, name: 'Test', phone: '0912345678' };
 function database() {
   const sqlite = new DatabaseSync(':memory:');
   for (const file of ['0003_daily_signin_claims.sql','0004_reward_claims.sql','0005_point_operations.sql']) {
