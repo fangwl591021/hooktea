@@ -1182,6 +1182,9 @@ async function resolveMonitorThreadIdForLine(env, lineUid) {
   const uid = String(lineUid || "").trim();
   if (!uid) return "";
   const binding = await safeGetKV(env, `LINE_BIND_${uid}`, null, { preferWasabi: false });
+  // A reviewed legacy link may retain its existing UID-keyed conversation.
+  // Never route to an arbitrary thread supplied in a binding document.
+  if (binding?.source === 'admin_verified_chat' && binding.monitorThreadId === uid) return uid;
   if (binding?.legacyUserId) return String(binding.legacyUserId).trim();
   return uid;
 }
@@ -4503,7 +4506,15 @@ function buildHookTeaSummary(user = {}, orders = [], pointData = null, overlay =
 }
 
 async function listHookTeaUsers(env) {
-  return uniqueUsersById(await listUserRecords(env));
+  const users = uniqueUsersById(await listUserRecords(env));
+  const byId = new Map(users.map(user => [user.userId, user]));
+  // Keep archived duplicate data, but show the reviewed canonical CRM record once.
+  return users.filter(user => {
+    const target = byId.get(user.crmMergedInto);
+    return !(user.isDeleted === true && user.crmMergeReviewId && target &&
+      target.crmCanonicalReviewId === user.crmMergeReviewId &&
+      isTrustedHuaxuMemberBinding(target, target.userId, user.userId));
+  });
 }
 
 async function listPointRecords(env) {
@@ -4716,11 +4727,16 @@ async function getHookTeaMonitorThread(env, id) {
   if (!user && !d1Thread) return null;
   const orders = await safeGetKV(env, "ORDERS", []);
   const userIdForData = String(user?.userId || user?.uid || d1ThreadId || uid).trim();
-  const userOrders = (Array.isArray(orders) ? orders : []).filter(o => String(o.userId || o.uid || "") === userIdForData);
+  const reviewedLegacy = user?.crmBindingStatus === 'ADMIN_VERIFIED_LEGACY' &&
+    isTrustedHuaxuMemberBinding(user, userIdForData, d1Thread?.source_user_id);
+  const userOrders = (Array.isArray(orders) ? orders : []).filter(o => reviewedLegacy
+    ? huaxuOrderOwnedBy(o, {lineUid:d1Thread.source_user_id, memberUid:userIdForData})
+    : String(o.userId || o.uid || "") === userIdForData);
   let pointData = await safeGetKV(env, `POINTS_${userIdForData}`, { logs: [] });
   if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' &&
-    (user?.pointAuthority === 'child' || await createHookTeaPointService(env).wallet(userIdForData))) {
+    (reviewedLegacy || user?.pointAuthority === 'child' || await createHookTeaPointService(env).wallet(userIdForData))) {
     pointData = await readAuthoritativePoints(env, getMemberLineUid(user, userIdForData), user, 50, {readOnly:true});
+    if (!pointData.available) pointData = {...pointData, balance:null};
   }
   const overlay = await safeGetKV(env, `MONITOR_THREAD_${d1ThreadId}`, {});
   const paymentLogs = await safeGetKV(env, "PAYMENT_LOGS", []);
@@ -4748,7 +4764,7 @@ async function getHookTeaMonitorThread(env, id) {
       "會員等級": user?.memberTier || user?.role || (d1Thread ? "未綁定" : "一般會員"),
       "待付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PENDING").length,
       "已付款": userOrders.filter(o => String(o.status || "").toUpperCase() === "PAID").length,
-      "點數餘額": Number(pointData?.balance || 0),
+      "點數餘額": pointData?.balance == null ? '待確認' : Number(pointData.balance),
       "風險": riskLevel,
       "AI摘要": overlay.aiSummary || "",
       "AI建議": overlay.aiNextAction || "",
@@ -5251,6 +5267,8 @@ async function repairHuaxuLineBindingInBackground(env, ctx, lineUid, profile = n
         legacyUserId: memberUid,
         name: member.name || member.displayName || member.lineDisplayName || profile?.name || profile?.displayName || "",
         source: resolved.binding?.source || "background_line_uid_scan",
+        ...(resolved.binding?.source === 'admin_verified_chat' && resolved.binding.monitorThreadId === uid
+          ? {monitorThreadId:uid} : {}),
         linkedAt: resolved.binding?.linkedAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }, { expirationTtl: 86400 * 3650 }).catch(() => {});
