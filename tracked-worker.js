@@ -5,7 +5,7 @@ export default {
   async fetch(request,env,ctx) {
     const url=new URL(request.url);
     if(request.method==='GET'&&url.pathname==='/api/health')return Response.json({
-      ok:true,service:'hooktea',release:TRACKING_RELEASE,
+      ok:true,service:'hooktea',release:'20260916-child-member-area-v1',trackingRelease:TRACKING_RELEASE,
       registrationRelease:'20260916-child-registration-v1',
     },{headers:{'Cache-Control':'no-store'}});
     if(request.method==='OPTIONS')return worker.fetch(request,env,ctx);

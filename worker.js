@@ -2614,7 +2614,9 @@ async function buildMemberAreaLineMessage(env, lineUid, member = null) {
       footer: {
         type: "box",
         layout: "vertical",
+        spacing: "sm",
         contents: [
+          { type: "button", style: "primary", color: "#06C755", action: { type: "uri", label: "會員註冊", uri: `https://liff.line.me/${encodeURIComponent(liffId)}?open=register` } },
           { type: "button", style: "primary", color: "#06C755", action: { type: "uri", label: "開啟會員專區", uri: memberUrl } }
         ]
       }
@@ -4307,10 +4309,19 @@ async function replyChildRegistration(env, event) {
   return true;
 }
 
+async function replyChildMemberArea(env, event) {
+  // Opening an entry must not match/merge identities or award points. The child
+  // LIFF login verifies the identity and loads the existing CRM profile.
+  const message = await buildMemberAreaLineMessage(env, "");
+  const reply = await replyLineMessage(env, event.replyToken, [message]);
+  return reply?.ok === true;
+}
+
 function selectLineWebhookEventOwner(event, settings, template) {
   if (event?.type !== "message" || event?.message?.type !== "text") return "mother";
   const text = String(event.message.text || "").trim();
   if (text === "會員註冊") return "child_registration";
+  if (text === "會員專區") return "child_member_area";
   // Reserve mother commands and the actual daily claim before configurable
   // campaign keywords, so configuration overlap cannot replace either flow.
   if (isMotherSiteKeyword(text)) return "mother_keyword";
@@ -6099,6 +6110,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         <span class="member-tier" id="memberTier">一般會員</span>
       </div>
       <div class="member-actions" id="memberActions"></div>
+      <button class="checkin-button" id="memberRegistrationButton" onclick="openRegistration()">會員註冊</button>
       <button class="checkin-button" id="checkinButton" onclick="dailyCheckin()">每日簽到領點</button>
       <div id="memberRows"></div>
     </div>
@@ -7083,6 +7095,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       const memberTier = document.getElementById("memberTier");
       const actions = document.getElementById("memberActions");
       const checkin = document.getElementById("checkinButton");
+      const registration = document.getElementById("memberRegistrationButton");
       const rows = document.getElementById("memberRows");
       if (panelTitle) panelTitle.textContent = shopConfig.memberTitle || "會員專區";
       if (memberName) memberName.textContent = name;
@@ -7091,6 +7104,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         memberAvatar.src = avatar || "https://placehold.co/160x160/e6f7ff/0f172a?text=LINE";
       }
       if (checkin) checkin.textContent = shopConfig.checkinLabel || "每日簽到領點";
+      if (registration) registration.textContent = member.registrationStatus === "registered" ? "查看註冊資料" : "會員註冊";
       if (actions) {
         const actionDefs = [
           { key:"點數記錄", icon:"點" },
@@ -9557,6 +9571,7 @@ export default {
         if (isText) {
           try {
             if (owner === "child_registration") handled = await replyChildRegistration(env, event);
+            else if (owner === "child_member_area") handled = await replyChildMemberArea(env, event);
             else if (owner === "keyword_reward") handled = await handleShopKeywordReward(env, ctx, event, webhookSettings);
             else if (owner === "checkin_template") handled = await maybeReplyHookTeaCheckinTemplate(env, event, text, template);
             else if (owner === "daily_signin") handled = await handleHookTeaDailySigninReward(env, ctx, event);

@@ -9,6 +9,7 @@ const source = process.argv.includes("--baseline")
   : fs.readFileSync(new URL("../worker.js", import.meta.url), "utf8");
 const signatureHelpers = source.slice(source.indexOf("async function verifyLineWebhookSignature("), source.indexOf("function extractResponseText("));
 const keywordHelpers = source.slice(source.indexOf("function configuredKeywordRewards("), source.indexOf("async function deliverKeywordRewardReply("))
+  + source.slice(source.indexOf('async function buildMemberAreaLineMessage('), source.indexOf('async function handleMotherKeywordFallback('))
   + source.slice(source.indexOf('const HOOKTEA_DAILY_SIGNIN_KEYWORD ='), source.indexOf('function hookTeaDailySigninPoints('))
   + source.slice(source.indexOf('function isReferralInviteKeyword('), source.indexOf('function isPlainMotherWebhookAck('))
   + source.slice(source.indexOf('function getHookTeaCheckinTemplateTriggerState('), source.indexOf('async function rotateHookTeaCheckinTemplatePages('));
@@ -22,7 +23,7 @@ const message = (text, id = text) => ({ type: "message", webhookEventId: id, rep
 const follow = { type: "follow", webhookEventId: "follow-new", replyToken: "reply-follow", source: { userId: "U-new" } };
 
 function harness(options = {}) {
-  const calls = { registration: [], reward: [], daily: [], template: [], bind: [], monitor: [], referral: [], fetch: [], diagnostics: new Map(), errors: [] };
+  const calls = { memberArea: [], registration: [], reward: [], daily: [], template: [], bind: [], monitor: [], referral: [], fetch: [], diagnostics: new Map(), errors: [] };
   const env = { LINE_CHANNEL_SECRET: secret, FORWARD_WEBHOOK_URL: "https://mother.invalid/webhook", ...(options.env || {}) };
   const runLocal = name => async (...args) => {
     const event = args[2] || args[1];
@@ -32,7 +33,7 @@ function harness(options = {}) {
     return options[name] ?? true;
   };
   const sandbox = {
-    crypto: webcrypto, TextEncoder, Uint8Array, btoa, atob, Request, Response, AbortSignal,
+    crypto: webcrypto, TextEncoder, Uint8Array, btoa, atob, Request, Response, AbortSignal, URLSearchParams,
     console: { error: (...args) => calls.errors.push(args) },
     getLineChannelSecret: env => env.LINE_CHANNEL_SECRET,
     getLineChannelAccessToken: () => "configured",
@@ -60,6 +61,11 @@ function harness(options = {}) {
     buildReferralShareUrl: () => "https://shop.invalid/share",
     referralShareFlexMessage: args => args,
     replyLineMessage: async (_, replyToken, messages) => {
+      if (messages?.[0]?.altText === "HookTea 會員專區") {
+        calls.memberArea.push({ replyToken, messages });
+        if (options.memberAreaError) throw Error("synthetic member area reply failure");
+        return { ok: options.memberAreaOk ?? true };
+      }
       if (messages?.[0]?.text?.includes("會員註冊")) {
         calls.registration.push({ replyToken, messages });
         if (options.registrationError) throw Error("synthetic registration reply failure");
@@ -96,7 +102,7 @@ const forwardedIds = call => JSON.parse(call.body).events.map(event => event.web
 
 test("mixed mother + local reward + follow has no lost events and a correct filtered signature", async () => {
   const h = harness({ env: { GAS_URL: "https://gas.invalid/duplicate" } });
-  const response = await h.post([message("會員專區", "mother"), message("954e", "gift"), follow]);
+  const response = await h.post([message("會員中心", "mother"), message("954e", "gift"), follow]);
   assert.equal(response.status, 200);
   assert.equal(h.calls.reward.length, 1);
   assert.equal(h.calls.fetch.length, 1, "only one downstream reply owner, even if GAS is configured");
@@ -110,7 +116,7 @@ test("mixed mother + local reward + follow has no lost events and a correct filt
 
 test("all unhandled events preserve original formatting and signature", async () => {
   const h = harness();
-  const events = [message("會員專區", "mother"), message("一般訊息", "general")];
+  const events = [message("會員中心", "mother"), message("一般訊息", "general")];
   const raw = JSON.stringify({ destination: "test-OA", events, marker: "escaped\\n中文" }, null, 2) + "\n";
   await h.post(events, { raw });
   assert.equal(h.calls.fetch[0].body, raw);
@@ -128,7 +134,7 @@ test("reward is not resent with an ordinary message", async () => {
 
 test("local exception or false result retains owner without retry or mother fallback", async () => {
   const h = harness({ reward: new Error("write already completed; reply unavailable"), daily: false });
-  await h.post([message("954e", "gift"), message("daily", "daily"), message("會員專區", "mother")]);
+  await h.post([message("954e", "gift"), message("daily", "daily"), message("會員中心", "mother")]);
   assert.equal(h.calls.reward.length, 1);
   assert.equal(h.calls.daily.length, 1);
   assert.equal(h.calls.template.length, 0);
@@ -210,7 +216,7 @@ test("no-context execution still finishes monitoring and one forward", async () 
 test("downstream failure is recorded without blind retry or GAS fallback", async () => {
   for (const options of [{ forwardError: true }, { forwardStatus: 500 }]) {
     const h = harness({ ...options, env: { GAS_URL: "https://gas.invalid/duplicate" } });
-    await h.post([message("會員專區")]);
+  await h.post([message("會員中心")]);
     assert.equal(h.calls.fetch.length, 1);
     assert.equal(h.calls.diagnostics.get("WEBHOOK_FORWARD_LAST").ok, false);
   }
@@ -234,7 +240,8 @@ test("all reserved mother commands survive overlapping child reward and template
   const h = harness({ rewardKeywords: keywords, templateKeywords: keywords });
   await h.post(keywords.map(text => message(text)));
   assert.equal(h.calls.reward.length + h.calls.template.length + h.calls.bind.length, 0);
-  assert.deepEqual(forwardedIds(h.calls.fetch[0]), keywords.filter(text => text !== "會員註冊"));
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), keywords.filter(text => !["會員註冊", "會員專區"].includes(text)));
+  assert.equal(h.calls.memberArea.length, 1);
   assert.equal(h.calls.registration.length, 1);
   assert.match(h.calls.registration[0].messages[0].text, /open=register/);
 });
@@ -257,7 +264,7 @@ test("substring template and pending binding cannot swallow unlisted mother keyw
 
 test("binding still accepts explicit identity input; a no-match is forwarded exactly once", async () => {
   const h = harness({ bind: false });
-  await h.post([message("會員專區", "mother"), message("姓名 王小明", "name"), message("0912345678", "phone")]);
+  await h.post([message("會員中心", "mother"), message("姓名 王小明", "name"), message("0912345678", "phone")]);
   assert.deepEqual(h.calls.bind.map(e => e.webhookEventId), ["name", "phone"]);
   assert.deepEqual(h.calls.fetch.flatMap(forwardedIds), ["mother", "name", "phone"]);
   for (const call of h.calls.fetch) assert.equal(call.headers["x-line-signature"], sign(call.body));
@@ -270,20 +277,21 @@ test("production card entry, signup button, daily claim and reward each keep the
   assert.deepEqual(h.calls.daily.map(e => e.webhookEventId), ["signin"]);
   assert.deepEqual(h.calls.reward.map(e => e.webhookEventId), ["gift"]);
   assert.equal(h.calls.bind.length, 0, "pending identity collection cannot intercept 我想報名");
-  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["signup", "member"]);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["signup"]);
+  assert.equal(h.calls.memberArea.length, 1);
 });
 
 test("slow child reward does not block mother forwarding or webhook acknowledgement", async () => {
   const gate = deferred();
   const h = harness({ reward: () => gate.promise });
   try {
-    const responsePromise = h.post([message("954e"), message("會員專區")], { drain: false });
+    const responsePromise = h.post([message("954e"), message("會員中心")], { drain: false });
     await until(() => h.calls.fetch.length === 1);
     let acknowledged = false;
     responsePromise.then(() => { acknowledged = true; });
     await until(() => acknowledged);
     assert.equal((await responsePromise).status, 200);
-    assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["會員專區"]);
+    assert.deepEqual(forwardedIds(h.calls.fetch[0]), ["會員中心"]);
   } finally {
     gate.resolve(true);
     await Promise.all(h.pending || []);
@@ -294,7 +302,7 @@ test("slow mother does not block child keyword or acknowledgement", async () => 
   const gate = deferred();
   const h = harness({ forwardGate: gate.promise });
   try {
-    const response = await h.post([message("會員專區"), message("954e")], { drain: false });
+    const response = await h.post([message("會員中心"), message("954e")], { drain: false });
     assert.equal(response.status, 200);
     await until(() => h.calls.reward.length === 1);
   } finally {
@@ -307,7 +315,7 @@ test("slow diagnostic storage does not block either keyword branch", async () =>
   const gate = deferred();
   const h = harness({ diagnosticGate: gate.promise });
   try {
-    const responsePromise = h.post([message("954e"), message("會員專區")], { drain: false });
+    const responsePromise = h.post([message("954e"), message("會員中心")], { drain: false });
     await until(() => h.calls.reward.length === 1 && h.calls.fetch.length === 1);
     assert.equal((await responsePromise).status, 200);
   } finally {
@@ -343,9 +351,40 @@ test("postbacks and non-text events remain mother-owned alongside local keywords
 
 test("child registration reply failure never releases its event or duplicates a mother's reply", async () => {
   const h=harness({registrationError:true});
-  await h.post([message('會員註冊','registration'),message('會員專區','area'),message('daily','daily')]);
+  await h.post([message('會員註冊','registration'),message('會員中心','area'),message('daily','daily')]);
   assert.equal(h.calls.registration.length,1);assert.equal(h.calls.daily.length,1);
   assert.deepEqual(forwardedIds(h.calls.fetch[0]),['area']);assert.equal(h.calls.fetch.length,1);
+});
+
+test("child member area replies once with child registration and member links, without rewarding or binding", async () => {
+  const h = harness({rewardKeywords:["會員專區"], templateKeywords:["會員專區"]});
+  await h.post([message("會員專區","area"), message("daily","daily"), follow, message("會員中心","mother")]);
+  assert.equal(h.calls.memberArea.length,1);
+  assert.equal(h.calls.daily.length,1);
+  assert.equal(h.calls.reward.length+h.calls.bind.length+h.calls.template.length,0);
+  assert.deepEqual(forwardedIds(h.calls.fetch[0]),["follow-new","mother"]);
+  assert.equal(h.calls.fetch[0].headers["x-line-signature"],sign(h.calls.fetch[0].body));
+  const card = h.calls.memberArea[0].messages[0];
+  const buttons = JSON.parse(JSON.stringify(card.contents.footer.contents));
+  assert.deepEqual(buttons.map(b=>b.action.label),["會員註冊","開啟會員專區"]);
+  for (const button of buttons) {
+    const url = new URL(button.action.uri);
+    assert.equal(url.origin,"https://liff.line.me");
+    assert.equal(url.pathname,"/2007674851-test");
+    assert.equal(url.searchParams.has("lineUid"),false);
+  }
+  assert.equal(new URL(buttons[0].action.uri).searchParams.get("open"),"register");
+  assert.equal(new URL(buttons[1].action.uri).searchParams.get("open"),"member");
+});
+
+test("child member area exception or rejected reply never falls through to mother", async () => {
+  for (const options of [{memberAreaError:true},{memberAreaOk:false}]) {
+    const h=harness(options);
+    await h.post([message("會員專區")]);
+    assert.equal(h.calls.memberArea.length,1);
+    assert.equal(h.calls.fetch.length+h.calls.reward.length+h.calls.bind.length,0);
+    assert.ok(h.calls.diagnostics.has("WEBHOOK_EVENT_ERROR_LAST"));
+  }
 });
 
 const filter = process.argv.find(arg => arg.startsWith("--filter="))?.slice(9);
