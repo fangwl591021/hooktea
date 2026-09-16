@@ -1,5 +1,5 @@
 name = "hooktea"
-main = "worker.js"
+main = "tracked-worker.js"
 compatibility_date = "2026-04-06"
 account_id = "8058cf61f0cd44c4edd78080b193033a"
 

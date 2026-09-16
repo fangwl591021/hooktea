@@ -10,7 +10,7 @@ const root = new URL('../', import.meta.url), UID = 'U' + 'c'.repeat(32);
 const browserMode = process.argv.includes('--browser');
 const fakeSdk = `window.liff={init:async()=>{},isLoggedIn:()=>true,isInClient:()=>true,getAccessToken:()=>"local-synthetic",getProfile:async()=>({userId:"${UID}",displayName:"本機驗收會員"}),login:()=>{}};`;
 const bundle = await build({stdin:{resolveDir:fileURLToPath(root),contents:`
-import worker from './worker.js';
+import worker from './tracked-worker.js';
 export default {async fetch(request,env,ctx){
   if(new URL(request.url).pathname==='/__test-liff.js') return new Response(${JSON.stringify(fakeSdk)},{headers:{'content-type':'text/javascript'}});
   const response=await worker.fetch(request,env,ctx);
@@ -37,6 +37,8 @@ try {
     const sql=readFileSync(new URL('migrations/'+file,root),'utf8').replace(/^--.*$/gm,'');
     for(const statement of sql.split(';').map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
   }
+  const trackingSql=readFileSync(new URL('migrations/0006_crm_write_tracking.sql',root),'utf8').replace(/^--.*$/gm,'').trim();
+  for(const statement of trackingSql.split(/;\s*(?=CREATE\s|INSERT\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
   await kv.put('SYSTEM_SETTINGS',JSON.stringify({shop_module:'huaxu',shop_liff_id:'2007674851-test',shop_payment_methods:'COD',shop_shipping_fee:0}));
   await kv.put('USERS_INDEX',JSON.stringify([{userId:'unrelated',name:'Existing'}]));
   await kv.put('PRODUCTS',JSON.stringify([{id:'test-tea',name:'本機驗收茶（非正式商品）',price:100,pointsPrice:20,isPublished:true,status:'販賣中'}]));
