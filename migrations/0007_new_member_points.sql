@@ -8,14 +8,14 @@ CREATE TABLE child_point_wallets (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TRIGGER child_wallet_new_guard BEFORE INSERT ON child_point_wallets BEGIN
-  SELECT CASE WHEN NEW.balance<>0 OR
+  SELECT (CASE WHEN NEW.balance<>0 OR
     EXISTS(SELECT 1 FROM point_operations WHERE line_user_id=NEW.line_uid OR member_uid=NEW.member_id) OR
     EXISTS(SELECT 1 FROM point_legacy_snapshots WHERE line_user_id=NEW.line_uid OR point_uid=NEW.member_id) OR
     EXISTS(SELECT 1 FROM point_sync_locks WHERE line_user_id=NEW.line_uid) OR
     EXISTS(SELECT 1 FROM daily_signin_claims WHERE line_user_id=NEW.line_uid OR member_uid=NEW.member_id) OR
     EXISTS(SELECT 1 FROM reward_claims WHERE line_user_id=NEW.line_uid OR member_uid=NEW.member_id) OR
     EXISTS(SELECT 1 FROM checkout_requests WHERE line_user_id=NEW.line_uid)
-    THEN RAISE(ABORT,'CHILD_EXISTING_ACCOUNT_REVIEW') END;
+    THEN RAISE(ABORT,'CHILD_EXISTING_ACCOUNT_REVIEW') END);
 END;
 CREATE TRIGGER child_wallet_identity_guard BEFORE UPDATE ON child_point_wallets
 WHEN NEW.member_id<>OLD.member_id OR NEW.line_uid<>OLD.line_uid OR NEW.enrollment_id<>OLD.enrollment_id
@@ -38,15 +38,15 @@ CREATE TABLE child_point_ledger (
 );
 CREATE INDEX child_point_member_history ON child_point_ledger(member_id,created_at);
 CREATE TRIGGER child_point_validate BEFORE INSERT ON child_point_ledger BEGIN
-  SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM child_point_wallets WHERE member_id=NEW.member_id AND status='active')
-    THEN RAISE(ABORT,'CHILD_WALLET_UNAVAILABLE') END;
-  SELECT CASE WHEN NEW.balance_after<>(SELECT balance+NEW.amount FROM child_point_wallets WHERE member_id=NEW.member_id)
-    THEN RAISE(ABORT,'CHILD_BALANCE_CONFLICT') END;
-  SELECT CASE WHEN NEW.kind='refund' AND NOT EXISTS(SELECT 1 FROM child_point_ledger
+  SELECT (CASE WHEN NOT EXISTS(SELECT 1 FROM child_point_wallets WHERE member_id=NEW.member_id AND status='active')
+    THEN RAISE(ABORT,'CHILD_WALLET_UNAVAILABLE') END);
+  SELECT (CASE WHEN NEW.balance_after<>(SELECT balance+NEW.amount FROM child_point_wallets WHERE member_id=NEW.member_id)
+    THEN RAISE(ABORT,'CHILD_BALANCE_CONFLICT') END);
+  SELECT (CASE WHEN NEW.kind='refund' AND NOT EXISTS(SELECT 1 FROM child_point_ledger
     WHERE member_id=NEW.member_id AND kind='spend' AND business_key=NEW.business_key AND amount=-NEW.amount)
-    THEN RAISE(ABORT,'CHILD_REFUND_INVALID') END;
-  SELECT CASE WHEN EXISTS(SELECT 1 FROM point_operations WHERE operation_id=NEW.operation_id)
-    THEN RAISE(ABORT,'CHILD_CROSS_LEDGER_CONFLICT') END;
+    THEN RAISE(ABORT,'CHILD_REFUND_INVALID') END);
+  SELECT (CASE WHEN EXISTS(SELECT 1 FROM point_operations WHERE operation_id=NEW.operation_id)
+    THEN RAISE(ABORT,'CHILD_CROSS_LEDGER_CONFLICT') END);
 END;
 CREATE TRIGGER child_point_apply AFTER INSERT ON child_point_ledger BEGIN
   UPDATE child_point_wallets SET balance=NEW.balance_after WHERE member_id=NEW.member_id;
