@@ -6349,10 +6349,14 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
       try {
         entryContext = restoreEntryContext();
         const params = new URLSearchParams(location.search);
+        const requestedOpen = params.get("open") || (params.has("code") && params.has("state") ? entryContext.params.open : "");
         const liffId = params.get("liffId") || shopConfig.shopLiffId || SHOP_LIFF_ID || "2007674851-ijenzSk8";
         if (!liffId) return;
         saveCheckoutDraft();
         await liff.init({ liffId, withLoginOnExternalBrowser: true });
+        // The SDK owns primary/secondary redirects. Read entry parameters only
+        // after initialization, without rewriting its endpoint or liff.state.
+        entryContext = restoreEntryContext();
         await logShopLiff("init_done", "", { liffId });
         if (!liff.isLoggedIn()) {
           await logShopLiff(forceLogin ? "login_manual" : "login_redirect", "", { liffId });
@@ -6366,8 +6370,9 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
         await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
         renderLineProfile();
         if (memberVerified) await verifyPaymentReturn();
-        if (new URLSearchParams(location.search).get("open") === "member") openMember();
-        if (new URLSearchParams(location.search).get("open") === "register") openRegistration();
+        const openTarget = new URLSearchParams(location.search).get("open") || requestedOpen;
+        if (memberVerified && openTarget === "member") openMember();
+        if (memberVerified && openTarget === "register") openRegistration();
       } catch (error) {
         console.warn("LIFF init failed", error);
         await logShopLiff("error", error && error.message ? error.message : String(error || "unknown"));
@@ -6973,17 +6978,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8") {
     window.addEventListener("pagehide", () => { if (cart && cart.length) logCartActivity("cart_abandoned", { status: "abandoned" }); });
     function restoreEntryContext(){
       let current = new URL(location.href);
-      const state = current.searchParams.get("liff.state");
-      if (state) {
-        try {
-          const restoredUrl = new URL(decodeURIComponent(state), location.origin);
-          const restoredPath = restoredUrl.pathname + restoredUrl.search + location.hash;
-          if (restoredUrl.pathname && restoredPath !== location.pathname + location.search + location.hash) {
-            history.replaceState(null, "", restoredPath);
-            current = new URL(location.href);
-          }
-        } catch (error) { console.warn("LIFF state restore failed", error); }
-      }
+      // Never resolve a query-only liff.state against location.origin: that
+      // discards /huaxu-shop.html and invalidates LIFF's configured endpoint.
+      // Leave the entire primary URL untouched for liff.init().
+      if (current.searchParams.has("liff.state")) return { url: current.origin + current.pathname, params: {} };
       const ignored = new Set(["code", "state", "liff.state", "friendship_status_changed", "linepay", "payment", "orderId", "transactionId"]);
       const hasEntryParams = Array.from(current.searchParams.keys()).some(key => !ignored.has(key));
       try {

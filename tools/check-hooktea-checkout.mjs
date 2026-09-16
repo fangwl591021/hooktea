@@ -26,7 +26,7 @@ function storage(initial = {}) {
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) };
 }
 
-function storefront({ local = {}, session = {}, search = "", request = null, loggedIn = true } = {}) {
+function storefront({ local = {}, session = {}, search = "", request = null, loggedIn = true, pathname = "/", sdkInit = null } = {}) {
   const elements = new Map();
   const events = new Map();
   const calls = [];
@@ -36,8 +36,9 @@ function storefront({ local = {}, session = {}, search = "", request = null, log
   const sessionStorage = storage(session);
   let token = "verified-test-token";
   let loginCount = 0;
-  const location = { href: "https://shop.example.test/" + search, search, origin: "https://shop.example.test", pathname: "/", hash: "" };
-  const liff = { init: async () => {}, isLoggedIn: () => loggedIn, isInClient: () => true, getAccessToken: () => token, getProfile: async () => ({ userId: uid, displayName: "Test" }), login: () => { loginCount++; } };
+  const location = { href: "https://shop.example.test" + pathname + search, search, origin: "https://shop.example.test", pathname, hash: "" };
+  const setLocation = value => { const url = new URL(value, location.href); for (const key of ["href","search","origin","pathname","hash"]) location[key] = url[key]; };
+  const liff = { init: async () => { if(sdkInit) await sdkInit(location, setLocation); }, isLoggedIn: () => loggedIn, isInClient: () => true, getAccessToken: () => token, getProfile: async () => ({ userId: uid, displayName: "Test" }), login: () => { loginCount++; } };
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
     const response = request ? await request(url, options) : null;
@@ -47,7 +48,7 @@ function storefront({ local = {}, session = {}, search = "", request = null, log
   };
   const sandbox = {
     console: { warn() {} }, localStorage, sessionStorage, location, URL, URLSearchParams, AbortController, Blob,
-    navigator: { userAgent: "test" }, history: { replaceState() {} }, fetch, liff,
+    navigator: { userAgent: "test" }, history: { replaceState: (_, __, value) => setLocation(value) }, fetch, liff,
     document: { getElementById: getElement, addEventListener: (name, listener) => { const listeners = events.get(name) || []; listeners.push(listener); events.set(name, listeners); }, querySelectorAll: () => [], querySelector: () => null, createElement: () => makeElement(""), body: makeElement("body") },
     window: { liff, addEventListener() {}, scrollTo() {} }, setTimeout: () => 1, clearTimeout() {}, alert() {}, confirm: () => true,
   };
@@ -219,6 +220,49 @@ test("login and payment return parameters are excluded from the next checkout re
   assert.equal(new URL(entry.url).searchParams.get("linepay"), null);
   assert.equal(new URL(entry.url).searchParams.get("code"), null);
   assert.equal(new URL(entry.url).searchParams.get("campaign"), "tea");
+});
+
+test("LIFF primary redirect keeps its endpoint and state intact until SDK initialization", async () => {
+  let initObserved=false;
+  const app=storefront({pathname:"/huaxu-shop.html",search:"?liff.state=%3Fopen%3Dregister",sdkInit:(location,setLocation)=>{
+    initObserved=true;
+    assert.equal(location.pathname,"/huaxu-shop.html");
+    assert.equal(new URL(location.href).searchParams.get("liff.state"),"?open=register");
+    setLocation("/huaxu-shop.html?open=register");
+  }});
+  await app.run("initLineIdentity()");
+  assert.equal(initObserved,true);
+  assert.equal(app.run("memberVerified"),true);
+  assert.equal(app.run("activeMemberSection"),"個人基本資料");
+  assert.equal(app.run("memberEditMode"),false,"registered users reuse their existing profile");
+});
+
+test("OAuth callback restores saved registration intent after verified login", async () => {
+  const app=storefront({pathname:"/huaxu-shop.html",search:"?code=synthetic&state=synthetic",session:{huaxu_entry_url:"https://shop.example.test/huaxu-shop.html?open=register"}});
+  await app.run("initLineIdentity()");
+  assert.equal(app.run("activeMemberSection"),"個人基本資料");
+});
+
+test("LIFF secondary redirect opens pending registration form after server verification", async () => {
+  const app=storefront({pathname:"/huaxu-shop.html",search:"?liff.state=%3Fopen%3Dregister",sdkInit:(_,setLocation)=>setLocation("/huaxu-shop.html?open=register"),request:url=>url==="/api/huaxu/member"?{body:{ok:true,lineUserId:uid,memberUid:uid,member:{registrationStatus:"pending"}}}:null});
+  await app.run("initLineIdentity()");
+  assert.equal(app.run("memberVerified"),true);
+  assert.equal(app.run("activeMemberSection"),"個人基本資料");
+  assert.equal(app.run("memberEditMode"),true);
+  assert.match(app.getElement("memberRows").innerHTML,/完成會員註冊/);
+});
+
+test("plain shop visits do not replay an old registration entry", async () => {
+  const app=storefront({session:{huaxu_entry_url:"https://shop.example.test/?open=register"}});
+  await app.run("initLineIdentity()");
+  assert.equal(app.run("activeMemberSection"),"");
+});
+
+test("registration entry never opens private profile after server verification fails", async () => {
+  const app=storefront({search:"?open=register",request:url=>url==="/api/huaxu/member"?{status:401,body:{ok:false}}:null});
+  await app.run("initLineIdentity()");
+  assert.equal(app.run("memberVerified"),false);
+  assert.equal(app.run("activeMemberSection"),"");
 });
 
 test("checkout key is stable on retries but renewed for the next identical purchase", async () => {
