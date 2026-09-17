@@ -1,9 +1,13 @@
 // Only fixed operational labels and server-generated trace IDs may leave the site.
 export const ALERT_RELEASE = '20260916-telegram-alerts-v1';
-const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test']);
+const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test','ai','feedback']);
 const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_failed','background_failed',
   'identity_conflict','enrollment_failed','points_pending','points_unavailable','points_failed',
-  'line_reply_failed','line_forward_failed','line_handler_failed','payment_failed','storage_failed','test']);
+  'line_reply_failed','line_forward_failed','line_handler_failed','payment_failed','storage_failed','test',
+  'tracking_unresolved','tracking_recovered','ai_recovered','ai_not_configured','ai_authentication_failed',
+  'ai_quota_exhausted','ai_rate_limited','ai_provider_unavailable','ai_request_rejected','ai_invalid_response',
+  'ai_timeout','ai_network_error','ai_analysis_failed','ai_analysis_recovered','feedback_points','feedback_shopping','feedback_identity',
+  'feedback_usability','feedback_feedback']);
 const ROUTES = new Set(['/','/line-webhook','/api/huaxu/member','/api/huaxu/register','/api/huaxu/checkin',
   '/api/huaxu/orders','/linepay/confirm','/linepay/cancel','/api','cron']);
 const enabled = env => String(env.HOOKTEA_TELEGRAM_ALERTS) === 'true';
@@ -47,12 +51,20 @@ async function send(env,row) {
     finish_failed:'交易結束狀態無法記錄',background_failed:'背景工作失敗',identity_conflict:'會員身分需要核對',
     enrollment_failed:'會員建檔或訊息處理失敗',points_pending:'點數待入帳或待核對',points_unavailable:'點數暫時無法使用',
     points_failed:'點數交易失敗',line_reply_failed:'LINE 回覆未成功',line_forward_failed:'舊站關鍵字轉送失敗',
-    line_handler_failed:'LINE 關鍵字未完成處理',payment_failed:'付款處理異常',storage_failed:'資料儲存服務異常',test:'通知連線測試，不是客戶故障'};
-  const text=[row.category==='test'?'✅ HookTea 告警測試':'🚨 HookTea 系統異常',descriptions[row.code]||'系統異常',
+    line_handler_failed:'LINE 關鍵字未完成處理',payment_failed:'付款處理異常',storage_failed:'資料儲存服務異常',test:'通知連線測試，不是客戶故障',
+    tracking_unresolved:'新增工作未確認結束，待查；不代表已確認點數錯誤',tracking_recovered:'工作已補記結束；原待查紀錄保留',
+    ai_recovered:'AI 後台安全自測已恢復',ai_not_configured:'AI 金鑰未設定',ai_authentication_failed:'AI 認證未通過',
+    ai_quota_exhausted:'AI 額度不足',ai_rate_limited:'AI 呼叫受到限流',ai_provider_unavailable:'AI 服務暫時不可用',
+    ai_request_rejected:'AI 測試請求未被接受',ai_invalid_response:'AI 未回傳預期測試結果',ai_timeout:'AI 連線逾時',
+    ai_network_error:'AI 連線失敗',ai_analysis_failed:'後台訊息分析未完成；原訊息仍保留待查',ai_analysis_recovered:'後台訊息分析已恢復；先前待查紀錄仍需核對',
+    feedback_points:'收到點數使用反饋，請人工核對',feedback_shopping:'收到購物／付款反饋，請人工核對',
+    feedback_identity:'收到登入／會員反饋',feedback_usability:'收到操作體驗反饋',feedback_feedback:'收到客戶反饋'};
+  const heading=row.category==='test'?'✅ HookTea 告警測試':row.code.endsWith('_recovered')?'✅ HookTea 狀態恢復':row.category==='feedback'?'📋 HookTea 客戶反饋（尚未核實）':'🚨 HookTea 系統待查';
+  const text=[heading,descriptions[row.code]||'系統異常',
     `類型：${row.category} / ${row.code}`,`入口：${row.route}`,
     `時間：${new Date(row.created_at*1000).toISOString()}`,`追蹤：${row.trace_id}`,
     `告警：${row.alert_id}`,`同類累計：${row.occurrences}`,
-    '請查看後端紀錄；通知不會自動補點、退款或回覆客戶。'].join('\n');
+    '請至後台 AI 監控查看；通知不會自動補點、退款或回覆客戶。'].join('\n');
   try {
     const response=await fetch('https://api.telegram.org/bot'+token+'/sendMessage',{
       method:'POST',headers:{'content-type':'application/json'},signal:AbortSignal.timeout(5000),
@@ -126,6 +138,17 @@ export function createIssueReporter(env,ctx,route,traceId) {
   };
 }
 
+// Caller uses this statement in the SAME D1 batch as incident state/evidence.
+// Stable outbox identities are retained, so unchanged issues do not re-alert tomorrow.
+export function durableAlertStatement(env,key,category,code,traceId,condition='1',bindings=[]) {
+  const now=Math.floor(Date.now()/1000);
+  if(!CATEGORIES.has(category)||!CODES.has(code)||String(key).length>300)throw Error('INVALID_ALERT_LABEL');
+  return env.DB.prepare(`INSERT OR IGNORE INTO operational_alerts
+    (alert_id,fingerprint,category,code,route,trace_id,created_at,updated_at,next_attempt_at)
+    SELECT ?,?,?,?,?,?,?,?,? WHERE ${condition}`)
+    .bind(crypto.randomUUID(),'durable:'+key,category,code,'cron',traceId,now,now,now,...bindings);
+}
+
 export async function drainAlerts(env) {
   if(!enabled(env))return;
   const now=Math.floor(Date.now()/1000);
@@ -134,7 +157,7 @@ export async function drainAlerts(env) {
       AND next_attempt_at<=? AND lease_until<=? ORDER BY created_at LIMIT 10`).bind(now,now).all()).results||[];
     // Bounded fan-out: <= 10 deliveries, each HTTP deadline 5 seconds.
     await Promise.all(rows.map(row=>deliver(env,row.alert_id,now).catch(()=>log({delivery:'retry_state_unknown'}))));
-    await env.DB.prepare('DELETE FROM operational_alerts WHERE sent_at IS NOT NULL AND updated_at<?').bind(now-7*86400).run();
+    await env.DB.prepare("DELETE FROM operational_alerts WHERE sent_at IS NOT NULL AND updated_at<? AND fingerprint NOT LIKE 'durable:%'").bind(now-7*86400).run();
   } catch {await storageFallback(env,crypto.randomUUID(),now);}
 }
 

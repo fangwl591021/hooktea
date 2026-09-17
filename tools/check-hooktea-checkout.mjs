@@ -349,3 +349,11 @@ test("unavailable points preserve the intended discount and prevent silently ord
   assert.equal(app.calls.filter(call => call.url === "/api/huaxu/orders").length, 0);
   assert.match(app.getElement("toast").textContent, /自行將折抵設為 0/);
 });
+
+test('product zero cap, quantity and member balance constrain the displayed deduction', async()=>{
+  const app=storefront();await app.ready();
+  app.run('products=[{id:"tea",name:"茶",price:100,pointsPrice:0}];cart=[{id:"tea",quantity:2}];pointDeduction=99;');
+  assert.equal(app.run('cartTotals().allowedPoints'),0);
+  app.run('products[0].pointsPrice=20;');assert.equal(app.run('cartTotals().allowedPoints'),40);
+  app.run('memberData.points.balance=15;');assert.equal(app.run('cartTotals().allowedPoints'),15);
+});

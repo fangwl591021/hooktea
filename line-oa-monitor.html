@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookTea LINE 聊天室監控</title>
-  <meta name="hooktea-release" content="20260916-monitor-auth-v1">
+  <meta name="hooktea-release" content="20260917-passive-monitor-v1">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { box-sizing: border-box; }
@@ -80,6 +80,20 @@
       <div class="bg-slate-700 px-6 py-2.5 text-sm font-black text-white">
         此頁只提供管理員監看與草稿，不消耗 LINE reply token。
       </div>
+      <details open class="shrink-0 border-b px-5 py-3">
+        <summary class="cursor-pointer font-bold">客戶反饋與系統待查 <span id="safety-summary" class="text-sm font-normal">讀取中</span></summary>
+        <div class="mt-2 flex flex-wrap gap-3 items-center text-sm">
+          <span id="ai-health">AI 尚未完成自測</span>
+          <button id="ai-self-test" class="rounded border px-3 py-1">安全連線自測</button>
+          <button id="safety-refresh" class="rounded border px-3 py-1">更新待辦</button>
+          <label><input id="feedback-all" type="checkbox"> 查看所有已收錄訊息</label>
+          <span>只監控，不對客戶生成回覆；每 30 秒更新待辦。</span>
+        </div>
+        <div id="feedback-list" class="mt-2 max-h-52 overflow-auto text-sm" aria-live="polite"></div>
+        <button id="feedback-more" hidden class="mt-2 border px-3 py-1 text-sm">載入較早紀錄</button>
+        <details class="mt-2 text-sm"><summary class="cursor-pointer">已知待查／新增追蹤異常（不代表九位客人或九筆點數錯誤）</summary><div id="tracking-list" class="max-h-32 overflow-auto"></div></details>
+        <details class="mt-2 text-sm"><summary class="cursor-pointer">最近系統錯誤與 Telegram 送達狀態</summary><div id="operational-errors" class="max-h-32 overflow-auto whitespace-pre-wrap"></div></details>
+      </details>
 
       <section class="flex-1 min-h-0 grid grid-cols-[1fr_360px]">
         <div class="min-w-0 flex flex-col">
@@ -551,6 +565,7 @@
     }
 
     async function loadAll(keepActive = true) {
+      loadSafety().catch(safetyError);
       const stamp = Date.now();
       const [audienceRes, threadsRes] = await Promise.all([
         fetchJson(`${WORKER_URL}/api/line-oa/audience?lineOnly=1&_=${stamp}`),
@@ -677,6 +692,55 @@
     }
 
     setupProcessingToolbar();
+
+    let safetyLoading=false,feedbackCursor=null;
+    const healthLabels={not_tested:'尚未完成自測',healthy:'連線正常',not_configured:'未設定金鑰',authentication_failed:'認證失敗',quota_exhausted:'額度不足',rate_limited:'受到限流',provider_unavailable:'服務暫時不可用',request_rejected:'請求未被接受',invalid_response:'回應格式異常',timeout:'連線逾時',network_error:'網路異常'};
+    function safetyError(error){
+      if(error.authRequired)return;
+      $("safety-summary").textContent='狀態讀取失敗，不能視為正常';
+    }
+    async function loadSafety(older=false){
+      if(safetyLoading)return;safetyLoading=true;
+      try{
+        const [status,feedback]=await Promise.all([
+          fetchJson('/api/line-oa/safety-status'),
+          fetchJson('/api/line-oa/feedback?all='+($("feedback-all").checked?'1':'0')+(older&&feedbackCursor?'&before='+feedbackCursor:'')),
+        ]);
+        const data=status.data,c=data.feedbackCounts||{},t=data.tracking.counts||{};
+        $("safety-summary").textContent=`｜未結反饋 ${c.openFeedback||0}｜待分析 ${c.pendingAnalysis||0}｜分析待查 ${c.failedAnalysis||0}｜新增追蹤 ${t.newUnresolved||0}｜已知待查 ${t.knownUnresolved||0}`;
+        $("ai-health").textContent='AI：'+(healthLabels[data.ai.status]||'狀態待查')+(data.ai.checked_at?'（'+new Date(data.ai.checked_at*1000).toLocaleString('zh-TW')+'）':'');
+        $("tracking-list").textContent=data.tracking.rows.map(row=>`${row.review_status==='known_unresolved'?'已知待查':'新增待查'}｜${row.started_at} UTC｜${row.operation||'舊紀錄未記功能'}｜${row.phase||'階段不明'}`).join('\n')||'沒有待查追蹤';
+        $("tracking-list").style.whiteSpace='pre-wrap';
+        $("operational-errors").textContent=(data.operationalErrors||[]).map(row=>`${new Date(row.created_at*1000).toLocaleString('zh-TW')}｜${row.category} / ${row.code}｜${row.route}｜${row.sent_at?'Telegram 已送達':'Telegram 待送'}｜追蹤 ${row.trace_id}`).join('\n')||'目前無錯誤紀錄';
+        const rows=feedback.data||[],labels=feedback.categoryLabels||{};
+        const markup=rows.map(row=>`<article class="border-b py-3">
+          <div class="font-bold">${esc(labels[row.category]||row.category)}｜${esc(row.review_state==='resolved'?'已處理':row.review_state==='acknowledged'?'處理中':'待處理')}｜${esc(row.analysis_state==='done'?'AI 已分類（需人工核對）':row.analysis_state==='review'?'分析未完成，原文保留':'規則初判／等待 AI 分析')}</div>
+          <div class="text-slate-500">${esc(new Date(row.event_at*1000).toLocaleString('zh-TW'))}｜LINE ${esc(row.thread_id)}</div>
+          <p class="whitespace-pre-wrap my-2">${esc(row.message_text)}</p>
+          <p class="text-xs text-slate-500 mb-2">追蹤 ${esc(row.trace_id)}</p>
+          <button class="feedback-thread border px-2 py-1 mr-2" data-thread="${esc(row.thread_id)}">查看聊天室</button>
+          <button class="feedback-review border px-2 py-1 mr-2" data-event="${esc(row.event_id)}" data-state="acknowledged">標記處理中</button>
+          <button class="feedback-review border px-2 py-1" data-event="${esc(row.event_id)}" data-state="resolved">標記已處理</button>
+        </article>`).join('');
+        if(older)$("feedback-list").insertAdjacentHTML('beforeend',markup);else $("feedback-list").innerHTML=markup||'<p>目前沒有符合條件的反饋；不代表歷史訊息都已分析。</p>';
+        feedbackCursor=rows.at(-1)?.cursor;$("feedback-more").hidden=rows.length<50;
+        document.querySelectorAll('.feedback-thread').forEach(button=>button.onclick=()=>loadThread(button.dataset.thread).catch(notifyError));
+        document.querySelectorAll('.feedback-review').forEach(button=>button.onclick=async()=>{
+          button.disabled=true;try{await fetchJson('/api/line-oa/feedback',{method:'POST',body:JSON.stringify({eventId:button.dataset.event,status:button.dataset.state})});await loadSafety();}
+          catch(error){safetyError(error);}finally{button.disabled=false;}
+        });
+      }finally{safetyLoading=false;}
+    }
+    $("safety-refresh").addEventListener('click',()=>loadSafety().catch(safetyError));
+    $("feedback-all").addEventListener('change',()=>loadSafety().catch(safetyError));
+    $("feedback-more").addEventListener('click',()=>loadSafety(true).catch(safetyError));
+    $("ai-self-test").addEventListener('click',async()=>{
+      $("ai-self-test").disabled=true;
+      try{const res=await fetchJson('/api/line-oa/ai-self-test',{method:'POST',body:'{}'});await loadSafety();
+        if(res.data.skipped)$("ai-health").textContent+='（冷卻中或正在檢查，未重複呼叫）';}
+      catch(error){safetyError(error);}finally{$("ai-self-test").disabled=false;}
+    });
+    setInterval(()=>{if(!document.hidden)loadSafety().catch(safetyError);},30000);
 
     document.querySelectorAll(".filter").forEach(btn => btn.addEventListener("click", () => {
       document.querySelectorAll(".filter").forEach(item => item.classList.remove("active"));

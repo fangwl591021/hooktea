@@ -15,6 +15,7 @@ const mf=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibi
   r2Buckets:{'act-image':'isolated-new-member'},kvNamespaces:{ACTION_DATA:'isolated-new-member'},d1Databases:{DB:'isolated-new-member'},
   bindings:{SHOP_MODULE:'huaxu',LINE_LOGIN_CHANNEL_ID:'2007674851',SHOP_LIFF_ID:'2007674851-test',
     HOOKTEA_NEW_MEMBER_CHILD_POINTS:'true',HOOKTEA_DAILY_SIGNIN_POINTS:'1',WP_SYNC_ENABLED:'false',
+    HOOKTEA_MONITOR_SAFETY:'true',HOOKTEA_KEYWORD_ONLY:'true',
     LINE_CHANNEL_SECRET:'isolated-secret',LINE_CHANNEL_ACCESS_TOKEN:'isolated-line-token',ADMIN_PASSWORD:'isolated-admin'},
   outboundService:async request=>{
     const url=new URL(request.url);network.push(url.origin+url.pathname);
@@ -31,7 +32,7 @@ let groups=0;
 const pass=s=>{groups++;console.log('PASS '+s);};
 try {
   const db=await mf.getD1Database('DB'),kv=await mf.getKVNamespace('ACTION_DATA'),r2=await mf.getR2Bucket('act-image');
-  for(const file of readdirSync(new URL('migrations/',root)).filter(f=>/^000[1-9]_.*\.sql$/.test(f)).sort()) {
+  for(const file of readdirSync(new URL('migrations/',root)).filter(f=>/^00\d\d_.*\.sql$/.test(f)).sort()) {
     const sql=readFileSync(new URL('migrations/'+file,root),'utf8').replace(/^--.*$/gm,'').trim();
     for(const statement of sql.split(/;\s*(?=CREATE\s|INSERT\s|DROP\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
   }
@@ -149,5 +150,14 @@ try {
   assert.equal((await db.prepare('SELECT COUNT(*) n FROM point_operations WHERE line_user_id=?').bind(UID).first()).n,0);
   assert(network.every(url=>url.startsWith('https://api.line.me/')),JSON.stringify(network));
   pass('member view reads the same 301 balance; zero mother calls and zero mother journal operations');
+  await kv.put('HUAXU_PRODUCTS',JSON.stringify([{id:'no-discount',name:'零折抵茶',price:100,pointsPrice:0,isPublished:true,status:'販賣中'}]));
+  await kv.put('PRODUCTS',JSON.stringify([{id:'no-discount',name:'零折抵茶',price:100,pointsPrice:0,isPublished:true,status:'販賣中'}]));
+  const zero=await call('/api/huaxu/orders',{...orderBody,clientOrderKey:'zero-cap',items:[{id:'no-discount',quantity:2}],pointsUsed:99});
+  assert.equal(zero.status,400,await zero.clone().text());assert.equal(await balance(UID),301);
+  const zeroAccepted=await call('/api/huaxu/orders',{...orderBody,clientOrderKey:'zero-cap-accepted',items:[{id:'no-discount',quantity:2}],pointsUsed:0});
+  assert.equal(zeroAccepted.status,200,await zeroAccepted.clone().text());
+  const zeroOrder=(await zeroAccepted.json()).order;assert.equal(zeroOrder.pointsUsed,0);assert.equal(zeroOrder.items[0].pointsPrice,0);
+  assert.equal(await balance(UID),301);
+  pass('zero product deduction remains zero through real checkout and order snapshot');
   console.log(groups+' workerd groups passed');
 } finally {await mf.dispose();}

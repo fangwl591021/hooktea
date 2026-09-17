@@ -10,6 +10,8 @@ import { createNewMemberPointService } from './new-member-points.js';
 import { reportIssue, observePointService, alertStatus, enqueueAlert } from './operational-alerts.js';
 import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
 import {createLegacyPointTransfer, renderLegacyTransferPage} from './legacy-point-transfer.js';
+import {captureMonitorEvents,runAiSelfTest,aiHealthStatus,listFeedback,categoryLabels,processMonitorFeedback} from './monitor-safety.js';
+import {trackingStatus} from './tracking-incidents.js';
 
 const utils = {
   hexToBytes: (hex) => {
@@ -178,7 +180,7 @@ function normalizeHuaxuProduct(raw, fallbackIndex = 0) {
     storeName: source.storeName || source.store_name || source.vendor || source.brand || "HookTea 商城",
     status,
     price: source.price || source.sale_price || source.salePrice || source.amount || source.points_price,
-    pointsPrice: source.pointsPrice || source.points_price || source.point_price || source.max_points || source.price,
+    pointsPrice: source.pointsPrice ?? source.points_price ?? source.point_price ?? source.max_points ?? source.price,
     image: source.image || source.image_url || source.imageUrl || source.thumbnail || source.cover,
     description: source.description || source.summary || source.content,
     sourceUrl: source.sourceUrl || source.url || source.link,
@@ -1732,8 +1734,8 @@ async function importWpProductsFromActionEndpoint(siteUrl, postIds, authHeader) 
     code: item.code || item.product_code,
     storeName: item.storeName || item.store_name || "HookTea",
     status: item.status || item.product_status || "販賣中",
-    price: item.price || item.pointsPrice || item.points_price || 0,
-    pointsPrice: item.pointsPrice || item.points_price || item.price || 0,
+    price: item.price ?? item.pointsPrice ?? item.points_price ?? 0,
+    pointsPrice: item.pointsPrice ?? item.points_price ?? item.price ?? 0,
     image: item.image || item.featured_image || "",
     description: item.description || item.content || "",
     sourceUrl: item.sourceUrl || item.edit_url || "",
@@ -4961,6 +4963,32 @@ async function handleHookTeaMonitorApi(request, env) {
   const auth = await requireHookTeaMonitorAdmin(request, env);
   if (!auth.ok) return auth.response;
   const url = new URL(request.url);
+  if(String(env.HOOKTEA_MONITOR_SAFETY)==='true') {
+    const options={headers:{'Cache-Control':'no-store'}};
+    if(url.pathname==='/api/line-oa/ai-self-test') {
+      if(request.method==='GET')return Response.json({success:true,data:await aiHealthStatus(env)},options);
+      if(request.method==='POST')return Response.json({success:true,data:await runAiSelfTest(env,{manual:true})},options);
+      return new Response('METHOD_NOT_ALLOWED',{status:405});
+    }
+    if(url.pathname==='/api/line-oa/safety-status'&&request.method==='GET')return Response.json({success:true,data:{
+      ai:await aiHealthStatus(env),tracking:await trackingStatus(env),
+      feedbackCounts:await env.DB.prepare(`SELECT COUNT(*) total,SUM(category<>'none' AND review_state<>'resolved') openFeedback,
+        SUM(analysis_state='pending') pendingAnalysis,SUM(analysis_state='review') failedAnalysis FROM monitor_feedback`).first(),
+      operationalErrors:(await env.DB.prepare(`SELECT category,code,route,trace_id,occurrences,created_at,sent_at,last_error
+        FROM operational_alerts WHERE category NOT IN ('feedback','test') ORDER BY created_at DESC LIMIT 30`).all()).results||[],
+      customerAiReplies:false,keywordOnly:String(env.HOOKTEA_KEYWORD_ONLY)==='true',
+    }},options);
+    if(url.pathname==='/api/line-oa/feedback'&&request.method==='GET')return Response.json({success:true,
+      data:await listFeedback(env,{before:Number(url.searchParams.get('before'))||undefined,all:url.searchParams.get('all')==='1'}),categoryLabels},options);
+    if(url.pathname==='/api/line-oa/feedback'&&request.method==='POST') {
+      const body=await request.json();
+      if(!['acknowledged','resolved'].includes(body.status)||typeof body.eventId!=='string'||body.eventId.length>200)
+        return Response.json({success:false,error:'INVALID_REVIEW'},{status:400});
+      await env.DB.prepare('UPDATE monitor_feedback SET review_state=?,reviewed_at=? WHERE event_id=?')
+        .bind(body.status,Math.floor(Date.now()/1000),body.eventId).run();
+      return Response.json({success:true},options);
+    }
+  }
   if (url.pathname === "/api/line-oa/keyword-diagnostics" && request.method === "GET") {
     const keys = [
       "LINE_WEBHOOK_LAST",
@@ -5054,6 +5082,11 @@ async function handleHookTeaMonitorApi(request, env) {
     return json({ success: true, data: await getHookTeaMonitorThread(env, id) });
   }
   if (url.pathname === "/api/line-oa/backfill-signals" && ["GET", "POST"].includes(request.method)) {
+    if(String(env.HOOKTEA_MONITOR_SAFETY)==='true') {
+      if(request.method!=='POST')return new Response('METHOD_NOT_ALLOWED',{status:405});
+      await processMonitorFeedback(env);
+      return Response.json({success:true,data:{queuedAnalysis:true}},{headers:{'Cache-Control':'no-store'}});
+    }
     const rows = await buildHookTeaMonitorRows(env, { detailed: true });
     const body = request.method === "POST" ? await request.json().catch(() => ({})) : {};
     const limit = Math.max(1, Math.min(20, Number(body.limit || url.searchParams.get("limit") || 10)));
@@ -5827,7 +5860,7 @@ async function createHuaxuOrderOnce(request, env, ctx, apiHandler, verifiedIdent
       price: item.price,
       quantity: item.quantity,
       lineTotal: item.lineTotal,
-      pointsPrice: item.pointsPrice || item.pointPrice || item.price || 0,
+      pointsPrice: item.pointsPrice ?? item.pointPrice ?? item.price ?? 0,
     })),
     lineProfile,
     createdAt: new Date().toLocaleString(),
@@ -7718,6 +7751,7 @@ export default {
     try {
       const body = await request.json();
       const { action, payload, userProfile, idToken, accessToken } = body;
+      if(ctx?.setOperation)await ctx.setOperation(action);
       const claimedUserId = userProfile?.userId || payload?.userId || "GUEST";
       let result = { status: "success", data: null };
 
@@ -9713,6 +9747,10 @@ export default {
       return new Response("OK", { status: 200 });
     }
     try {
+      if(String(env.HOOKTEA_MONITOR_SAFETY)==='true') {
+        try {await captureMonitorEvents(env,events);}
+        catch {reportIssue(env,'storage','storage_failed');return new Response('MONITOR_STORAGE_UNAVAILABLE',{status:503});}
+      }
       const receiptTask = safePutKV(env, "LINE_WEBHOOK_LAST", {
         receivedAt: new Date().toISOString(),
         eventCount: events.length,
@@ -9731,6 +9769,9 @@ export default {
       const template = await getHookTeaCheckinTemplate(env).catch(() => null);
       const routedEvents = await Promise.all(events.map(async event => {
         let owner = selectLineWebhookEventOwner(event, webhookSettings, template);
+        // Independent of point-authority flags: free text/non-keyword events
+        // must never reach a downstream AI or consume a reply token.
+        if(String(env.HOOKTEA_KEYWORD_ONLY)==='true'&&owner==='mother')owner='silent';
         if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) !== 'true') return {event,owner};
         const uid = event?.source?.userId;
         if (!/^U[0-9a-f]{32}$/.test(uid || '')) return {event,owner:'silent'};
@@ -9828,7 +9869,7 @@ export default {
             } else {
               handled = await handleLineMemberBindText(env, ctx, event);
               // Only an explicit no-match can release ownership to the mother.
-              if (!handled) owner = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' ? 'silent' : 'mother';
+              if (!handled) owner = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true' || String(env.HOOKTEA_KEYWORD_ONLY)==='true' ? 'silent' : 'mother';
             }
             if (!handled && !owner.startsWith("mother")) {
               if(owner!=='silent')reportIssue(env,'line','line_handler_failed');

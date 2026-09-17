@@ -81,6 +81,14 @@ function runtime(options = {}) {
     async action(action, payload = {}) { return sandbox.worker.handleApiActions(request({ action, payload }), env, ctx, {}); } };
 }
 
+test('product normalization preserves explicit zero across supported source fields',()=>{
+  const h=runtime(),normalize=h.get('normalizeHuaxuProduct');
+  for(const field of ['pointsPrice','points_price','point_price','max_points']){
+    const product=normalize({id:'zero',name:'Tea',price:100,[field]:0});assert.equal(product.pointsPrice,0);
+  }
+  assert.equal(normalize({id:'default',name:'Tea',price:100}).pointsPrice,100);
+});
+
 test('different simultaneous rewards serialize and retain both credits', async () => {
   const h = ledger();
   await Promise.all([h.service.submit(h.input('first'), member), h.service.submit(h.input('second'), member)]);
