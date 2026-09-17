@@ -6228,7 +6228,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       <div class="form-title">點數折抵</div>
       <div class="point-row">
         <input class="field" id="pointsUsed" type="number" min="0" step="1" inputmode="numeric" placeholder="輸入要折抵的點數" oninput="setPointDeduction(this.value)">
-        <button class="mini-button" type="button" onclick="useMaxPoints()">全抵</button>
+        <button class="mini-button" id="useMaxPointsButton" type="button" onclick="useMaxPoints()" disabled>全抵</button>
       </div>
       <div class="point-note" id="pointNote">登入後可使用會員點數折抵。</div>
       <div class="form-title">收件人資料</div>
@@ -6516,6 +6516,20 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         return Promise.resolve();
       }
     }
+    const checkoutBlockReports = new Map();
+    function logCheckoutBlock(reason){
+      // Client observations, not proof of a failed transaction. Do not include
+      // member details, cart contents, free text or OAuth query parameters.
+      const now = Date.now();
+      if (checkoutBlockReports.has(reason) && now - checkoutBlockReports.get(reason) < 30000) return;
+      checkoutBlockReports.set(reason, now);
+      void logCartActivity("checkout_blocked", {
+        status: "blocked", stage: reason, errorMessage: reason,
+        lineUserId: "", memberUid: "", displayName: "", pictureUrl: "",
+        items: [], itemsCount: 0, subtotal: 0, payable: 0, pointsUsed: 0,
+        paymentMethod: "", href: location.origin + location.pathname, userAgent: ""
+      });
+    }
     async function initLineIdentity(forceLogin){
       if (lineIdentityLoading) return;
       if (!window.liff) {
@@ -6776,8 +6790,11 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       const shippingFee = subtotal > 0 && !(freeAt > 0 && subtotal >= freeAt) ? baseShipping : 0;
       return { subtotal, maxPoints, memberBalance, allowedPoints, used, shippingFee, freeShippingSubtotal: freeAt, payable: Math.max(0, subtotal + shippingFee - used) };
     }
+    function pointsReadyForDiscount(){
+      return !!(memberVerified && !memberLoading && memberData?.points?.shared?.ok && memberData.points.available !== false && !memberData.points.reconciliationRequired);
+    }
     function memberPointBalance(){
-      if (!memberVerified || memberLoading || !memberData?.points?.shared?.ok || memberData.points.available === false || memberData.points.reconciliationRequired) return 0;
+      if (!pointsReadyForDiscount()) return 0;
       return Math.max(0, Math.floor(Number(memberData.points.balance || 0)));
     }
     function fallbackMemberData(reason){
@@ -6820,6 +6837,10 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
     }
     function useMaxPoints(){
       if (!lineProfile.userId) return loginLine();
+      if (!pointsReadyForDiscount()) {
+        logCheckoutBlock(memberLoading ? "points_syncing" : "points_unavailable");
+        return toast(memberLoading ? "點數同步中，已保留原本折抵設定，請稍候再按全抵。" : "點數尚未確認，已保留原本折抵設定，請重新載入會員資料後再試。");
+      }
       const totals = cartTotals();
       pointDeduction = totals.allowedPoints;
       clampPointDeduction();
@@ -6837,8 +6858,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         +'<div class="summary-row"><span>點數折抵</span><b>- $'+money(totals.used)+'</b></div>'
         +'<div class="summary-row total"><span>實付金額</span><b>$'+money(totals.payable)+'</b></div>';
       const note = document.getElementById("pointNote");
+      const maxButton = document.getElementById("useMaxPointsButton");
+      if (maxButton) {
+        maxButton.disabled = !pointsReadyForDiscount();
+        maxButton.textContent = memberLoading ? "同步中…" : "全抵";
+      }
       if (note) {
-        const canUse = memberVerified && !memberLoading && !!memberData?.points?.shared?.ok && memberData.points.available !== false && !memberData.points.reconciliationRequired;
+        const canUse = pointsReadyForDiscount();
         note.className = "point-note" + (!canUse || (!totals.allowedPoints && totals.subtotal > 0) ? " warn" : "");
         note.textContent = !lineProfile.userId
           ? "請先登入 LINE 才能使用點數折抵。"
@@ -7036,12 +7062,19 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
     async function checkout(){
       if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
-      if (!requireReadyMember()) return;
+      const memberWasSyncing = memberLoading || lineIdentityLoading;
+      if (!requireReadyMember()) {
+        logCheckoutBlock(memberWasSyncing ? "member_syncing" : "member_unverified");
+        return;
+      }
       if (memberData?.member?.registrationStatus !== "registered") {
         openRegistration();
         return toast("網路購物前請先完成會員註冊；購物車與收件資料已保留。");
       }
-      if (pointDeduction > 0 && (!memberData?.points?.shared?.ok || memberData.points.available === false || memberData.points.reconciliationRequired)) return toast("目前無法確認折抵點數，請稍後重試，或自行將折抵設為 0 點後送出。");
+      if (pointDeduction > 0 && !pointsReadyForDiscount()) {
+        logCheckoutBlock("points_unavailable");
+        return toast("目前無法確認折抵點數，請稍後重試，或自行將折抵設為 0 點後送出。");
+      }
       let pending = null;
       try { pending = JSON.parse(sessionStorage.getItem(PENDING_CHECKOUT_KEY) || "null"); } catch (error) {}
       if (pending?.orderId && pending.lineUserId === verifiedMemberUid) { await verifyPaymentReturn(); return; }
@@ -7230,6 +7263,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       } catch (error) {
         console.warn("Member profile load failed", error);
         memberData = fallbackMemberData(error?.name === "AbortError" ? "timeout" : "sync_failed");
+        if (!REGISTRATION_ENTRY && cart.length) logCheckoutBlock(error?.name === "AbortError" ? "member_timeout" : "member_sync_failed");
         toast(error?.name === "AbortError" ? "會員資料讀取逾時，請重試；收件資料已保留。" : (error.message || "會員身分確認失敗，請重新登入。"));
       } finally {
         memberLoading = false;

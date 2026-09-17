@@ -357,3 +357,70 @@ test('product zero cap, quantity and member balance constrain the displayed dedu
   app.run('products[0].pointsPrice=20;');assert.equal(app.run('cartTotals().allowedPoints'),40);
   app.run('memberData.points.balance=15;');assert.equal(app.run('cartTotals().allowedPoints'),15);
 });
+
+test('maximum discount is disabled while syncing and never erases a saved choice', async()=>{
+  const app=storefront({local:{huaxu_cart:cart,huaxu_points_used:'50'}});await app.ready();
+  assert.match(html,/id="useMaxPointsButton"[^>]*disabled/);
+  app.run('memberLoading=true;renderCart();useMaxPoints()');
+  assert.equal(app.getElement('useMaxPointsButton').disabled,true);
+  assert.equal(app.run('pointDeduction'),50);
+  assert.equal(app.localStorage.getItem('huaxu_points_used'),'50');
+  app.run('memberLoading=false;renderCart()');
+  assert.equal(app.getElement('useMaxPointsButton').disabled,false);
+  assert.equal(app.run('pointDeduction'),50);
+  app.run('useMaxPoints()');
+  assert.equal(app.run('pointDeduction'),100);
+});
+
+test('unavailable, unverified and reconciling points cannot silently replace discount with zero', async()=>{
+  for(const state of ['memberVerified=false','memberData.points.available=false','memberData.points.shared.ok=false','memberData.points.reconciliationRequired=true']){
+    const app=storefront({local:{huaxu_cart:cart,huaxu_points_used:'50'}});await app.ready();
+    app.run(state+';renderCart();useMaxPoints()');
+    assert.equal(app.getElement('useMaxPointsButton').disabled,true,state);
+    assert.equal(app.run('pointDeduction'),50,state);
+    assert.equal(app.localStorage.getItem('huaxu_points_used'),'50',state);
+  }
+});
+
+test('point preflight blocks are recorded once without private data or OAuth parameters', async()=>{
+  const app=storefront({local:{huaxu_cart:cart,huaxu_points_used:'50'},search:'?code=private-code&state=private-state'});await app.ready();app.fill();
+  app.run('memberData.points.available=false');
+  await app.run('checkout()');await app.run('checkout()');
+  assert.equal(app.calls.filter(c=>c.url==='/api/huaxu/orders').length,0);
+  const events=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body)).filter(e=>e.eventType==='checkout_blocked');
+  assert.equal(events.length,1);
+  assert.equal(events[0].stage,'points_unavailable');
+  assert.equal(events[0].status,'blocked');
+  for(const field of ['lineUserId','memberUid','displayName','pictureUrl']) assert.equal(events[0][field],'');
+  assert.deepEqual(events[0].items,[]);
+  assert.equal(events[0].href,'https://shop.example.test/');
+  assert.doesNotMatch(JSON.stringify(events),/private-code|private-state|0912345678|test@example|重慶|verified-test-token/);
+});
+
+test('member preflight block is observable without allowing anonymous orders', async()=>{
+  const app=storefront({local:{huaxu_cart:cart},loggedIn:false});
+  await app.run('checkout()');
+  const event=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body)).find(e=>e.eventType==='checkout_blocked');
+  assert.equal(event.stage,'member_unverified');
+  assert.equal(app.calls.some(c=>c.url==='/api/huaxu/orders'),false);
+});
+
+test('diagnostic network failure never releases the discount guard or erases draft', async()=>{
+  const app=storefront({local:{huaxu_cart:cart,huaxu_points_used:'50'},request:url=>{if(url==='/api/huaxu/cart-activity')throw new Error('offline');}});await app.ready();app.fill();
+  app.run('memberData.points.available=false');await app.run('checkout()');
+  assert.equal(app.run('pointDeduction'),50);
+  assert.equal(app.run('cart.length'),1);
+  assert.equal(app.calls.some(c=>c.url==='/api/huaxu/orders'),false);
+  assert.equal(JSON.parse(app.localStorage.getItem(userKey)).fields.phone,fields.phone);
+});
+
+test('timed out member read preserves discount intent and records a fixed non-private reason', async()=>{
+  const app=storefront({local:{huaxu_cart:cart,huaxu_points_used:'50'},request:url=>{
+    if(url==='/api/huaxu/member'){const error=new Error('private upstream failure');error.name='AbortError';throw error;}
+  }});await app.ready();
+  assert.equal(app.run('pointDeduction'),50);
+  assert.equal(app.getElement('useMaxPointsButton').disabled,true);
+  const events=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body));
+  assert.ok(events.some(e=>e.stage==='member_timeout'));
+  assert.doesNotMatch(JSON.stringify(events),/private upstream failure/);
+});
