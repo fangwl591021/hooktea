@@ -403,6 +403,7 @@
                             <div>
                                 <h2 class="text-xl font-black text-slate-800"><i class="fas fa-shopping-cart text-emerald-500 mr-2"></i>購物車紀錄</h2>
                                 <p class="text-sm text-slate-500 font-bold mt-1">追蹤會員進入購物車、結帳開始、失敗、付款跳轉與放棄紀錄。</p>
+                                <p class="text-xs text-slate-500 mt-1">這裡是操作紀錄，不是訂單清單；沒有異常紀錄不代表歷史上未發生問題。</p>
                             </div>
                             <button @click="loadCartActivity" class="btn-outline" :disabled="isLoadingCartActivity"><i class="fas fa-sync-alt mr-2" :class="{'fa-spin': isLoadingCartActivity}"></i>重新整理</button>
                         </div>
@@ -419,6 +420,11 @@
                                 <option value="REDIRECTING">付款跳轉</option>
                             </select>
                         </div>
+                        <div class="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                            <span>{{ cartActivityFilterSummary }}</span>
+                            <button v-if="cartActivityHasFilter" @click="clearCartActivityFilters" :disabled="isLoadingCartActivity" class="text-blue-600 font-bold underline">清除篩選，查看全部</button>
+                        </div>
+                        <p v-if="cartActivityLoadError && cartActivityLogs.length" role="alert" class="mt-3 text-sm text-red-600">紀錄讀取失敗，目前顯示上次結果；請重新整理。</p>
                         <div v-if="cartActivityDiagnostic" class="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm">
                             <div class="font-black text-blue-900">UID 診斷：{{ cartActivityDiagnostic.queryUid }}</div>
                             <div class="text-blue-800 mt-1">會員：{{ cartActivityDiagnostic.member?.name || '未找到 CRM 會員' }} / 會員編號：{{ cartActivityDiagnostic.memberUid || '-' }} / 相關訂單：{{ cartActivityDiagnostic.orders?.length || 0 }} 筆</div>
@@ -436,7 +442,7 @@
                                     <td><div class="font-mono text-[12px] text-blue-600">{{ row.orderId || '-' }}</div><div class="text-[12px] text-red-600 font-bold max-w-[300px] mt-1">{{ cartActivityErrorText(row) }}</div></td>
                                     <td><div class="text-[11px] text-slate-400 max-w-[260px] break-words">{{ row.userAgent || '-' }}</div></td>
                                 </tr>
-                                <tr v-if="!cartActivityLogs.length"><td colspan="6" class="text-center py-20 text-slate-300 font-bold">目前沒有購物車紀錄</td></tr>
+                                <tr v-if="!cartActivityLogs.length"><td colspan="6" class="text-center py-20 text-slate-500 font-bold" role="status">{{ cartActivityEmptyText }}</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1926,6 +1932,24 @@
                     const cartActivityLogs = ref([]);
                     const cartActivityDiagnostic = ref(null);
                     const isLoadingCartActivity = ref(false);
+                    // Cart activity presentation: distinguish filters, loading, and read failures.
+                    const cartActivityLoadError = ref(false);
+                    const cartActivityHasFilter = computed(() => cartActivityStatus.value !== 'ALL' || !!cartActivitySearch.value.trim());
+                    const cartActivityFilterSummary = computed(() => {
+                        const labels = { ALL: '全部狀態', BLOCKED: '結帳受阻', ISSUES: '受阻／失敗', ACTIVE: '進行中', ABANDONED: '放棄/關閉', FAILED: '送出失敗', SUBMITTED: '已成立訂單', REDIRECTING: '付款跳轉' };
+                        return `目前篩選：${labels[cartActivityStatus.value] || cartActivityStatus.value}${cartActivitySearch.value.trim() ? '＋搜尋條件' : ''}（最多 ${cartActivityStatus.value === 'ISSUES' ? 500 : 300} 筆）`;
+                    });
+                    const cartActivityEmptyText = computed(() => {
+                        if (isLoadingCartActivity.value) return '購物車紀錄載入中…';
+                        if (cartActivityLoadError.value) return '購物車紀錄讀取失敗，請重新整理；尚無法確認是否有紀錄。';
+                        return cartActivityHasFilter.value ? '沒有符合目前篩選的紀錄，可清除篩選查看全部。' : '目前沒有已保存的購物車操作紀錄；訂單請至「訂單維護」查看。';
+                    });
+                    const clearCartActivityFilters = () => {
+                        cartActivitySearch.value = '';
+                        cartActivityStatus.value = 'ALL';
+                        return loadCartActivity();
+                    };
+                    // End cart activity presentation.
                     const pointsLedgerSearch = ref('');
                     const auditLogSearch = ref('');
                     const flexRuleSearch = ref('');
@@ -2222,12 +2246,14 @@
                     const loadCartActivity = async () => {
                         if (!isAdminRole.value) return;
                         isLoadingCartActivity.value = true;
+                        cartActivityLoadError.value = false;
                         try {
                             const issuesOnly = cartActivityStatus.value === 'ISSUES';
                             const data = await callApi('ADMIN_GET_CART_ACTIVITY', { search: cartActivitySearch.value, status: issuesOnly ? 'ALL' : cartActivityStatus.value, limit: issuesOnly ? 500 : 300 }, true);
                             cartActivityLogs.value = issuesOnly ? (data?.logs || []).filter(isOperationCartIssue) : (data?.logs || []);
                             cartActivityDiagnostic.value = data?.diagnostic || null;
                         } catch (error) {
+                            cartActivityLoadError.value = true;
                             alert(`購物車紀錄讀取失敗：${error.message}`);
                         } finally {
                             isLoadingCartActivity.value = false;
@@ -4811,6 +4837,7 @@
                         adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         operationsLoading, operationsUpdatedAt, operationsAiHealthy, operationsAiLabel, operationsAiTime, operationsCartLabel, operationsFeedbackLabel, operationsTrackingLabel, operationsErrorsLabel, loadOperationsStatus, openOperationCartIssues, cartActivityErrorText,
+                        cartActivityLoadError, cartActivityHasFilter, cartActivityFilterSummary, cartActivityEmptyText, clearCartActivityFilters,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
                         memberSearch, memberDateSort, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
