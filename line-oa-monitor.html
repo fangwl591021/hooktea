@@ -711,7 +711,7 @@
         $("ai-health").textContent='AI：'+(healthLabels[data.ai.status]||'狀態待查')+(data.ai.checked_at?'（'+new Date(data.ai.checked_at*1000).toLocaleString('zh-TW')+'）':'');
         $("tracking-list").textContent=data.tracking.rows.map(row=>`${row.review_status==='known_unresolved'?'已知待查':'新增待查'}｜${row.started_at} UTC｜${row.operation||'舊紀錄未記功能'}｜${row.phase||'階段不明'}`).join('\n')||'沒有待查追蹤';
         $("tracking-list").style.whiteSpace='pre-wrap';
-        $("operational-errors").textContent=(data.operationalErrors||[]).map(row=>`${new Date(row.created_at*1000).toLocaleString('zh-TW')}｜${row.category} / ${row.code}｜${row.route}｜${row.sent_at?'Telegram 已送達':'Telegram 待送'}｜追蹤 ${row.trace_id}`).join('\n')||'目前無錯誤紀錄';
+        $("operational-errors").textContent=(data.operationalErrors||[]).map(row=>`${new Date(row.created_at*1000).toLocaleString('zh-TW')}｜${row.category} / ${row.code}｜${row.route}｜${['tracking_unresolved','tracking_recovered'].includes(row.code)?(row.sent_at?'歷史已發；此類現僅後台待查、不再通知':'僅後台待查，不發 Telegram'):row.sent_at?'Telegram 已送達':'Telegram 待送'}｜追蹤 ${row.trace_id}`).join('\n')||'目前無錯誤紀錄';
         const rows=feedback.data||[],labels=feedback.categoryLabels||{};
         const markup=rows.map(row=>`<article class="border-b py-3">
           <div class="font-bold">${esc(labels[row.category]||row.category)}｜${esc(row.review_state==='resolved'?'已處理':row.review_state==='acknowledged'?'處理中':'待處理')}｜${esc(row.analysis_state==='done'?'AI 已分類（需人工核對）':row.analysis_state==='review'?'分析未完成，原文保留':'規則初判／等待 AI 分析')}</div>

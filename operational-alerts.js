@@ -1,5 +1,9 @@
 // Only fixed operational labels and server-generated trace IDs may leave the site.
-export const ALERT_RELEASE = '20260916-telegram-alerts-v1';
+export const ALERT_RELEASE = '20260917-evidence-gated-alerts-v2';
+// Missing bookkeeping is not evidence of a customer-facing failure.
+// Keep its audit/review in D1, but do not notify (including old queued rows).
+const LOCAL_ONLY_CODES = new Set(['tracking_unresolved','tracking_recovered']);
+const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered')";
 const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test','ai','feedback']);
 const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_failed','background_failed',
   'identity_conflict','enrollment_failed','points_pending','points_unavailable','points_failed',
@@ -45,6 +49,7 @@ async function boundedJson(response,limit=16384) {
 }
 
 async function send(env,row) {
+  if(LOCAL_ONLY_CODES.has(row.code))return {ok:false,suppressed:true,error:'insufficient_evidence'};
   const {token,chatId}=await telegramAlertConfig(env);
   if(!token || !chatId)return {ok:false,error:'not_configured',delay:300};
   const descriptions={internal_error:'系統處理失敗',http_5xx:'伺服器錯誤',admission_failed:'交易追蹤無法建立',
@@ -81,7 +86,7 @@ async function send(env,row) {
 async function deliver(env,id,now=Math.floor(Date.now()/1000)) {
   const lease=crypto.randomUUID();
   const row=await env.DB.prepare(`UPDATE operational_alerts SET lease_token=?,lease_until=?,attempts=attempts+1
-    WHERE alert_id=? AND sent_at IS NULL AND next_attempt_at<=? AND lease_until<=? RETURNING *`)
+    WHERE alert_id=? AND sent_at IS NULL AND next_attempt_at<=? AND lease_until<=? AND ${NOT_LOCAL_ONLY_SQL} RETURNING *`)
     .bind(lease,now+90,id,now,now).first();
   if(!row)return {ok:false,skipped:true};
   const result=await send(env,row);
@@ -108,6 +113,7 @@ export async function enqueueAlert(env,input) {
   if(!enabled(env))return {enabled:false};
   const now=Math.floor(Date.now()/1000),id=crypto.randomUUID();
   const category=label(CATEGORIES,input.category,'request'),code=label(CODES,input.code,'internal_error');
+  if(LOCAL_ONLY_CODES.has(code))return {ok:false,suppressed:true,reason:'insufficient_evidence'};
   const route=label(ROUTES,input.route,'/api');
   const traceId=/^[0-9a-f-]{36}$/.test(input.traceId||'')?input.traceId:crypto.randomUUID();
   // Five-minute fixed buckets coalesce concurrent errors across isolates.
@@ -145,7 +151,7 @@ export function durableAlertStatement(env,key,category,code,traceId,condition='1
   if(!CATEGORIES.has(category)||!CODES.has(code)||String(key).length>300)throw Error('INVALID_ALERT_LABEL');
   return env.DB.prepare(`INSERT OR IGNORE INTO operational_alerts
     (alert_id,fingerprint,category,code,route,trace_id,created_at,updated_at,next_attempt_at)
-    SELECT ?,?,?,?,?,?,?,?,? WHERE ${condition}`)
+    SELECT ?,?,?,?,?,?,?,?,? WHERE (${condition}) AND ${LOCAL_ONLY_CODES.has(code)?'0':'1'}`)
     .bind(crypto.randomUUID(),'durable:'+key,category,code,'cron',traceId,now,now,now,...bindings);
 }
 
@@ -154,7 +160,7 @@ export async function drainAlerts(env) {
   const now=Math.floor(Date.now()/1000);
   try {
     const rows=(await env.DB.prepare(`SELECT alert_id FROM operational_alerts WHERE sent_at IS NULL
-      AND next_attempt_at<=? AND lease_until<=? ORDER BY created_at LIMIT 10`).bind(now,now).all()).results||[];
+      AND next_attempt_at<=? AND lease_until<=? AND ${NOT_LOCAL_ONLY_SQL} ORDER BY created_at LIMIT 10`).bind(now,now).all()).results||[];
     // Bounded fan-out: <= 10 deliveries, each HTTP deadline 5 seconds.
     await Promise.all(rows.map(row=>deliver(env,row.alert_id,now).catch(()=>log({delivery:'retry_state_unknown'}))));
     await env.DB.prepare("DELETE FROM operational_alerts WHERE sent_at IS NOT NULL AND updated_at<? AND fingerprint NOT LIKE 'durable:%'").bind(now-7*86400).run();
@@ -164,7 +170,9 @@ export async function drainAlerts(env) {
 export async function alertStatus(env) {
   const config=await telegramAlertConfig(env);
   const counts=(await env.DB.prepare(`SELECT COUNT(*) total,
-    SUM(CASE WHEN sent_at IS NULL THEN 1 ELSE 0 END) pending,MAX(sent_at) lastSentAt FROM operational_alerts`).first());
+    SUM(CASE WHEN sent_at IS NULL AND ${NOT_LOCAL_ONLY_SQL} THEN 1 ELSE 0 END) pending,
+    SUM(CASE WHEN sent_at IS NULL AND NOT (${NOT_LOCAL_ONLY_SQL}) THEN 1 ELSE 0 END) localOnly,
+    MAX(sent_at) lastSentAt FROM operational_alerts`).first());
   return {release:ALERT_RELEASE,enabled:enabled(env),configured:!!(config.token&&config.chatId),...counts};
 }
 

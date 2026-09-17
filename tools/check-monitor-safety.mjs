@@ -97,14 +97,16 @@ try {
   assert.equal(row.analysis_state,'review');assert.equal(row.message_text,'這樣每次都要找人幫忙');assert.equal(row.attempts,3);
   const before=aiCalls.length;await post('/__process',{});assert.equal(aiCalls.length,before);assert.equal(await countAlerts('ai_analysis_failed'),1);
  });
- await check('old missing completion is known unresolved, not done; only new incident alerts once',async()=>{
+ await check('old and new missing completion stay in local review without owner alarms',async()=>{
   await post('/__tracking',{});assert.equal(await countAlerts('tracking_unresolved'),0);
   assert.equal((await db.prepare('SELECT state FROM crm_request_leases WHERE lease_id=?').bind(oldId).first()).state,'active');
   const id=randomUUID();await db.prepare("INSERT INTO crm_request_leases(lease_id,release,state,started_at) VALUES(?,'test','active','2026-01-01 00:00:00')").bind(id).run();
   await Promise.all([post('/__tracking',{}),post('/__tracking',{})]);await post('/__tracking',{});
-  assert.equal(await countAlerts('tracking_unresolved'),1);
+  assert.equal(await countAlerts('tracking_unresolved'),0);
+  assert.equal((await db.prepare('SELECT status FROM crm_request_reviews WHERE lease_id=?').bind(id).first()).status,'known_unresolved');
   await db.prepare("UPDATE crm_request_leases SET state='done',finished_at=CURRENT_TIMESTAMP WHERE lease_id=?").bind(id).run();
-  await post('/__tracking',{});await post('/__tracking',{});assert.equal(await countAlerts('tracking_recovered'),1);
+  await post('/__tracking',{});await post('/__tracking',{});assert.equal(await countAlerts('tracking_recovered'),0);
+  assert.equal((await db.prepare('SELECT status FROM crm_request_reviews WHERE lease_id=?').bind(id).first()).status,'resolved');
  });
  await check('unknown free text and follow cannot reach mother or AI even with child-wallet flag absent',async()=>{
   const body=JSON.stringify({events:[event('real-webhook','點數又不同步了'),{type:'follow',source:{userId:uid},webhookEventId:'follow',replyToken:'NEVER'}]});

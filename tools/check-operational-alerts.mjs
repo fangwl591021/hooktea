@@ -8,10 +8,16 @@ const {Miniflare}=require('miniflare'),{build}=require('esbuild');
 const root=new URL('../',import.meta.url);
 const bundle=await build({stdin:{resolveDir:fileURLToPath(root),contents:`
 import worker from './tracked-worker.js';
-import {enqueueAlert,drainAlerts,observePointService,inspectAlertResponse} from './operational-alerts.js';
+import {enqueueAlert,drainAlerts,observePointService,inspectAlertResponse,durableAlertStatement,alertStatus} from './operational-alerts.js';
 export default {async fetch(r,env,ctx){
  const p=new URL(r.url).pathname;
  if(p==='/__alert')return Response.json(await enqueueAlert(env,await r.json()));
+ if(p==='/__drain-now'){await drainAlerts(env);return Response.json(await alertStatus(env));}
+ if(p==='/__local-only'){
+   const {code}=await r.json();
+   await env.DB.batch([durableAlertStatement(env,'suppressed:'+code,'tracking',code,crypto.randomUUID())]);
+   return new Response('ok');
+ }
  if(p==='/__drain'){await worker.scheduled({},env,ctx);return new Response('ok');}
  if(p==='/__points'){
    const calls=[];const e={HOOKTEA_REPORT_ISSUE:i=>calls.push(i)};
@@ -91,6 +97,25 @@ try {
  await until(async()=>(await rows()).some(x=>x.category==='line'&&x.route==='/line-webhook'));
  assert.equal((await db.prepare('SELECT balance FROM child_point_wallets WHERE line_uid=?').bind(uid).first()).balance,0);
  pass('signed real webhook with failed LINE reply emits alert without changing new-member points');
+ {
+  // Settle the preceding webhook's background deliveries. Its unrelated 429
+  // case must remain pending; suppressing tracking must not erase real errors.
+  await until(async()=>{const items=(await rows()).filter(x=>x.category==='line'&&x.route==='/line-webhook');return items.length===2&&items.every(x=>x.sent_at);});
+  const before=telegram.length;
+  const pendingBefore=(await rows()).filter(x=>x.sent_at===null).length;
+  for(const code of ['tracking_unresolved','tracking_recovered']){
+   assert.equal((await alert('tracking',code)).suppressed,true);
+   await call('/__local-only',{code});
+   assert.equal((await rows()).filter(r=>r.code===code).length,0);
+   await db.prepare(`INSERT INTO operational_alerts(alert_id,fingerprint,category,code,route,trace_id,created_at,updated_at,next_attempt_at)
+     VALUES(?,?,'tracking',?,'cron','synthetic-trace',0,0,0)`).bind('old:'+code,'old:'+code,code).run();
+  }
+  const status=await(await call('/__drain-now')).json();
+  await call('/__drain-now');
+  assert.equal(telegram.length,before);assert.equal(status.localOnly,2);assert.equal(status.pending,pendingBefore);
+  for(const row of (await rows()).filter(r=>r.code.startsWith('tracking_'))){assert.equal(row.sent_at,null);assert.equal(row.attempts,0);}
+  pass('inconclusive tracking stays silent across direct, durable and old queued paths without claiming delivery');
+ }
  await db.prepare('DROP TABLE operational_alerts').run();
  const before=telegram.length;await alert('points','points_failed');await alert('points','points_failed');
  assert.equal(telegram.length,before+1);assert(telegram.at(-1).text.includes('storage_failed'));
