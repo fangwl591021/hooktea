@@ -1,9 +1,11 @@
 // Only fixed operational labels and server-generated trace IDs may leave the site.
-export const ALERT_RELEASE = '20260917-evidence-gated-alerts-v2';
+export const ALERT_RELEASE = '20260917-evidence-gated-alerts-v3';
 // Missing bookkeeping is not evidence of a customer-facing failure.
 // Keep its audit/review in D1, but do not notify (including old queued rows).
-const LOCAL_ONLY_CODES = new Set(['tracking_unresolved','tracking_recovered']);
-const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered')";
+// A failed background classification does not establish a customer incident.
+// Its source message and analysis state remain in monitor_feedback for review.
+const LOCAL_ONLY_CODES = new Set(['tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered']);
+const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered')";
 const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test','ai','feedback']);
 const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_failed','background_failed',
   'identity_conflict','enrollment_failed','points_pending','points_unavailable','points_failed',

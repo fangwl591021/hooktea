@@ -103,7 +103,8 @@ try {
   await until(async()=>{const items=(await rows()).filter(x=>x.category==='line'&&x.route==='/line-webhook');return items.length===2&&items.every(x=>x.sent_at);});
   const before=telegram.length;
   const pendingBefore=(await rows()).filter(x=>x.sent_at===null).length;
-  for(const code of ['tracking_unresolved','tracking_recovered']){
+  const localOnlyCodes=['tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered'];
+  for(const code of localOnlyCodes){
    assert.equal((await alert('tracking',code)).suppressed,true);
    await call('/__local-only',{code});
    assert.equal((await rows()).filter(r=>r.code===code).length,0);
@@ -112,9 +113,9 @@ try {
   }
   const status=await(await call('/__drain-now')).json();
   await call('/__drain-now');
-  assert.equal(telegram.length,before);assert.equal(status.localOnly,2);assert.equal(status.pending,pendingBefore);
-  for(const row of (await rows()).filter(r=>r.code.startsWith('tracking_'))){assert.equal(row.sent_at,null);assert.equal(row.attempts,0);}
-  pass('inconclusive tracking stays silent across direct, durable and old queued paths without claiming delivery');
+  assert.equal(telegram.length,before);assert.equal(status.localOnly,4);assert.equal(status.pending,pendingBefore);
+  for(const row of (await rows()).filter(r=>localOnlyCodes.includes(r.code))){assert.equal(row.sent_at,null);assert.equal(row.attempts,0);}
+  pass('inconclusive tracking and AI analysis stay silent across direct, durable and old queued paths without claiming delivery');
  }
  await db.prepare('DROP TABLE operational_alerts').run();
  const before=telegram.length;await alert('points','points_failed');await alert('points','points_failed');
