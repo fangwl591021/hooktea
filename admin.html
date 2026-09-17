@@ -133,12 +133,35 @@
                 </header>
 
                 <div v-if="canViewFinance && view === 'dashboard'" class="p-6 animate-fade-in">
-                    <div class="grid grid-cols-4 gap-4 mb-6">
-                        <div v-for="(val, label) in { '實收總額': '$'+totalRevenue, '系統會員': users.length, '上架課程': courses.length, '預約導師': teachers.length }" class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                        <div v-for="(val, label) in { '實收總額': '$'+totalRevenue, '系統會員': users.length }" class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                             <div class="text-[12px] font-bold text-slate-400 uppercase mb-1 tracking-widest">{{ label }}</div>
                             <div class="text-2xl font-black text-slate-800">{{ val }}</div>
                         </div>
+                        <button type="button" @click="openLineMonitor" class="text-left bg-white p-6 rounded-xl border border-slate-200 hover:border-orange-400">
+                            <div class="text-xs font-bold text-slate-500 mb-1">AI 檢測狀態 ↗</div>
+                            <div class="text-xl font-black" :class="operationsAiHealthy ? 'text-emerald-600' : 'text-orange-700'">{{ operationsAiLabel }}</div>
+                            <div class="text-xs text-slate-500 mt-2">{{ operationsAiTime }} · 不代表全系統正常</div>
+                        </button>
+                        <button type="button" @click="openOperationCartIssues" class="text-left bg-white p-6 rounded-xl border border-slate-200 hover:border-orange-400">
+                            <div class="text-xs font-bold text-slate-500 mb-1">購物異常紀錄 ↗</div>
+                            <div class="text-xl font-black text-orange-700">{{ operationsCartLabel }}</div>
+                            <div class="text-xs text-slate-500 mt-2">最近保留最多 500 筆中的受阻／失敗事件，非受影響人數</div>
+                        </button>
                     </div>
+                    <section class="mb-6 border-y border-slate-200 py-4">
+                        <div class="flex items-center justify-between gap-3 mb-3">
+                            <h2 class="font-black text-slate-800">檢測與異常狀態</h2>
+                            <button type="button" @click="loadOperationsStatus" :disabled="operationsLoading" class="btn-outline">{{ operationsLoading ? '讀取中…' : '更新檢測狀態' }}</button>
+                        </div>
+                        <p class="text-xs text-slate-500 mb-3">{{ operationsUpdatedAt ? '摘要更新：'+operationsUpdatedAt : '尚未讀取最新摘要' }}；只讀取既有檢測結果，不會觸發 AI 測試或補扣點。</p>
+                        <div class="divide-y divide-slate-100">
+                            <button type="button" @click="openOperationCartIssues" class="w-full text-left py-3 flex justify-between gap-3"><span>購物折抵受阻／送出失敗</span><span class="text-orange-700 font-bold">{{ operationsCartLabel }} →</span></button>
+                            <button type="button" @click="openLineMonitor" class="w-full text-left py-3 flex justify-between gap-3"><span>客戶反饋與分析待查</span><span class="text-orange-700 font-bold">{{ operationsFeedbackLabel }} →</span></button>
+                            <button type="button" @click="openLineMonitor" class="w-full text-left py-3 flex justify-between gap-3"><span>新增追蹤／已知待查</span><span class="text-orange-700 font-bold">{{ operationsTrackingLabel }} →</span></button>
+                            <button type="button" @click="openLineMonitor" class="w-full text-left py-3 flex justify-between gap-3"><span>系統錯誤紀錄</span><span class="text-orange-700 font-bold">{{ operationsErrorsLabel }} →</span></button>
+                        </div>
+                    </section>
                     <div class="admin-table-container !m-0 !rounded-xl overflow-hidden border-slate-200">
                         <table class="admin-table">
                             <thead class="bg-slate-50"><tr><th>課程服務名稱</th><th class="text-center">報名數</th><th>應收</th><th class="text-orange-600">待收</th><th class="text-[#06C755]">實收</th></tr></thead>
@@ -387,6 +410,8 @@
                             <div class="relative col-span-2"><i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i><input type="text" v-model="cartActivitySearch" @keyup.enter="loadCartActivity" placeholder="搜尋姓名、LINE UID、舊站編號、商品、單號、錯誤訊息" class="w-full border border-slate-200 rounded px-9 py-2 text-sm font-bold outline-none focus:border-[#06C755]"></div>
                             <select v-model="cartActivityStatus" @change="loadCartActivity" class="btn-outline bg-white font-bold text-slate-700">
                                 <option value="ALL">全部狀態</option>
+                                <option value="BLOCKED">結帳受阻</option>
+                                <option value="ISSUES">受阻／失敗（最近最多 500 筆）</option>
                                 <option value="ACTIVE">進行中</option>
                                 <option value="ABANDONED">放棄/關閉</option>
                                 <option value="FAILED">送出失敗</option>
@@ -408,7 +433,7 @@
                                     <td><div class="font-black text-slate-800">{{ row.displayName || '-' }}</div><div class="font-mono text-[11px] text-slate-500 mt-1">LINE: {{ row.lineUserId || '-' }}</div><div class="font-mono text-[11px] text-slate-400">會員: {{ row.memberUid || '-' }}</div></td>
                                     <td><span class="status-badge" :class="cartActivityStatusClass(row)">{{ cartActivityStatusText(row) }}</span></td>
                                     <td><div class="font-bold text-slate-700 max-w-[360px] leading-relaxed">{{ cartActivitySummaryText(row) }}</div><div class="text-[12px] text-slate-500 mt-1">小計 ${{ formatPrice(row.subtotal) }} / 實付 ${{ formatPrice(row.payable) }} / 折 {{ formatPrice(row.pointsUsed) }} 點</div></td>
-                                    <td><div class="font-mono text-[12px] text-blue-600">{{ row.orderId || '-' }}</div><div class="text-[12px] text-red-600 font-bold max-w-[300px] mt-1">{{ row.errorMessage || '-' }}</div></td>
+                                    <td><div class="font-mono text-[12px] text-blue-600">{{ row.orderId || '-' }}</div><div class="text-[12px] text-red-600 font-bold max-w-[300px] mt-1">{{ cartActivityErrorText(row) }}</div></td>
                                     <td><div class="text-[11px] text-slate-400 max-w-[260px] break-words">{{ row.userAgent || '-' }}</div></td>
                                 </tr>
                                 <tr v-if="!cartActivityLogs.length"><td colspan="6" class="text-center py-20 text-slate-300 font-bold">目前沒有購物車紀錄</td></tr>
@@ -2181,6 +2206,7 @@
                             return false;
                         } finally {
                             isLoading.value = false;
+                            if (isAuthenticated.value && canViewFinance.value && view.value === 'dashboard') void loadOperationsStatus();
                         }
                     };
 
@@ -2197,8 +2223,9 @@
                         if (!isAdminRole.value) return;
                         isLoadingCartActivity.value = true;
                         try {
-                            const data = await callApi('ADMIN_GET_CART_ACTIVITY', { search: cartActivitySearch.value, status: cartActivityStatus.value, limit: 300 }, true);
-                            cartActivityLogs.value = data?.logs || [];
+                            const issuesOnly = cartActivityStatus.value === 'ISSUES';
+                            const data = await callApi('ADMIN_GET_CART_ACTIVITY', { search: cartActivitySearch.value, status: issuesOnly ? 'ALL' : cartActivityStatus.value, limit: issuesOnly ? 500 : 300 }, true);
+                            cartActivityLogs.value = issuesOnly ? (data?.logs || []).filter(isOperationCartIssue) : (data?.logs || []);
                             cartActivityDiagnostic.value = data?.diagnostic || null;
                         } catch (error) {
                             alert(`購物車紀錄讀取失敗：${error.message}`);
@@ -2208,11 +2235,13 @@
                     };
                     const cartActivityStatusText = (row) => {
                         const value = String(row?.status || row?.eventType || '').toUpperCase();
+                        if (['BLOCKED','CHECKOUT_BLOCKED'].includes(value)) return '結帳受阻';
                         const map = { ACTIVE: '進行中', CART_OPEN: '進入購物車', CART_ADD: '加入商品', CART_REMOVE: '移除商品', ABANDONED: '放棄/關閉', CART_CLOSE: '關閉購物車', CART_ABANDONED: '離開頁面', FAILED: '送出失敗', CHECKOUT_ERROR: '送出失敗', SUBMITTED: '已成立訂單', ORDER_CREATED: '已成立訂單', REDIRECTING: '付款跳轉', PAYMENT_REDIRECT: '付款跳轉', CHECKOUT_START: '開始結帳' };
                         return map[value] || value || '-';
                     };
                     const cartActivityStatusClass = (row) => {
                         const value = String(row?.status || row?.eventType || '').toUpperCase();
+                        if (['BLOCKED','CHECKOUT_BLOCKED'].includes(value)) return 'bg-amber-100 text-amber-700';
                         if (['FAILED','CHECKOUT_ERROR'].includes(value)) return 'bg-red-100 text-red-700';
                         if (['ABANDONED','CART_CLOSE','CART_ABANDONED'].includes(value)) return 'bg-amber-100 text-amber-700';
                         if (['SUBMITTED','ORDER_CREATED'].includes(value)) return 'bg-green-100 text-green-700';
@@ -2224,6 +2253,64 @@
                         const items = Array.isArray(row?.cartItems) ? row.cartItems : [];
                         return items.map(item => `${item.name || item.id || '商品'} x ${item.quantity || 1}`).join('、') || '-';
                     };
+                    // Operations status: read-only summaries, never financial writes or AI calls.
+                    const operationsLoading = ref(false);
+                    const operationsSafety = ref(null);
+                    const operationsCart = ref(null);
+                    const operationsSafetyError = ref(false);
+                    const operationsCartError = ref(false);
+                    const operationsUpdatedAt = ref('');
+                    const isOperationCartIssue = row => [row?.status,row?.eventType].some(value => ['BLOCKED','CHECKOUT_BLOCKED','FAILED','CHECKOUT_ERROR'].includes(String(value || '').toUpperCase()));
+                    const operationReasonLabels = {points_unavailable:'點數尚未確認，折抵受阻',points_syncing:'點數同步中',member_timeout:'會員資料讀取逾時',member_sync_failed:'會員資料讀取失敗',member_syncing:'會員身分同步中',member_unverified:'會員身分尚未驗證'};
+                    const cartActivityErrorText = row => operationReasonLabels[row?.errorMessage] || row?.errorMessage || '-';
+                    const operationsAiHealthy = computed(() => !operationsSafetyError.value && operationsSafety.value?.ai?.status === 'healthy');
+                    const operationsAiLabel = computed(() => {
+                        if (operationsSafetyError.value) return '狀態讀取失敗';
+                        if (!operationsSafety.value) return operationsLoading.value ? '讀取中…' : '尚未讀取';
+                        const labels = {not_tested:'尚未完成自測',healthy:'最近檢測正常',not_configured:'尚未設定',authentication_failed:'認證失敗',quota_exhausted:'額度不足',rate_limited:'受到限流',provider_unavailable:'服務暫時不可用',request_rejected:'請求未被接受',invalid_response:'回應格式異常',timeout:'連線逾時',network_error:'網路異常'};
+                        return labels[operationsSafety.value.ai?.status] || '狀態待查';
+                    });
+                    const operationsAiTime = computed(() => operationsSafety.value?.ai?.checked_at ? '檢測時間：'+new Date(operationsSafety.value.ai.checked_at*1000).toLocaleString('zh-TW') : '尚無檢測時間');
+                    const operationsCartLabel = computed(() => operationsCartError.value ? '紀錄讀取失敗' : operationsCart.value === null ? '尚未讀取' : operationsCart.value+' 筆受阻／失敗');
+                    const operationsFeedbackLabel = computed(() => {
+                        if (operationsSafetyError.value || !operationsSafety.value) return operationsSafetyError.value ? '狀態讀取失敗' : '尚未讀取';
+                        const c=operationsSafety.value.feedbackCounts || {};
+                        return '未結 '+(c.openFeedback || 0)+' · 待分析 '+(c.pendingAnalysis || 0)+' · 分析待查 '+(c.failedAnalysis || 0);
+                    });
+                    const operationsTrackingLabel = computed(() => {
+                        if (operationsSafetyError.value || !operationsSafety.value) return operationsSafetyError.value ? '狀態讀取失敗' : '尚未讀取';
+                        const c=operationsSafety.value.tracking?.counts || {};
+                        return '新增 '+(c.newUnresolved || 0)+' · 已知待查 '+(c.knownUnresolved || 0);
+                    });
+                    const operationsErrorsLabel = computed(() => operationsSafetyError.value ? '紀錄讀取失敗' : !operationsSafety.value ? '尚未讀取' : '近期保存 '+(operationsSafety.value.operationalErrors || []).length+' 筆（非未修復數）');
+                    const loadOperationsStatus = async () => {
+                        if (operationsLoading.value || !isAuthenticated.value || !canViewFinance.value) return;
+                        operationsLoading.value = true;
+                        operationsSafety.value=null;operationsCart.value=null;
+                        operationsSafetyError.value=false;operationsCartError.value=false;
+                        const readSafety = async () => {
+                            const session = await callApi('CREATE_ADMIN_SESSION', {}, true);
+                            if (!session?.token) throw new Error('未取得後台授權');
+                            const response = await fetch(new URL('/api/line-oa/safety-status', WORKER_URL).href, {headers:{'x-hooktea-admin-session':session.token},redirect:'error',signal:AbortSignal.timeout(15000)});
+                            if (!response.ok) throw new Error('狀態讀取失敗');
+                            const result=await response.json();
+                            if (!result.success || !result.data?.ai || !result.data?.tracking || !result.data?.feedbackCounts || !Array.isArray(result.data?.operationalErrors)) throw new Error('狀態資料不完整');
+                            return result.data;
+                        };
+                        try {
+                            const [safety,cart] = await Promise.allSettled([readSafety(),callApi('ADMIN_GET_CART_ACTIVITY',{status:'ALL',limit:500},true)]);
+                            if (!isAuthenticated.value || !canViewFinance.value) return;
+                            if (safety.status === 'fulfilled') operationsSafety.value=safety.value;
+                            else operationsSafetyError.value=true;
+                            if (cart.status === 'fulfilled' && Array.isArray(cart.value?.logs)) operationsCart.value=cart.value.logs.filter(isOperationCartIssue).length;
+                            else operationsCartError.value=true;
+                            operationsUpdatedAt.value=new Date().toLocaleString('zh-TW');
+                        } finally { operationsLoading.value=false; }
+                    };
+                    const openOperationCartIssues = () => {
+                        cartActivitySearch.value='';cartActivityStatus.value='ISSUES';switchView('cart_activity');
+                    };
+                    // End operations status.
                     const autoLineLogin = async () => {
                         try {
                             const data = await callApi('GET_SETTINGS', {}, true);
@@ -2397,6 +2484,7 @@
                         if (viewName === 'audit_logs' && !auditLogs.value.length) loadAuditLogs();
                         if (viewName === 'paid_broadcast' && !broadcastTags.value.length && !broadcastCampaigns.value.length) loadBroadcastData();
                         if (viewName === 'cart_activity') loadCartActivity();
+                        if (viewName === 'dashboard') void loadOperationsStatus();
                         if (isAuthenticated.value) {
                             callApi('LOG_ADMIN_EVENT', { view: viewName, message: `切換後台頁面：${viewName}` }, true).catch(() => {});
                         }
@@ -4722,6 +4810,7 @@
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
                         adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
+                        operationsLoading, operationsUpdatedAt, operationsAiHealthy, operationsAiLabel, operationsAiTime, operationsCartLabel, operationsFeedbackLabel, operationsTrackingLabel, operationsErrorsLabel, loadOperationsStatus, openOperationCartIssues, cartActivityErrorText,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
                         memberSearch, memberDateSort, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,
