@@ -1,5 +1,6 @@
-// Only fixed operational labels and server-generated trace IDs may leave the site.
-export const ALERT_RELEASE = '20260917-evidence-gated-alerts-v3';
+// System alerts use fixed labels. Owner-approved feedback includes a redacted
+// excerpt and display name, never CRM fields, raw events or credentials.
+export const ALERT_RELEASE = '20260918-actionable-feedback-v1';
 // Missing bookkeeping is not evidence of a customer-facing failure.
 // Keep its audit/review in D1, but do not notify (including old queued rows).
 // A failed background classification does not establish a customer incident.
@@ -50,6 +51,40 @@ async function boundedJson(response,limit=16384) {
   } catch {return null;} finally {reader.releaseLock();}
 }
 
+export function redactOwnerExcerpt(value,limit=900) {
+  return String(value||'').slice(0,8000)
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,' ')
+    .replace(/U[0-9a-f]{32}/gi,'[識別碼已隱藏]')
+    .replace(/https?:\/\/\S+/gi,'[連結已隱藏]')
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi,'[Email 已隱藏]')
+    .replace(/(?:\+?886[ -]?)?0?9[\d -]{8,12}/g,'[電話已隱藏]')
+    .replace(/(?:密碼|驗證碼|password|token|secret|api[_ -]?key)\s*[:：=]\s*\S+/gi,'[憑證已隱藏]')
+    .replace(/\bsk-[a-z0-9_-]+/gi,'[憑證已隱藏]')
+    .replace(/\d{6,}/g,'[長號碼已隱藏]')
+    .replace(/\s+/g,' ').trim().slice(0,limit);
+}
+
+async function ownerFeedbackText(env,row) {
+  // Resolve the exact recorded evidence; never substitute an AI-invented summary.
+  const matches=(await env.DB.prepare(`SELECT message_text,event_at,review_state,thread_id
+    FROM monitor_feedback WHERE trace_id=? LIMIT 2`).bind(row.trace_id).all()).results||[];
+  if(matches.length!==1 || matches[0].review_state==='resolved')return null;
+  const feedback=matches[0];
+  const names=(await env.DB.prepare(`SELECT DISTINCT display_name FROM line_threads
+    WHERE (source_user_id=? OR id=?) AND TRIM(display_name)<>'' LIMIT 2`)
+    .bind(feedback.thread_id,feedback.thread_id).all()).results||[];
+  if(names.length!==1)return null;
+  const name=redactOwnerExcerpt(names[0].display_name,80),excerpt=redactOwnerExcerpt(feedback.message_text);
+  if(!name || !excerpt || !Number.isFinite(feedback.event_at) || feedback.event_at<=0)return null;
+  const time=new Date(feedback.event_at*1000).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
+  return ['📋 HookTea 客戶訊息，請確認並回覆',`客戶：${name}`,`提問時間：${time}（台灣）`,
+    '客戶內容（節錄；聯絡資訊已遮蔽）：',`「${excerpt}」`,
+    '請先確認 LINE 官方帳號是否已有人回覆；若尚未回覆，請人工接手。',
+    '這是客戶的詢問／反饋，不代表已確認系統故障。',
+    '查看對話： https://hooktea.fangwl591021.workers.dev/line-oa-monitor.html',
+    'AI 不會自動回覆客戶。'].join('\n');
+}
+
 async function send(env,row) {
   if(LOCAL_ONLY_CODES.has(row.code))return {ok:false,suppressed:true,error:'insufficient_evidence'};
   const {token,chatId}=await telegramAlertConfig(env);
@@ -67,11 +102,13 @@ async function send(env,row) {
     feedback_points:'收到點數使用反饋，請人工核對',feedback_shopping:'收到購物／付款反饋，請人工核對',
     feedback_identity:'收到登入／會員反饋',feedback_usability:'收到操作體驗反饋',feedback_feedback:'收到客戶反饋'};
   const heading=row.category==='test'?'✅ HookTea 告警測試':row.code.endsWith('_recovered')?'✅ HookTea 狀態恢復':row.category==='feedback'?'📋 HookTea 客戶反饋（尚未核實）':'🚨 HookTea 系統待查';
-  const text=[heading,descriptions[row.code]||'系統異常',
+  const text=row.category==='feedback' ? await ownerFeedbackText(env,row) : [heading,descriptions[row.code]||'系統異常',
     `類型：${row.category} / ${row.code}`,`入口：${row.route}`,
     `時間：${new Date(row.created_at*1000).toISOString()}`,`追蹤：${row.trace_id}`,
     `告警：${row.alert_id}`,`同類累計：${row.occurrences}`,
     '請至後台 AI 監控查看；通知不會自動補點、退款或回覆客戶。'].join('\n');
+  // Incomplete evidence remains visible in the backend; no vague owner message.
+  if(!text)return {ok:false,suppressed:true,error:'feedback_evidence_unavailable',delay:86400};
   try {
     const response=await fetch('https://api.telegram.org/bot'+token+'/sendMessage',{
       method:'POST',headers:{'content-type':'application/json'},signal:AbortSignal.timeout(5000),

@@ -2486,9 +2486,18 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
     result = { ok: false, pending: true, status: 'unavailable' };
     console.error('Daily reward journal unavailable', error);
   }
-  const message = result.ok
+  let message = result.ok
     ? (result.duplicate ? '今天已經完成簽到，不能重複領取。' : (result.recovered ? '先前待確認的簽到已入帳，共 ' : '簽到成功，已贈送 ') + (result.amount ?? points) + ' 點。')
     : '簽到點數尚待確認，請稍後至會員專區查看；系統不會重複加點。';
+  if (result.ok) {
+    // The committed operation contains its authoritative post-credit balance.
+    // A duplicate's historical receipt must not be presented as today's balance.
+    const balance = (typeof result.balance === 'number' || (typeof result.balance === 'string' && result.balance.trim() !== ''))
+      ? Number(result.balance) : NaN;
+    message += Number.isSafeInteger(balance) && balance >= 0
+      ? '\n' + (result.duplicate ? '該次簽到入帳後總點數：' : '本次入帳後總點數：') + balance + ' 點。' + (result.duplicate ? '\n目前總點數請至會員專區查看。' : '')
+      : '\n總點數暫時無法確認，請至會員專區查看。';
+  }
   if (!event.hookTeaSuppressReply) await deliverKeywordRewardReplyFast(env, lineUid, event.replyToken || '', textLineMessage(message), 2200).catch(() => {});
   return true;
 }

@@ -95,7 +95,7 @@ try {
   for(let i=0;i<3;i++){await db.prepare('UPDATE monitor_ai_health SET analysis_next_at=0').run();await db.prepare("UPDATE monitor_feedback SET next_attempt_at=0 WHERE event_id='failure'").run();await post('/__process',{});}
   const row=await db.prepare("SELECT * FROM monitor_feedback WHERE event_id='failure'").first();
   assert.equal(row.analysis_state,'review');assert.equal(row.message_text,'這樣每次都要找人幫忙');assert.equal(row.attempts,3);
-  const before=aiCalls.length;await post('/__process',{});assert.equal(aiCalls.length,before);assert.equal(await countAlerts('ai_analysis_failed'),1);
+  const before=aiCalls.length;await post('/__process',{});assert.equal(aiCalls.length,before);assert.equal(await countAlerts('ai_analysis_failed'),0);
  });
  await check('old and new missing completion stay in local review without owner alarms',async()=>{
   await post('/__tracking',{});assert.equal(await countAlerts('tracking_unresolved'),0);

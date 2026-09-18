@@ -10,7 +10,7 @@ const require=createRequire(process.env.WRANGLER_PACKAGE||import.meta.url);
 const {Miniflare}=require('miniflare'),{build}=require('esbuild');
 const root=new URL('../',import.meta.url),UID='U'+'c'.repeat(32),OTHER='U'+'d'.repeat(32),OLD='U'+'e'.repeat(32);
 const bundle=await build({entryPoints:[fileURLToPath(new URL('tracked-worker.js',root))],bundle:true,write:false,format:'esm',platform:'browser'});
-const network=[];
+const network=[],lineReplies=[];
 const mf=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-04-06',
   r2Buckets:{'act-image':'isolated-new-member'},kvNamespaces:{ACTION_DATA:'isolated-new-member'},d1Databases:{DB:'isolated-new-member'},
   bindings:{SHOP_MODULE:'huaxu',LINE_LOGIN_CHANNEL_ID:'2007674851',SHOP_LIFF_ID:'2007674851-test',
@@ -25,7 +25,7 @@ const mf=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibi
       return Response.json({userId:token.includes('old')?OLD:token.match(/uid:(U[0-9a-f]{32})/)?.[1]||UID,displayName:'本機合成會員'});
     }
     if(url.origin==='https://api.line.me'&&url.pathname.startsWith('/v2/bot/profile/'))return Response.json({userId:url.pathname.split('/').pop(),displayName:'本機合成會員'});
-    if(url.origin==='https://api.line.me'&&/\/v2\/bot\/message\/(reply|push)$/.test(url.pathname))return Response.json({});
+    if(url.origin==='https://api.line.me'&&/\/v2\/bot\/message\/(reply|push)$/.test(url.pathname)){lineReplies.push(await request.json());return Response.json({});}
     throw Error('MOTHER_OR_OTHER_NETWORK_FORBIDDEN '+url.origin+url.pathname);
   }});
 let groups=0;
@@ -71,6 +71,7 @@ try {
   pass('mixed follow/activity/free-text creates local profiles, credits locally, no mother forwarding');
   await webhook([event(UID,'會員打卡','alias'),event(UID,'虎克茶簽到贈點','same-day')]);
   await until(async()=>await balance(UID)===101);
+  await until(async()=>lineReplies.some(r=>r.messages?.some(m=>m.text?.includes('入帳後總點數：101 點'))));
   const signin=await call('/api/huaxu/checkin');assert.equal(signin.status,200,await signin.clone().text());
   assert.equal(await balance(UID),101);
   pass('unregistered user can sign in; child and former mother keywords share the daily claim');
