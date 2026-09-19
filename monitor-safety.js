@@ -1,5 +1,6 @@
 // Backend-only classification. This module has no LINE token, reply or push path.
 import {durableAlertStatement} from './operational-alerts.js';
+import {isMonitorCommand,loadMonitorCommandPolicy} from './monitor-commands.js';
 export const MONITOR_RELEASE='20260917-passive-monitor-v1';
 export const monitorEnabled=env=>String(env.HOOKTEA_MONITOR_SAFETY)==='true';
 export const aiKey=env=>['OPENAI_API_KEY','OpenAI API key','OpenAI_API_key','OPENAI KEY'].map(k=>String(env[k]||'').trim()).find(Boolean)||'';
@@ -12,7 +13,8 @@ export const categoryLabels={points:'點數使用反饋',shopping:'購物／付�
 export function detectFeedback(text) {
   const value=String(text||'');
   const negative=/不能|無法|沒辦法|沒有|沒收到|不一致|不同步|錯|失敗|問題|抱怨|投訴|客訴|不順|不夠好|太慢|很慢|卡住|難用|不好用|扣了|少了|多扣|退費|退款|封鎖|失望|爛|建議|希望|改善/.test(value);
-  if(!negative)return {category:'none',severity:'low'};
+  const question=/請問|想問|詢問|怎麼|如何|為什麼|可不可以|能不能|是否|多少|哪個|哪種|哪裡|哪裏|[?？]|嗎[呢啊]?[。！!]*$/.test(value);
+  if(!negative&&!question)return {category:'none',severity:'low'};
   const category=/點數|贈點|扣點|折抵|抵扣|簽到|打卡|紅包/.test(value)?'points':
     /購物|結帳|付款|商品|訂單|購買|運費|退貨|退款/.test(value)?'shopping':
     /登入|登錄|註冊|會員|帳號|身份|身分/.test(value)?'identity':
@@ -83,26 +85,31 @@ export async function runAiSelfTest(env,{manual=false}={}) {
 
 export async function captureMonitorEvents(env,events) {
   // Persist BEFORE identity lookups and business effects. Failure requests webhook redelivery.
+  const policy=await loadMonitorCommandPolicy(env);
   for(const event of events) {
     if(event?.type!=='message'||event.message?.type!=='text')continue;
     const uid=String(event.source?.userId||'');if(!/^U[0-9a-f]{32}$/i.test(uid))continue;
     const eventId=String(event.webhookEventId||event.message.id||'');
     if(!eventId||eventId.length>200)throw Error('MONITOR_EVENT_ID_MISSING');
-    const text=String(event.message.text||'').slice(0,8000),rule=detectFeedback(text),now=nowSeconds();
+    const text=String(event.message.text||'').slice(0,8000),command=isMonitorCommand(text,policy);
+    const rule=command?{category:'none',severity:'low'}:detectFeedback(text),now=nowSeconds();
     const trace=crypto.randomUUID();
-    // Only fixed labels and a random trace go to Telegram; full evidence stays admin-only.
+    // Keep the original event even when it is an excluded system command.
     const statements=[];
-    if(rule.category!=='none')statements.push(durableAlertStatement(env,`feedback:${eventId}`,'feedback',`feedback_${rule.category}`,trace,
+    if(policy.ready&&!command&&rule.category!=='none')statements.push(durableAlertStatement(env,`feedback:${eventId}`,'feedback',`feedback_${rule.category}`,trace,
       'NOT EXISTS(SELECT 1 FROM monitor_feedback WHERE event_id=?)',[eventId]));
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO monitor_feedback
-      (event_id,thread_id,message_text,received_at,event_at,category,severity,trace_id)
-      VALUES(?,?,?,?,?,?,?,?)`).bind(eventId,uid,text,now,Math.floor(Number(event.timestamp||Date.now())/1000),rule.category,rule.severity,trace));
+      (event_id,thread_id,message_text,received_at,event_at,category,severity,trace_id,analysis_state,analysis_error)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(eventId,uid,text,now,Math.floor(Number(event.timestamp||Date.now())/1000),rule.category,rule.severity,trace,
+        command?'done':'pending',command?'system_command':''));
     await env.DB.batch(statements);
   }
 }
 
 export async function processMonitorFeedback(env) {
   // Durable D1 worklist: a killed cron can be retried; never depends on webhook waitUntil.
+  const policy=await loadMonitorCommandPolicy(env);
+  if(!policy.ready)return;
   const now=nowSeconds();
   const admitted=await env.DB.prepare('UPDATE monitor_ai_health SET analysis_next_at=? WHERE singleton=1 AND analysis_next_at<=? RETURNING singleton').bind(now+60,now).first();
   if(!admitted)return;
@@ -114,11 +121,17 @@ export async function processMonitorFeedback(env) {
       WHERE event_id=? AND analysis_state='pending' AND lock_until<=? AND next_attempt_at<=? RETURNING *`)
       .bind(token,now+90,event_id,now,now).first();
     if(!row)return;
+    if(isMonitorCommand(row.message_text,policy)) {
+      await env.DB.prepare(`UPDATE monitor_feedback SET category='none',severity='low',analysis_state='done',
+        analysis_error='system_command',analyzed_at=?,lock_token=NULL,lock_until=0 WHERE event_id=? AND lock_token=?`)
+        .bind(now,event_id,token).run();
+      return;
+    }
     const result=await callMonitorAi(env,row.message_text);
     const category=row.category!=='none'?row.category:(result.ok?result.category:'none');
     const severity=result.ok&&severityRank[result.severity]>severityRank[row.severity]?result.severity:row.severity;
     const statements=[];
-    if(row.category==='none'&&category!=='none')statements.push(durableAlertStatement(env,`feedback:${event_id}`,'feedback',`feedback_${category}`,row.trace_id));
+    if(category!=='none')statements.push(durableAlertStatement(env,`feedback:${event_id}`,'feedback',`feedback_${category}`,row.trace_id));
     statements.push(env.DB.prepare(`UPDATE monitor_feedback SET category=?,severity=?,analysis_state=?,analysis_error=?,
       analyzed_at=?,next_attempt_at=?,lock_token=NULL,lock_until=0 WHERE event_id=? AND lock_token=?`)
       .bind(category,severity,result.ok?'done':row.attempts>=3?'review':'pending',result.ok?'':result.code,

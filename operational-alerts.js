@@ -1,12 +1,13 @@
 // System alerts use fixed labels. Owner-approved feedback includes a redacted
 // excerpt and display name, never CRM fields, raw events or credentials.
-export const ALERT_RELEASE = '20260918-actionable-feedback-v1';
+import {isMonitorCommand,loadMonitorCommandPolicy} from './monitor-commands.js';
+export const ALERT_RELEASE = '20260919-command-feedback-filter-v1';
 // Missing bookkeeping is not evidence of a customer-facing failure.
 // Keep its audit/review in D1, but do not notify (including old queued rows).
 // A failed background classification does not establish a customer incident.
 // Its source message and analysis state remain in monitor_feedback for review.
 const LOCAL_ONLY_CODES = new Set(['tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered']);
-const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered')";
+const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered') AND last_error<>'feedback_system_command'";
 const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test','ai','feedback']);
 const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_failed','background_failed',
   'identity_conflict','enrollment_failed','points_pending','points_unavailable','points_failed',
@@ -66,10 +67,14 @@ export function redactOwnerExcerpt(value,limit=900) {
 
 async function ownerFeedbackText(env,row) {
   // Resolve the exact recorded evidence; never substitute an AI-invented summary.
-  const matches=(await env.DB.prepare(`SELECT message_text,event_at,review_state,thread_id
+  const matches=(await env.DB.prepare(`SELECT message_text,event_at,review_state,thread_id,analysis_error
     FROM monitor_feedback WHERE trace_id=? LIMIT 2`).bind(row.trace_id).all()).results||[];
   if(matches.length!==1 || matches[0].review_state==='resolved')return null;
   const feedback=matches[0];
+  const policy=await loadMonitorCommandPolicy(env);
+  if(feedback.analysis_error==='system_command'||isMonitorCommand(feedback.message_text,policy))
+    return {blocked:'feedback_system_command'};
+  if(!policy.ready)return {blocked:'feedback_command_config_unavailable'};
   const names=(await env.DB.prepare(`SELECT DISTINCT display_name FROM line_threads
     WHERE (source_user_id=? OR id=?) AND TRIM(display_name)<>'' LIMIT 2`)
     .bind(feedback.thread_id,feedback.thread_id).all()).results||[];
@@ -109,6 +114,7 @@ async function send(env,row) {
     '請至後台 AI 監控查看；通知不會自動補點、退款或回覆客戶。'].join('\n');
   // Incomplete evidence remains visible in the backend; no vague owner message.
   if(!text)return {ok:false,suppressed:true,error:'feedback_evidence_unavailable',delay:86400};
+  if(text.blocked)return {ok:false,suppressed:true,error:text.blocked,delay:86400};
   try {
     const response=await fetch('https://api.telegram.org/bot'+token+'/sendMessage',{
       method:'POST',headers:{'content-type':'application/json'},signal:AbortSignal.timeout(5000),

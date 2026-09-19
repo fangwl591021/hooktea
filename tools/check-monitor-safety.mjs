@@ -74,7 +74,7 @@ try {
   assert.equal(await countAlerts('ai_authentication_failed'),1);assert.equal(await countAlerts('ai_recovered'),1);
  });
  await check('rules identify points, shopping, identity and usability while ordinary content is not a fault',async()=>{
-  for(const [text,category] of [['點數不能用','points'],['購物結帳很慢','shopping'],['新會員登入失敗','identity'],['系統操作不夠好','usability'],['請問茶會苦嗎','none']])assert.equal(detectFeedback(text).category,category);
+  for(const [text,category] of [['點數不能用','points'],['購物結帳很慢','shopping'],['新會員登入失敗','identity'],['系統操作不夠好','usability'],['請問茶會苦嗎','feedback'],['謝謝','none'],['會員專區','none']])assert.equal(detectFeedback(text).category,category);
   const redacted=redactForAi(uid+' 0912345678 me@example.com https://example.com/private');
   assert(!redacted.includes(uid));assert(!redacted.includes('0912345678'));assert(!redacted.includes('me@example.com'));
  });
