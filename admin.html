@@ -411,10 +411,14 @@
                             <div class="relative col-span-2"><i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i><input type="text" v-model="cartActivitySearch" @keyup.enter="loadCartActivity" placeholder="搜尋姓名、LINE UID、舊站編號、商品、單號、錯誤訊息" class="w-full border border-slate-200 rounded px-9 py-2 text-sm font-bold outline-none focus:border-[#06C755]"></div>
                             <select v-model="cartActivityStatus" @change="loadCartActivity" class="btn-outline bg-white font-bold text-slate-700">
                                 <option value="ALL">全部狀態</option>
-                                <option value="BLOCKED">結帳受阻</option>
+                                <option value="BLOCKED">讀取／結帳受阻</option>
                                 <option value="ISSUES">受阻／失敗（最近最多 500 筆）</option>
                                 <option value="ACTIVE">進行中</option>
-                                <option value="ABANDONED">放棄/關閉</option>
+                                <option value="ABANDONED">舊版離開紀錄（原因未明）</option>
+                                <option value="LEFT">離開頁面</option>
+                                <option value="CLOSED">關閉購物車</option>
+                                <option value="CANCELLED">已確認取消</option>
+                                <option value="RECOVERED">讀取恢復</option>
                                 <option value="FAILED">送出失敗</option>
                                 <option value="SUBMITTED">已成立訂單</option>
                                 <option value="REDIRECTING">付款跳轉</option>
@@ -436,10 +440,10 @@
                             <tbody>
                                 <tr v-for="row in cartActivityLogs" :key="row.id">
                                     <td><div class="font-mono text-[12px] text-slate-500">{{ row.createdAt || row.createdAtIso }}</div><div class="text-[11px] text-slate-400">{{ row.eventType }}</div></td>
-                                    <td><div class="font-black text-slate-800">{{ row.displayName || '-' }}</div><div class="font-mono text-[11px] text-slate-500 mt-1">LINE: {{ row.lineUserId || '-' }}</div><div class="font-mono text-[11px] text-slate-400">會員: {{ row.memberUid || '-' }}</div></td>
-                                    <td><span class="status-badge" :class="cartActivityStatusClass(row)">{{ cartActivityStatusText(row) }}</span></td>
-                                    <td><div class="font-bold text-slate-700 max-w-[360px] leading-relaxed">{{ cartActivitySummaryText(row) }}</div><div class="text-[12px] text-slate-500 mt-1">小計 ${{ formatPrice(row.subtotal) }} / 實付 ${{ formatPrice(row.payable) }} / 折 {{ formatPrice(row.pointsUsed) }} 點</div></td>
-                                    <td><div class="font-mono text-[12px] text-blue-600">{{ row.orderId || '-' }}</div><div class="text-[12px] text-red-600 font-bold max-w-[300px] mt-1">{{ cartActivityErrorText(row) }}</div></td>
+                                    <td><div class="font-black text-slate-800">{{ row.displayName || (row.sessionId ? '未取得姓名的訪客' : '舊紀錄未保存身分') }}</div><div class="font-mono text-[11px] text-slate-500 mt-1">LINE: {{ row.lineUserId || '尚未取得' }}</div><div class="font-mono text-[11px] text-slate-400">會員: {{ row.memberUid || '尚未取得' }}</div><div class="text-xs text-slate-500">{{ cartActivityIdentityText(row) }}</div></td>
+                                    <td><span class="status-badge" :class="cartActivityStatusClass(row)">{{ cartActivityStatusText(row) }}</span><div class="text-xs text-slate-500 mt-2">{{ cartActivityStageText(row) }}</div><div class="text-xs text-slate-500" v-if="row.elapsedMs != null">耗時 {{ (row.elapsedMs / 1000).toFixed(1) }} 秒</div><div class="text-xs text-slate-500" v-if="row.online === false">裝置回報離線</div></td>
+                                    <td><div class="font-bold text-slate-700 max-w-[360px] leading-relaxed">{{ cartActivitySummaryText(row) }}</div><div v-if="cartActivityHasSnapshot(row)" class="text-[12px] text-slate-500 mt-1">小計 ${{ formatPrice(row.subtotal) }} / 預計實付 ${{ formatPrice(row.payable) }} / 擬折 {{ formatPrice(row.pointsUsed) }} 點</div><div v-else class="text-xs text-slate-500">金額未取得／舊紀錄未保存，並非 0 元</div></td>
+                                    <td><div class="font-mono text-[12px] text-blue-600">{{ row.orderId || '尚無單號' }}</div><div class="text-[12px] text-red-600 font-bold max-w-[300px] mt-1">{{ cartActivityErrorText(row) }}</div><div v-if="row.httpStatus" class="text-xs">HTTP {{ row.httpStatus }}</div><div v-if="row.errorCode" class="font-mono text-xs">{{ row.errorCode }}</div><div v-if="row.sessionId" class="mt-2 text-xs break-all">操作：{{ row.sessionId }}<br>步驟：{{ row.sequence }} / 嘗試：{{ row.attemptId || '未送出結帳' }}<button @click="showCartActivitySession(row)" class="block text-blue-600 underline">查看同次操作（含後續結果）</button></div></td>
                                     <td><div class="text-[11px] text-slate-400 max-w-[260px] break-words">{{ row.userAgent || '-' }}</div></td>
                                 </tr>
                                 <tr v-if="!cartActivityLogs.length"><td colspan="6" class="text-center py-20 text-slate-500 font-bold" role="status">{{ cartActivityEmptyText }}</td></tr>
@@ -1936,7 +1940,7 @@
                     const cartActivityLoadError = ref(false);
                     const cartActivityHasFilter = computed(() => cartActivityStatus.value !== 'ALL' || !!cartActivitySearch.value.trim());
                     const cartActivityFilterSummary = computed(() => {
-                        const labels = { ALL: '全部狀態', BLOCKED: '結帳受阻', ISSUES: '受阻／失敗', ACTIVE: '進行中', ABANDONED: '放棄/關閉', FAILED: '送出失敗', SUBMITTED: '已成立訂單', REDIRECTING: '付款跳轉' };
+                        const labels = { ALL: '全部狀態', BLOCKED: '讀取／結帳受阻', ISSUES: '受阻／失敗', ACTIVE: '進行中', ABANDONED: '舊版離開（原因未明）', LEFT: '離開頁面', CLOSED: '關閉購物車', CANCELLED: '已確認取消', RECOVERED: '讀取恢復', FAILED: '送出失敗', SUBMITTED: '已成立訂單', REDIRECTING: '付款跳轉' };
                         return `目前篩選：${labels[cartActivityStatus.value] || cartActivityStatus.value}${cartActivitySearch.value.trim() ? '＋搜尋條件' : ''}（最多 ${cartActivityStatus.value === 'ISSUES' ? 500 : 300} 筆）`;
                     });
                     const cartActivityEmptyText = computed(() => {
@@ -2260,9 +2264,11 @@
                         }
                     };
                     const cartActivityStatusText = (row) => {
+                        if (row?.eventType === 'member_read_failed' || (row?.eventType === 'checkout_blocked' && ['member_timeout','member_sync_failed'].includes(row?.stage))) return '會員資料讀取失敗';
+                        if (row?.eventType === 'page_leave') return row.stage === 'payment_redirect' ? '前往付款頁' : (row.stage === 'login_redirect' ? '前往 LINE 登入' : '離開頁面（原因未確認）');
                         const value = String(row?.status || row?.eventType || '').toUpperCase();
                         if (['BLOCKED','CHECKOUT_BLOCKED'].includes(value)) return '結帳受阻';
-                        const map = { ACTIVE: '進行中', CART_OPEN: '進入購物車', CART_ADD: '加入商品', CART_REMOVE: '移除商品', ABANDONED: '放棄/關閉', CART_CLOSE: '關閉購物車', CART_ABANDONED: '離開頁面', FAILED: '送出失敗', CHECKOUT_ERROR: '送出失敗', SUBMITTED: '已成立訂單', ORDER_CREATED: '已成立訂單', REDIRECTING: '付款跳轉', PAYMENT_REDIRECT: '付款跳轉', CHECKOUT_START: '開始結帳' };
+                        const map = { ACTIVE: '進行中', CLOSED: '關閉購物車（非取消訂單）', LEFT: '離開頁面（原因未確認）', CANCELLED: '已確認取消', PAID: '付款已確認', PENDING: '付款尚未完成', RECOVERED: '會員讀取已恢復', CART_OPEN: '進入購物車', CART_ADD: '加入商品', CART_REMOVE: '移除商品', ABANDONED: '舊版離開（原因未明）', CART_CLOSE: '關閉購物車', CART_ABANDONED: '離開頁面', FAILED: '送出失敗', CHECKOUT_ERROR: '送出失敗', SUBMITTED: '已成立訂單', ORDER_CREATED: '已成立訂單', REDIRECTING: '付款跳轉', PAYMENT_REDIRECT: '付款跳轉', CHECKOUT_START: '開始結帳' };
                         return map[value] || value || '-';
                     };
                     const cartActivityStatusClass = (row) => {
@@ -2279,6 +2285,11 @@
                         const items = Array.isArray(row?.cartItems) ? row.cartItems : [];
                         return items.map(item => `${item.name || item.id || '商品'} x ${item.quantity || 1}`).join('、') || '-';
                     };
+                    // cart-observability-v2: client observations, not financial facts.
+                    const cartActivityHasSnapshot = row => row?.schemaVersion === 2 ? row.snapshotAvailable === true : !(row?.eventType === 'checkout_blocked' && !row?.itemsCount);
+                    const cartActivityIdentityText = row => row?.schemaVersion === 2 ? (row.lineUserId ? (row.identityState === 'member_loaded' ? '前端已載入會員；紀錄身分未獨立驗證' : 'LINE 前端資料；會員尚未確認') : '尚未取得 LINE 身分；僅以操作編號追查') : '舊版紀錄，身分來源未確認';
+                    const cartActivityStageText = row => ({member_timeout:'會員 API 等待超過 7 秒；未證明曾按結帳',member_sync_failed:'會員資料讀取異常',member_read:'會員資料讀取完成',order_request:'送出訂單 API',cart_panel_closed:'僅關閉購物車面板',page_hidden_unknown:'可能關閉、切頁或返回；無法判定原因',payment_redirect:'正常付款跳轉，不是取消',login_redirect:'LINE 登入跳轉',payment_status_checked:'已查詢訂單付款狀態',registration_required:'下單前需要完成註冊'}[row?.stage] || (row?.trigger === 'checkout_click' ? '按下結帳後的檢查' : row?.stage || '未保存操作階段'));
+                    const showCartActivitySession = async row => { if (!row?.sessionId) return; cartActivitySearch.value = row.sessionId; cartActivityStatus.value = 'ALL'; await loadCartActivity(); };
                     // Operations status: read-only summaries, never financial writes or AI calls.
                     const operationsLoading = ref(false);
                     const operationsSafety = ref(null);
@@ -2287,7 +2298,7 @@
                     const operationsCartError = ref(false);
                     const operationsUpdatedAt = ref('');
                     const isOperationCartIssue = row => [row?.status,row?.eventType].some(value => ['BLOCKED','CHECKOUT_BLOCKED','FAILED','CHECKOUT_ERROR'].includes(String(value || '').toUpperCase()));
-                    const operationReasonLabels = {points_unavailable:'點數尚未確認，折抵受阻',points_syncing:'點數同步中',member_timeout:'會員資料讀取逾時',member_sync_failed:'會員資料讀取失敗',member_syncing:'會員身分同步中',member_unverified:'會員身分尚未驗證'};
+                    const operationReasonLabels = {points_unavailable:'點數尚未確認，折抵受阻',points_syncing:'點數同步中',member_timeout:'會員資料讀取逾時（7 秒）',member_sync_failed:'會員資料讀取失敗',member_syncing:'會員身分同步中',member_unverified:'會員身分尚未驗證',registration_required:'尚未完成購物註冊',order_rejected:'伺服器未接受訂單，請查錯誤代碼',order_request_failed:'訂單請求未取得成功結果，須核對訂單狀態'};
                     const cartActivityErrorText = row => operationReasonLabels[row?.errorMessage] || row?.errorMessage || '-';
                     const operationsAiHealthy = computed(() => !operationsSafetyError.value && operationsSafety.value?.ai?.status === 'healthy');
                     const operationsAiLabel = computed(() => {
@@ -4838,6 +4849,7 @@
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         operationsLoading, operationsUpdatedAt, operationsAiHealthy, operationsAiLabel, operationsAiTime, operationsCartLabel, operationsFeedbackLabel, operationsTrackingLabel, operationsErrorsLabel, loadOperationsStatus, openOperationCartIssues, cartActivityErrorText,
                         cartActivityLoadError, cartActivityHasFilter, cartActivityFilterSummary, cartActivityEmptyText, clearCartActivityFilters,
+                        cartActivityHasSnapshot, cartActivityIdentityText, cartActivityStageText, showCartActivitySession,
                         isEditingReservationCourse, isExistingEditingCourse, isExistingEditingProduct, courseLocationOptions, courseDisplayCategory, applyCourseCategoryType,
                         transferableCourses, canTransferEditingOrder, transferTargetCourseId, transferReason, transferConfirmed,
                         memberSearch, memberDateSort, showDeletedMembers, filteredMembers, courseSearchQuery, courseTypeFilter, selectedReportCourseId, reportCourseOptions, filteredAdminCourses, productSearchQuery, filteredProducts,

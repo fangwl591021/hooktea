@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import {webcrypto} from 'node:crypto';
 
 const worker = fs.readFileSync(new URL("../worker.js", import.meta.url), "utf8");
 const renderStart = worker.indexOf("function renderHuaxuShopHtml(");
@@ -48,10 +49,10 @@ function storefront({ local = {}, session = {}, search = "", request = null, log
     return { status: 200, ok: true, json: async () => body };
   };
   const sandbox = {
-    console: { warn() {} }, localStorage, sessionStorage, location, URL, URLSearchParams, AbortController, Blob,
+    console: { warn() {} }, crypto: webcrypto, localStorage, sessionStorage, location, URL, URLSearchParams, AbortController, Blob,
     navigator: { userAgent: "test" }, history: { replaceState: (_, __, value) => setLocation(value) }, fetch, liff,
     document: { getElementById: getElement, addEventListener: (name, listener) => { const listeners = events.get(name) || []; listeners.push(listener); events.set(name, listeners); }, querySelectorAll: () => [], querySelector: () => null, createElement: () => makeElement(""), body: makeElement("body") },
-    window: { liff, addEventListener() {}, scrollTo() {} }, setTimeout: () => 1, clearTimeout() {}, alert() {}, confirm: () => true,
+    window: { liff, addEventListener(name, listener) { const listeners=events.get(name)||[]; listeners.push(listener); events.set(name,listeners); }, scrollTo() {} }, setTimeout: () => 1, clearTimeout() {}, alert() {}, confirm: () => true,
   };
   const context = vm.createContext(sandbox);
   new vm.Script(script.replace('const REGISTRATION_ENTRY = false;', 'const REGISTRATION_ENTRY = '+registrationEntry+';').replace(/^\s*init\(\);\s*$/m, ""), { filename: "rendered-storefront.js" }).runInContext(context);
@@ -382,7 +383,7 @@ test('unavailable, unverified and reconciling points cannot silently replace dis
   }
 });
 
-test('point preflight blocks are recorded once without private data or OAuth parameters', async()=>{
+test('point preflight retains bounded identity and cart, never contact data or OAuth parameters', async()=>{
   const app=storefront({local:{huaxu_cart:cart,huaxu_points_used:'50'},search:'?code=private-code&state=private-state'});await app.ready();app.fill();
   app.run('memberData.points.available=false');
   await app.run('checkout()');await app.run('checkout()');
@@ -391,8 +392,10 @@ test('point preflight blocks are recorded once without private data or OAuth par
   assert.equal(events.length,1);
   assert.equal(events[0].stage,'points_unavailable');
   assert.equal(events[0].status,'blocked');
-  for(const field of ['lineUserId','memberUid','displayName','pictureUrl']) assert.equal(events[0][field],'');
-  assert.deepEqual(events[0].items,[]);
+  assert.equal(events[0].lineUserId,uid);
+  assert.equal(events[0].displayName,'Test');
+  assert.equal(events[0].items[0].id,'tea');
+  assert.ok(events[0].sessionId);
   assert.equal(events[0].href,'https://shop.example.test/');
   assert.doesNotMatch(JSON.stringify(events),/private-code|private-state|0912345678|test@example|重慶|verified-test-token/);
 });
@@ -421,6 +424,52 @@ test('timed out member read preserves discount intent and records a fixed non-pr
   assert.equal(app.run('pointDeduction'),50);
   assert.equal(app.getElement('useMaxPointsButton').disabled,true);
   const events=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body));
-  assert.ok(events.some(e=>e.stage==='member_timeout'));
+  const failure=events.find(e=>e.stage==='member_timeout');
+  assert.equal(failure.eventType,'member_read_failed');
+  assert.equal(failure.lineUserId,uid);
+  assert.equal(failure.trigger,'member_load');
+  assert.equal(failure.errorCode,'MEMBER_READ_TIMEOUT');
+  assert.equal(failure.items[0].id,'tea');
   assert.doesNotMatch(JSON.stringify(events),/private upstream failure/);
+});
+
+test('anonymous session, panel close and page leave never claim customer cancellation',()=>{
+  const app=storefront({local:{huaxu_cart:cart}});
+  app.run('toggleCart(false)');app.dispatch('pagehide');
+  const events=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body));
+  assert.deepEqual(events.map(e=>e.status),['closed','left']);
+  assert.equal(events[1].stage,'page_hidden_unknown');
+  assert.equal(events[0].identityState,'anonymous');
+  assert.equal(events[0].sessionId,events[1].sessionId);
+  assert.equal(events[0].snapshotAvailable,false);
+  assert.ok(events[1].sequence>events[0].sequence);
+});
+
+test('payment departure and server-confirmed cancellation are separate observations',async()=>{
+  const app=storefront({local:{huaxu_cart:cart}});await app.ready();
+  app.run('departureIntent="payment_redirect";activityOrderId="order-test"');app.dispatch('pagehide');
+  await app.run('cancelOrder("order-test")');
+  const events=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body));
+  assert.equal(events[0].stage,'payment_redirect');assert.equal(events[0].status,'left');
+  assert.ok(events.some(e=>e.eventType==='order_cancelled'&&e.status==='cancelled'&&e.orderId==='order-test'));
+  app.dispatch('pageshow');assert.equal(app.run('departureIntent'),'');
+});
+
+test('member HTTP error and recovery retain same correlation and bounded reason',async()=>{
+  let failed=true;
+  const app=storefront({local:{huaxu_cart:cart},request:url=>url==='/api/huaxu/member'&&failed?{status:503,body:{ok:false,message:'private address',code:'UPSTREAM_UNAVAILABLE'}}:null});
+  await app.ready();failed=false;await app.ready();
+  const events=app.calls.filter(c=>c.url==='/api/huaxu/cart-activity').map(c=>JSON.parse(c.options.body));
+  assert.equal(events[0].httpStatus,503);
+  assert.equal(events[0].errorCode,'UPSTREAM_UNAVAILABLE');
+  assert.ok(events.some(e=>e.eventType==='member_read_recovered'&&e.sessionId===events[0].sessionId));
+  assert.doesNotMatch(JSON.stringify(events),/private address|verified-test-token/);
+});
+
+test('diagnostic requests that never settle cannot hold order submission',async()=>{
+  const app=storefront({local:{huaxu_cart:cart},request:url=>url==='/api/huaxu/cart-activity'?new Promise(()=>{}):null});
+  await app.ready();app.fill();
+  // Mock default order response is incomplete but the order request must occur.
+  await app.run('checkout()');
+  assert.ok(app.calls.some(c=>c.url==='/api/huaxu/orders'));
 });

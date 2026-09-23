@@ -45,6 +45,6 @@ test('unauthenticated and non-admin clients never request summaries',async()=>{
 });
 test('cart issue link clears unrelated search and selects combined error view',()=>{
  const p=app();p.api.openOperationCartIssues();assert.equal(p.c.cartActivitySearch.value,'');assert.equal(p.c.cartActivityStatus.value,'ISSUES');assert.deepEqual(p.routes,['cart_activity']);
- assert.match(html,/value="BLOCKED">結帳受阻/);assert.match(html,/filter\(isOperationCartIssue\)/);
+ assert.match(html,/value="BLOCKED">讀取／結帳受阻/);assert.match(html,/filter\(isOperationCartIssue\)/);
  assert.equal(p.api.cartActivityErrorText({errorMessage:'points_unavailable'}),'點數尚未確認，折抵受阻');
 });

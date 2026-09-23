@@ -915,7 +915,10 @@ function summarizeShopCartItems(items = []) {
 async function appendShopCartActivity(env, ctx, rawEvent = {}) {
   const now = new Date();
   const lineUid = String(rawEvent.lineUserId || rawEvent.userId || rawEvent.lineProfile?.userId || "").trim();
-  const resolved = lineUid ? await findHuaxuMemberByLineUidFast(env, lineUid).catch(() => ({ memberUid: lineUid, member: null })) : { memberUid: "", member: null };
+  // Browser observations are not authenticated member records. Never enrich a
+  // claimed UID with private CRM data or use it to authorize a transaction.
+  const observed = Number(rawEvent.schemaVersion) === 2;
+  const resolved = !observed && lineUid ? await findHuaxuMemberByLineUidFast(env, lineUid).catch(() => ({ memberUid: lineUid, member: null })) : { memberUid: "", member: null };
   const member = resolved?.member || {};
   const items = Array.isArray(rawEvent.items) ? rawEvent.items : [];
   const event = {
@@ -923,6 +926,19 @@ async function appendShopCartActivity(env, ctx, rawEvent = {}) {
     eventType: String(rawEvent.eventType || "cart_event").slice(0, 40),
     status: String(rawEvent.status || rawEvent.eventType || "active").slice(0, 40),
     stage: String(rawEvent.stage || "").slice(0, 80),
+    schemaVersion: observed ? 2 : 1,
+    sessionId: String(rawEvent.sessionId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
+    pageId: String(rawEvent.pageId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
+    attemptId: String(rawEvent.attemptId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
+    sequence: Math.max(0, Math.floor(Number(rawEvent.sequence) || 0)),
+    identitySource: observed ? (lineUid ? "client_line" : "anonymous") : "legacy_unknown",
+    identityState: ["member_loaded", "line_profile_only", "anonymous"].includes(rawEvent.identityState) ? rawEvent.identityState : "unknown",
+    trigger: String(rawEvent.trigger || "").slice(0, 40),
+    elapsedMs: Number.isFinite(rawEvent.elapsedMs) ? Math.min(3600000, Math.max(0, rawEvent.elapsedMs)) : null,
+    httpStatus: Number(rawEvent.httpStatus) >= 100 && Number(rawEvent.httpStatus) <= 599 ? Number(rawEvent.httpStatus) : null,
+    errorCode: /^[A-Z0-9_]{1,80}$/.test(rawEvent.errorCode || "") ? rawEvent.errorCode : "",
+    online: typeof rawEvent.online === "boolean" ? rawEvent.online : null,
+    snapshotAvailable: observed ? rawEvent.snapshotAvailable === true : null,
     lineUserId: lineUid,
     memberUid: String(rawEvent.memberUid || resolved?.memberUid || "").trim(),
     legacyMemberId: String(member.legacyMemberId || member.oldMemberId || "").trim(),
@@ -942,7 +958,7 @@ async function appendShopCartActivity(env, ctx, rawEvent = {}) {
     paymentMethod: String(rawEvent.paymentMethod || "").slice(0, 30),
     orderId: String(rawEvent.orderId || "").slice(0, 80),
     errorMessage: String(rawEvent.errorMessage || rawEvent.message || "").slice(0, 300),
-    href: String(rawEvent.href || "").slice(0, 1000),
+    href: (() => { try { const u = new URL(rawEvent.href); return u.origin + u.pathname; } catch { return ""; } })(),
     userAgent: String(rawEvent.userAgent || "").slice(0, 300),
     createdAt: now.toLocaleString("zh-TW", { timeZone: "Asia/Taipei" }),
     createdAtIso: now.toISOString(),
@@ -6073,7 +6089,7 @@ async function buildShopCartActivityAdminData(env, payload = {}) {
     if (lineUid && ![row.lineUserId, row.memberUid, row.legacyMemberId].map(v => String(v || "")).includes(lineUid)) return false;
     if (status !== "ALL" && String(row.status || row.eventType || "").toUpperCase() !== status) return false;
     if (search) {
-      const haystack = [row.lineUserId, row.memberUid, row.legacyMemberId, row.displayName, row.itemsSummary, row.orderId, row.errorMessage, row.eventType, row.status]
+      const haystack = [row.lineUserId, row.memberUid, row.legacyMemberId, row.displayName, row.itemsSummary, row.orderId, row.errorMessage, row.eventType, row.status, row.sessionId, row.attemptId, row.errorCode]
         .map(v => String(v || "").toLowerCase()).join(" ");
       if (!haystack.includes(search)) return false;
     }
@@ -6484,6 +6500,13 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         });
       } catch (error) {}
     }
+    // cart-observability-v2: correlation is tab/session scoped, never a credential.
+    function activityId(){ return crypto.randomUUID(); }
+    let activitySession = "";
+    try { activitySession = sessionStorage.getItem("huaxu_activity_session") || ""; } catch (error) {}
+    if (!activitySession) { activitySession = activityId(); try { sessionStorage.setItem("huaxu_activity_session", activitySession); } catch (error) {} }
+    const activityPage = activityId();
+    let activitySequence = 0, activityAttempt = "", departureIntent = "", activityOrderId = "", memberReadHadFailure = false;
     function cartActivityItems(){
       return cart.map(item => {
         const p = products.find(product => product.id === item.id) || {};
@@ -6494,6 +6517,11 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       let totals = { subtotal: 0, payable: 0, used: 0 };
       try { totals = cartTotals(); } catch (error) {}
       return Object.assign({
+        schemaVersion: 2, sessionId: activitySession, pageId: activityPage,
+        attemptId: activityAttempt, sequence: ++activitySequence,
+        identityState: memberVerified ? "member_loaded" : (lineProfile.userId ? "line_profile_only" : "anonymous"),
+        online: typeof navigator.onLine === "boolean" ? navigator.onLine : null,
+        snapshotAvailable: cart.every(item => products.some(p => p.id === item.id)),
         eventType,
         status: eventType,
         stage: eventType,
@@ -6507,7 +6535,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         payable: totals.payable || 0,
         pointsUsed: totals.used || pointDeduction || 0,
         paymentMethod,
-        href: location.href,
+        href: location.origin + location.pathname,
         userAgent: navigator.userAgent || ""
       }, extra || {});
     }
@@ -6515,7 +6543,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       try {
         const payload = cartActivityPayload(eventType, extra);
         const body = JSON.stringify(payload);
-        if (navigator.sendBeacon && ["cart_abandoned","cart_close"].includes(eventType)) {
+        if (navigator.sendBeacon && ["page_leave","cart_close"].includes(eventType)) {
           const blob = new Blob([body], { type: "application/json" });
           navigator.sendBeacon("/api/huaxu/cart-activity", blob);
           return Promise.resolve();
@@ -6526,18 +6554,15 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       }
     }
     const checkoutBlockReports = new Map();
-    function logCheckoutBlock(reason){
-      // Client observations, not proof of a failed transaction. Do not include
-      // member details, cart contents, free text or OAuth query parameters.
+    function logCheckoutBlock(reason, detail = {}){
+      // Retain bounded shop context, not contact/address fields or credentials.
       const now = Date.now();
       if (checkoutBlockReports.has(reason) && now - checkoutBlockReports.get(reason) < 30000) return;
       checkoutBlockReports.set(reason, now);
-      void logCartActivity("checkout_blocked", {
+      void logCartActivity(detail.eventType || "checkout_blocked", Object.assign({
         status: "blocked", stage: reason, errorMessage: reason,
-        lineUserId: "", memberUid: "", displayName: "", pictureUrl: "",
-        items: [], itemsCount: 0, subtotal: 0, payable: 0, pointsUsed: 0,
-        paymentMethod: "", href: location.origin + location.pathname, userAgent: ""
-      });
+        trigger: "checkout_click", pictureUrl: ""
+      }, detail));
     }
     async function initLineIdentity(forceLogin){
       if (lineIdentityLoading) return;
@@ -6564,10 +6589,16 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         if (!liff.isLoggedIn()) {
           void logShopLiff(forceLogin ? "login_manual" : "login_redirect", "", { liffId });
           saveCheckoutDraft();
+          departureIntent = "login_redirect";
           liff.login({ redirectUri: entryContext.url || location.href.split("#")[0] });
           return;
         }
         lineProfile = await liff.getProfile();
+        try {
+          const previous = sessionStorage.getItem("huaxu_activity_uid");
+          if (previous && previous !== lineProfile.userId) { activitySession = activityId(); activityAttempt = ""; sessionStorage.setItem("huaxu_activity_session", activitySession); }
+          sessionStorage.setItem("huaxu_activity_uid", lineProfile.userId);
+        } catch (error) {}
         void logShopLiff("profile_done", "", { liffId, userId: lineProfile.userId || "" });
         renderLineProfile();
         await loadMemberData(liff.getAccessToken ? liff.getAccessToken() : "");
@@ -6604,13 +6635,16 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         throw new Error("LINE 登入已失效，請點「我的」重新登入；收件資料已保留。");
       }
       const response = await fetch(path, Object.assign({}, options, { headers: Object.assign({}, options.headers || {}, { authorization: "Bearer " + accessToken }) }));
-      const result = await response.json();
+      let result;
+      try { result = await response.json(); } catch (cause) { if (cause?.name === "AbortError") throw cause; const error = new Error("服務回應格式異常，請稍後重試。"); error.httpStatus = response.status; error.diagnosticCode = "INVALID_RESPONSE"; throw error; }
+      const requestError = message => { const error = new Error(message); error.httpStatus = response.status; error.diagnosticCode = /^[A-Z0-9_]{1,80}$/.test(result.code || result.error || "") ? (result.code || result.error) : "HTTP_ERROR"; return error; };
       if (response.status === 401 || response.status === 403) {
         saveCheckoutDraft();
         memberVerified = false;
-        throw new Error(result.message || "LINE 身分驗證失敗，請重新登入；收件資料已保留。");
+        throw requestError(result.message || "LINE 身分驗證失敗，請重新登入；收件資料已保留。");
       }
-      if (!response.ok && result.ok !== false) throw new Error(result.message || "服務暫時無法使用，請稍後重試。");
+      if (!response.ok && result.ok !== false) throw requestError(result.message || "服務暫時無法使用，請稍後重試。");
+      if (!result.ok) { result.diagnosticHttpStatus = response.status; }
       return result;
     }
     function rememberPendingCheckout(order){
@@ -6635,6 +6669,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         const status = String(order.status || "").toUpperCase();
         const paymentStatus = String(order.paymentStatus || "").toUpperCase();
         const paid = status === "PAID" || (["PREPARING","SHIPPED","COMPLETED"].includes(status) && paymentStatus === "SUCCESS");
+        void logCartActivity(paid ? "payment_confirmed" : (status === "CANCELLED" || paymentStatus === "CANCELLED" ? "payment_cancelled" : "payment_pending"), { status: paid ? "paid" : (status === "CANCELLED" || paymentStatus === "CANCELLED" ? "cancelled" : "pending"), stage: "payment_status_checked", trigger: "payment_return", orderId });
         if (paid) {
           const matchingCheckout = pending && pending.orderId === orderId && pending.lineUserId === verifiedMemberUid;
           if (matchingCheckout && pending.cart === JSON.stringify(cart)) {
@@ -7071,6 +7106,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
     async function checkout(){
       if (isCheckingOut) return toast("訂單處理中，請稍候");
       if (!cart.length) return toast("購物車是空的");
+      activityAttempt = activityId();
       const memberWasSyncing = memberLoading || lineIdentityLoading;
       if (!requireReadyMember()) {
         logCheckoutBlock(memberWasSyncing ? "member_syncing" : "member_unverified");
@@ -7078,6 +7114,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       }
       if (memberData?.member?.registrationStatus !== "registered") {
         openRegistration();
+        logCheckoutBlock("registration_required");
         return toast("網路購物前請先完成會員註冊；購物車與收件資料已保留。");
       }
       if (pointDeduction > 0 && !pointsReadyForDiscount()) {
@@ -7121,7 +7158,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       saveCheckoutDraft();
       entryContext = restoreEntryContext();
       setCheckoutBusy(true);
-      await logCartActivity("checkout_start", { status: "active" });
+      void logCartActivity("checkout_start", { status: "active", trigger: "checkout_click" });
+      const checkoutStarted = Date.now();
       let keepBusy = false;
       try {
         const clientOrderKey = buildClientOrderKey(customer);
@@ -7129,7 +7167,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         const res = await memberRequest("/api/huaxu/orders", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ items: currentCart, customer, lineProfile, paymentMethod, pointsUsed: totals.used, shippingCarrier: customer.shippingCarrier, sameAsRegistered, clientOrderKey, workerUrl: location.origin, returnUrl: entryContext.url || location.href.split("#")[0], entryUrl: entryContext.url, entryParams: entryContext.params }) });
         if (!res.ok) {
           if (res.order?.orderId) rememberPendingCheckout(res.order);
-          await logCartActivity("checkout_error", { status: "failed", errorMessage: res.message || "訂單送出失敗" });
+          void logCartActivity("checkout_error", { status: "failed", stage: "order_request", errorMessage: "order_rejected", errorCode: /^[A-Z0-9_]{1,80}$/.test(res.code || res.error || "") ? (res.code || res.error) : "ORDER_REJECTED", httpStatus: res.diagnosticHttpStatus, elapsedMs: Date.now() - checkoutStarted, orderId: res.order?.orderId || "" });
           if (Array.isArray(res.fields) && res.fields.length) {
             markCheckoutErrors(res.fields, Object.fromEntries(res.fields.map(id => [id, res.message || "請檢查" + (checkoutFieldLabels[id] || "此欄位")])));
           }
@@ -7138,7 +7176,8 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         }
         if (res.payment && res.payment.provider === "LINEPAY" && res.payment.redirectUrl) {
           rememberPendingCheckout(res.order);
-          await logCartActivity("payment_redirect", { status: "redirecting", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
+          departureIntent = "payment_redirect"; activityOrderId = res.order?.orderId || "";
+          void logCartActivity("payment_redirect", { status: "redirecting", orderId: activityOrderId });
           saveCheckoutDraft();
           keepBusy = true;
           location.href = res.payment.redirectUrl;
@@ -7146,13 +7185,14 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         }
         if (res.payment && res.payment.GatewayUrl) {
           rememberPendingCheckout(res.order);
-          await logCartActivity("payment_redirect", { status: "redirecting", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
+          departureIntent = "payment_redirect"; activityOrderId = res.order?.orderId || "";
+          void logCartActivity("payment_redirect", { status: "redirecting", orderId: activityOrderId });
           saveCheckoutDraft();
           keepBusy = true;
           submitPaymentForm(res.payment);
           return;
         }
-        await logCartActivity("order_created", { status: "submitted", orderId: res.order && res.order.orderId ? res.order.orderId : "" });
+        void logCartActivity("order_created", { status: "submitted", elapsedMs: Date.now() - checkoutStarted, orderId: res.order && res.order.orderId ? res.order.orderId : "" });
         clearCheckoutDraft();
         cart = []; pointDeduction = 0; localStorage.setItem("huaxu_points_used", "0"); saveCart(); toggleCart(false); toast("訂單已送出：" + res.order.orderId);
         if (res.order && Number(res.order.amount || 0) <= 0 && Number(res.order.pointsUsed || 0) > 0) {
@@ -7174,7 +7214,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
           openMember();
         }
       } catch (error) {
-        await logCartActivity("checkout_error", { status: "failed", errorMessage: error && error.message ? error.message : "訂單送出失敗" });
+        void logCartActivity("checkout_error", { status: "failed", stage: "order_request", errorMessage: "order_request_failed", errorCode: error.diagnosticCode || (error.name === "AbortError" ? "REQUEST_TIMEOUT" : "NETWORK_OR_CLIENT_ERROR"), httpStatus: error.httpStatus, elapsedMs: Date.now() - checkoutStarted });
         saveCheckoutDraft();
         toast(error.message || "訂單送出失敗，請稍後再試；收件資料已保留。");
       } finally {
@@ -7200,8 +7240,9 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
       form.submit();
     }
     function toggleDrawer(open){ document.getElementById("drawer").classList.toggle("open", open); }
-    function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); if (open) logCartActivity("cart_open", { status: "active" }); else if (cart.length) logCartActivity("cart_close", { status: "abandoned" }); }
-    window.addEventListener("pagehide", () => { if (cart && cart.length) logCartActivity("cart_abandoned", { status: "abandoned" }); });
+    function toggleCart(open){ document.getElementById("cart").classList.toggle("open", open); renderCart(); if (open) logCartActivity("cart_open", { status: "active" }); else if (cart.length) logCartActivity("cart_close", { status: "closed", stage: "cart_panel_closed" }); }
+    window.addEventListener("pagehide", () => { if (cart && cart.length) logCartActivity("page_leave", { status: "left", stage: departureIntent || "page_hidden_unknown", orderId: activityOrderId, trigger: "pagehide" }); });
+    window.addEventListener("pageshow", () => { departureIntent = ""; });
     function restoreEntryContext(){
       let current = new URL(location.href);
       // Never resolve a query-only liff.state against location.origin: that
@@ -7243,6 +7284,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
     }
     async function loadMemberData(accessToken){
       if (!lineProfile.userId) return;
+      const readStarted = Date.now();
       const requestedUid = lineProfile.userId;
       saveCheckoutDraft();
       memberLoading = true;
@@ -7259,7 +7301,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
           body: JSON.stringify({ accessToken, lineUserId: lineProfile.userId, lineProfile, profileOnly: REGISTRATION_ENTRY }),
           signal: controller.signal
         }, accessToken).finally(() => clearTimeout(timeoutId));
-        if (!res?.ok || res.lineUserId !== requestedUid || lineProfile.userId !== requestedUid) throw new Error(res?.message || "會員身分確認失敗，請重新登入。");
+        if (!res?.ok || res.lineUserId !== requestedUid || lineProfile.userId !== requestedUid) { const error = new Error(res?.message || "會員身分確認失敗，請重新登入。"); error.httpStatus = res?.diagnosticHttpStatus; error.diagnosticCode = !res?.ok ? (/^[A-Z0-9_]{1,80}$/.test(res?.code || res?.error || "") ? (res.code || res.error) : "MEMBER_READ_REJECTED") : "IDENTITY_MISMATCH"; throw error; }
         if (verifiedMemberUid && verifiedMemberUid !== requestedUid) {
           CHECKOUT_DRAFT_FIELD_IDS.forEach(id => { const field = document.getElementById(id); if (field) field.value = id === "shippingCarrier" ? "FAMILY" : ""; });
           const sameBox = document.getElementById("sameAsRegistered");
@@ -7269,10 +7311,12 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
         verifiedMemberUid = requestedUid;
         memberVerified = true;
         adoptCheckoutDraftForVerifiedUser(requestedUid);
+        if (memberReadHadFailure) { void logCartActivity("member_read_recovered", { status: "recovered", stage: "member_read", trigger: "member_load", elapsedMs: Date.now() - readStarted }); memberReadHadFailure = false; }
       } catch (error) {
         console.warn("Member profile load failed", error);
         memberData = fallbackMemberData(error?.name === "AbortError" ? "timeout" : "sync_failed");
-        if (!REGISTRATION_ENTRY && cart.length) logCheckoutBlock(error?.name === "AbortError" ? "member_timeout" : "member_sync_failed");
+        memberReadHadFailure = true;
+        logCheckoutBlock(error?.name === "AbortError" ? "member_timeout" : "member_sync_failed", { eventType: "member_read_failed", trigger: "member_load", elapsedMs: Date.now() - readStarted, httpStatus: error.httpStatus, errorCode: error.diagnosticCode || (error.name === "AbortError" ? "MEMBER_READ_TIMEOUT" : "NETWORK_OR_CLIENT_ERROR") });
         toast(error?.name === "AbortError" ? "會員資料讀取逾時，請重試；收件資料已保留。" : (error.message || "會員身分確認失敗，請重新登入。"));
       } finally {
         memberLoading = false;
@@ -7582,6 +7626,7 @@ function renderHuaxuShopHtml(shopLiffId = "2007674851-ijenzSk8", entryUrl = "htt
           body: JSON.stringify({ orderId, lineProfile })
         });
         if (!res.ok) throw new Error(res.message || "取消訂單失敗");
+        void logCartActivity("order_cancelled", { status: "cancelled", stage: "cancel_api_confirmed", trigger: "cancel_click", orderId });
         toast(res.pointsRestored ? "訂單已取消，點數已回補" : "訂單已取消");
         await refreshMemberData();
         expandedOrderId = orderId;
