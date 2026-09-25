@@ -369,11 +369,14 @@
                     </div>
                     <div class="admin-table-container !mt-0 !mx-0 !border-x-0 !border-t-0 shadow-none">
                         <table class="admin-table">
-                            <thead><tr><th>單號 / 日期</th><th>{{ orderTypeFilter === 'PRODUCT' ? '商品' : '課程' }}</th><th>{{ orderTypeFilter === 'PRODUCT' ? '購買 / 收件資料' : '學員' }}</th><th>金額</th><th>付款 / 回報</th><th>狀態</th><th class="text-right">操作</th></tr></thead>
+                            <thead><tr><th>單號 / 日期</th><th>{{ orderTypeFilter === 'PRODUCT' ? '購買商品 / 數量' : (orderTypeFilter === 'ALL' ? '商品 / 課程' : '課程') }}</th><th>{{ orderTypeFilter === 'COURSE' ? '學員' : '購買 / 收件資料' }}</th><th>金額</th><th>付款 / 回報</th><th>狀態</th><th class="text-right">操作</th></tr></thead>
                             <tbody>
                                 <tr v-for="o in filteredOrders" :key="o.orderId">
                                     <td><div class="font-mono font-bold text-[13px] text-slate-500">{{o.orderId}}</div><div class="text-[11px] text-slate-400 mt-0.5">{{o.createdAt}}</div></td>
-                                    <td class="font-bold text-slate-700">{{ String(orderCourseName(o) || '').split('\n')[0] }}</td>
+                                    <td class="font-bold text-slate-700">
+                                        <template v-if="o.type === 'PRODUCT'"><div v-for="(item, index) in orderPurchasedItems(o)" :key="index" class="whitespace-pre-line break-words mb-1">{{ item.name }}<span v-if="item.quantity !== null"> × {{ item.quantity }}</span></div></template>
+                                        <template v-else>{{ orderCourseName(o) }}</template>
+                                    </td>
                                     <td>
                                         <div class="font-bold text-slate-800">{{ o.name || '-' }}</div>
                                         <div class="text-[12px] font-mono text-slate-500 mt-1">{{ o.phone || '-' }}</div>
@@ -1677,6 +1680,25 @@
             <div class="modal-body p-0 animate-fade-in !max-w-[500px] !rounded-xl bg-white">
                 <div class="px-6 py-5 flex justify-between items-center bg-white border-b border-slate-100"><h3 class="text-[21px] font-black text-slate-800">訂單狀態維護：{{ editingOrder?.orderId }}</h3><button @click="editingOrder = null" class="text-slate-400 hover:text-slate-600"><i class="fas fa-times text-2xl"></i></button></div>
                 <div class="p-8 bg-slate-50 space-y-5 custom-scrollbar max-h-[70vh] overflow-y-auto">
+                    <section v-if="editingOrder.type === 'PRODUCT'" class="order-purchased-items bg-white rounded-xl border border-slate-200 p-4">
+                        <h4 class="text-[17px] font-black text-slate-800 mb-2">購買商品</h4>
+                        <p class="text-xs text-slate-500 mb-3">下單時保存的商品明細（唯讀），不隨目前商品價格變動。</p>
+                        <div v-for="(item, index) in orderPurchasedItems(editingOrder)" :key="index" class="py-3 border-b border-slate-100 last:border-0">
+                            <div class="font-black text-slate-800 whitespace-pre-line break-words">{{ item.name }}</div>
+                            <div v-if="item.code" class="text-xs text-slate-500 break-all mt-1">商品編號：{{ item.code }}</div>
+                            <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600 mt-2">
+                                <span>數量：{{ item.quantity === null ? '未記錄' : item.quantity }}</span>
+                                <span>單價：{{ orderSnapshotMoney(item.price) }}</span>
+                                <span>小計：{{ orderSnapshotMoney(item.lineTotal) }}</span>
+                            </div>
+                        </div>
+                        <div class="border-t border-slate-200 mt-3 pt-3 text-sm space-y-2">
+                            <div class="flex justify-between gap-3"><span>商品小計</span><b>{{ orderSnapshotMoney(editingOrder.subtotal ?? editingOrder.originalAmount) }}</b></div>
+                            <div class="flex justify-between gap-3"><span>運費</span><b>{{ orderSnapshotMoney(editingOrder.shippingFee) }}</b></div>
+                            <div class="flex justify-between gap-3"><span>點數折抵</span><b>{{ orderSnapshotNumber(editingOrder.pointsUsed) === null ? '未記錄' : orderSnapshotNumber(editingOrder.pointsUsed) + ' 點' }}</b></div>
+                            <div class="text-xs text-slate-500">未保存的舊資料標示「未記錄」，不推算或補零；付款狀態及金額見下方。</div>
+                        </div>
+                    </section>
                     <div class="bg-white rounded-xl border border-slate-200 p-4">
                         <div class="text-[12px] font-black text-slate-400 mb-2">付款 / 回報資訊</div>
                         <div class="text-[15px] font-black" :class="editingOrder.remittance ? 'text-orange-600' : 'text-slate-700'">{{ adminOrderPaymentText(editingOrder) }}</div>
@@ -3418,6 +3440,36 @@
                         if (carrier === 'POST') return 'https://postserv.post.gov.tw/pstmail/main_mail.html?targetTxn=EB500201';
                         return 'https://ecfme.famiport.com.tw/fmedcfpweb/index.aspx';
                     };
+                    // Order purchase presentation: read saved snapshots only; never mutate or query current products.
+                    const orderSnapshotNumber = (value) => {
+                        if (value === null || value === undefined || typeof value === 'boolean' || (typeof value === 'string' && !value.trim())) return null;
+                        if (!['number', 'string'].includes(typeof value)) return null;
+                        const number = Number(value);
+                        return Number.isFinite(number) && number >= 0 ? number : null;
+                    };
+                    const orderSnapshotMoney = (value) => {
+                        const number = orderSnapshotNumber(value);
+                        return number === null ? '未記錄' : '$' + formatPrice(number);
+                    };
+                    const orderPurchasedItems = (order) => {
+                        if (order?.type !== 'PRODUCT') return [];
+                        const items = Array.isArray(order.items) ? order.items.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
+                        if (items.length) return items.map(item => ({
+                            name: String(item.name || item.productName || '商品名稱未記錄'),
+                            code: String(item.code || item.id || ''),
+                            quantity: orderSnapshotNumber(item.quantity),
+                            price: orderSnapshotNumber(item.price),
+                            lineTotal: orderSnapshotNumber(item.lineTotal)
+                        }));
+                        // Legacy summary may contain several products; preserve it without guessing per-item quantities.
+                        const name = String(order.productName || '').trim();
+                        const multiple = name.includes('\n') || String(order.productId || '').includes(',');
+                        return [{name: name || '商品明細未記錄', code: String(order.productCode || order.productId || ''),
+                            quantity: multiple ? null : orderSnapshotNumber(order.quantity),
+                            price: multiple ? null : orderSnapshotNumber(order.unitPrice),
+                            lineTotal: multiple ? null : orderSnapshotNumber(order.originalAmount)}];
+                    };
+                    // End order purchase presentation.
                     const orderCourseName = (order) => order?.type === 'PRODUCT' ? (order.productName || '商城商品') : getCourseName(order.courseId);
                     const orderMatchesReportCourses = (order) => {
                         if (selectedReportCourseId.value === 'ALL') return true;
@@ -4845,7 +4897,7 @@
                         isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
                         users, teachers, courses, products, orders, cartActivityLogs, cartActivityDiagnostic, isLoadingCartActivity, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
-                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName,
+                        adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName, orderPurchasedItems, orderSnapshotNumber, orderSnapshotMoney,
                         currentViewName, totalRevenue, courseStatsFiltered, courseThumbUrl,
                         operationsLoading, operationsUpdatedAt, operationsAiHealthy, operationsAiLabel, operationsAiTime, operationsCartLabel, operationsFeedbackLabel, operationsTrackingLabel, operationsErrorsLabel, loadOperationsStatus, openOperationCartIssues, cartActivityErrorText,
                         cartActivityLoadError, cartActivityHasFilter, cartActivityFilterSummary, cartActivityEmptyText, clearCartActivityFilters,
