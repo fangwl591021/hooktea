@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookTea LINE 聊天室監控</title>
   <meta name="hooktea-release" content="20260917-passive-monitor-v1">
-  <meta name="hooktea-layout-release" content="20261006-fixed-editor-v2">
+  <meta name="hooktea-layout-release" content="20261006-auto-sync-v3">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { box-sizing: border-box; }
@@ -104,13 +104,14 @@
         </div>
 
         <div class="flex flex-wrap gap-2 mt-3">
+          <p id="sync-status" role="status" class="w-full text-xs text-slate-500">正在載入聊天室…</p>
           <button class="filter active" data-filter="all">全部</button>
           <button class="filter" data-filter="open">待回覆</button>
           <button class="filter" data-filter="high">高風險</button>
         </div>
       </div>
 
-      <div id="thread-list" class="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2"></div>
+      <div id="thread-list" class="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2"><p class="p-4 text-sm text-slate-500">正在載入聊天室…</p></div>
     </aside>
 
     <main id="monitor-main" class="flex-1 min-w-0 flex flex-col bg-white">
@@ -154,7 +155,7 @@
         <div id="conversation-column" class="min-w-0 flex flex-col">
           <div id="messages" tabindex="0" role="region" aria-label="聊天室訊息" class="overflow-y-auto scrollbar-thin bg-slate-100 p-5 space-y-4"></div>
 
-          <details id="thread-editor">
+          <details id="thread-editor" open>
             <summary>內部備註與會員標籤（不會傳給客戶）</summary>
           <div id="editor-content">
           <div id="editor-body" class="scrollbar-thin">
@@ -264,6 +265,7 @@
       learningCases: [],
       filter: "todo",
       riskExpanded: false,
+      editorDirty: false,
     };
 
     const $ = id => document.getElementById(id);
@@ -524,11 +526,13 @@
         btn.classList.toggle("text-white", active);
       });
 
-      $("note").value = thread.note || "";
+      if ($("note").value !== (thread.note || "")) $("note").value = thread.note || "";
       $("active-tags").innerHTML = (thread.tags || []).map(tag => `
         <button class="active-tag rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-700" data-tag="${esc(tag)}">${esc(tag)} ×</button>
       `).join("");
       document.querySelectorAll(".active-tag").forEach(btn => btn.addEventListener("click", () => {
+        state.editorDirty = true;
+        state.active.note = $("note").value;
         state.active.tags = state.active.tags.filter(tag => tag !== btn.dataset.tag);
         renderActive();
       }));
@@ -571,7 +575,8 @@
         renderLearningCases();
         return;
       }
-      const res = await fetchJson(`${WORKER_URL}/api/ai-learning/cases?threadId=${encodeURIComponent(threadId)}&limit=20`);
+      const res = await fetchJson(`${WORKER_URL}/api/ai-learning/cases?threadId=${encodeURIComponent(threadId)}&limit=20`, {signal: AbortSignal.timeout(20000)});
+      if (state.active?.id !== threadId) return;
       state.learningCases = Array.isArray(res.data) ? res.data : [];
       renderLearningCases();
     }
@@ -653,26 +658,62 @@
       await loadLearningCases(state.active.id);
     }
 
-    async function loadAll(keepActive = true) {
-      loadSafety().catch(safetyError);
-      const stamp = Date.now();
-      const [audienceRes, threadsRes] = await Promise.all([
-        fetchJson(`${WORKER_URL}/api/line-oa/audience?lineOnly=1&_=${stamp}`),
-        fetchJson(`${WORKER_URL}/api/line-oa/threads?lineOnly=1&_=${stamp}`),
-      ]);
-      state.audience = normalizeAudience(audienceRes);
-      state.threads = (threadsRes.data || []).map(normalizeThread);
-      renderAudience();
-      renderThreads();
-      if (keepActive && state.active) {
-        const exists = state.threads.find(item => item.id === state.active.id);
-        if (exists) await loadThread(state.active.id, false);
-      } else if (state.threads.length) {
-        await loadThread(state.threads[0].id, false);
-      } else {
-        renderActive();
-      }
+    let syncPromise = null, audienceLoading = false;
+    let threadRequestSequence = 0, requestedThreadId = null, savingThread = false;
+    const editorDrafts = new Map();
+    function captureEditorDraft() {
+      if (!state.active || !state.editorDirty) return;
+      editorDrafts.set(state.active.id, { note: $("note").value, tags: [...state.active.tags], newTag: $("new-tag").value });
     }
+    async function updateAudience() {
+      if (audienceLoading || state.authBlocked) return;
+      audienceLoading = true;
+      try {
+        const res = await fetchJson(`${WORKER_URL}/api/line-oa/audience?lineOnly=1&_=${Date.now()}`, {signal: AbortSignal.timeout(20000)});
+        state.audience = normalizeAudience(res);renderAudience();
+      } catch (error) {
+        if (!error.authRequired) $("generated-at").textContent = "分析摘要讀取失敗（不影響聊天室同步）";
+      } finally { audienceLoading = false; }
+    }
+    async function loadAll(keepActive = true) {
+      if (syncPromise) return await syncPromise;
+      if (state.authBlocked) return;
+      syncPromise = (async () => {
+        $("sync-status").textContent = "同步中…";
+        loadSafety().catch(safetyError);
+        // Audience analysis must not block the member list or selected chat.
+        void updateAudience();
+        try {
+          const threadsRes = await fetchJson(`${WORKER_URL}/api/line-oa/threads?lineOnly=1&_=${Date.now()}`, {signal: AbortSignal.timeout(20000)});
+          if (!Array.isArray(threadsRes.data)) throw new Error("聊天室名單格式不完整");
+          state.threads = threadsRes.data.map(normalizeThread);
+          renderThreads();
+          if (keepActive && state.active) {
+            await loadThread(state.active.id, false, {background:true});
+          } else if (!requestedThreadId && currentRows().length) {
+            await loadThread(currentRows()[0].id, false);
+          } else if (!state.active && !requestedThreadId) {
+            renderActive();
+          }
+          $("sync-status").textContent = "每 30 秒自動同步 · 已更新 " + new Date().toLocaleTimeString("zh-TW");
+        } catch (error) {
+          if (!error.authRequired) {
+            $("sync-status").textContent = "同步失敗，保留已載入內容；30 秒後重試";
+            if (!state.threads.length) $("thread-list").innerHTML = '<p class="p-4 text-sm text-amber-700">聊天室載入失敗，將自動重試，也可按同步。</p>';
+          }
+          throw error;
+        }
+      })();
+      try { return await syncPromise; } finally { syncPromise = null; }
+    }
+    function autoSync() {
+      if (document.hidden || state.authBlocked) return;
+      // Background failures are inline, never repeating modal alerts.
+      return loadAll(true).catch(() => {});
+    }
+    setInterval(autoSync, 30000);
+    document.addEventListener("visibilitychange", autoSync);
+    window.addEventListener("online", autoSync);
 
     async function refreshNow() {
       const btn = $("refresh");
@@ -700,34 +741,71 @@
       }
     }
 
-    async function loadThread(id, rerenderList = true) {
-      const res = await fetchJson(`${WORKER_URL}/api/line-oa/thread?id=${encodeURIComponent(id)}`);
+    async function loadThread(id, rerenderList = true, {background = false} = {}) {
+      if (background && savingThread) return;
+      if (background && requestedThreadId && requestedThreadId !== id) return;
+      captureEditorDraft();
+      requestedThreadId = id;
+      const requestId = ++threadRequestSequence;
+      let res;
+      try {
+        res = await fetchJson(`${WORKER_URL}/api/line-oa/thread?id=${encodeURIComponent(id)}&_=${Date.now()}`, {signal: AbortSignal.timeout(20000)});
+      } catch (error) {
+        if (requestId === threadRequestSequence) requestedThreadId = state.active?.id || null;
+        throw error;
+      }
+      if (requestId !== threadRequestSequence || requestedThreadId !== id) return;
+      captureEditorDraft();
+      const changed = state.active?.id !== id;
       state.active = normalizeThread(res.data || {});
       state.active.messages = res.data?.messages || [];
       state.active.signals = res.data?.signals || {};
       state.active.note = res.data?.note || "";
+      const draft = editorDrafts.get(id);
+      state.editorDirty = !!draft;
+      if (draft) { state.active.note = draft.note;state.active.tags = [...draft.tags]; }
+      if (changed) $("new-tag").value = draft?.newTag || "";
       renderActive();
-      $("monitor-app").classList.remove("show-threads");
-      $("toggle-threads").setAttribute("aria-expanded", "false");
-      await loadLearningCases(state.active.id);
+      if (!background) {
+        $("monitor-app").classList.remove("show-threads");
+        $("toggle-threads").setAttribute("aria-expanded", "false");
+      }
+      if (changed) {
+        $("learn-reply").value = "";$("learn-lesson").value = "";
+        void loadLearningCases(id).catch(error => {
+          if (!error.authRequired) $("learning-list").textContent = "案例讀取失敗，聊天室已正常載入";
+        });
+      }
       if (rerenderList) renderThreads();
     }
 
     async function saveThread(status = null) {
-      if (!state.active) return;
+      if (!state.active || savingThread) return;
+      const savedId = state.active.id;
+      const savedNote = $("note").value, savedTags = [...state.active.tags];
+      const savedNewTag = $("new-tag").value;
       const nextStatus = status || state.active.status || "open";
+      savingThread = true;
+      ++threadRequestSequence;
+      $("save-thread").disabled = true;
+      try {
       const res = await fetchJson(`${WORKER_URL}/api/line-oa/thread`, {
         method: "POST",
         body: JSON.stringify({
-          id: state.active.id,
-          note: $("note").value,
-          tags: state.active.tags || [],
+          id: savedId,
+          note: savedNote,
+          tags: savedTags,
           status: nextStatus,
         }),
       });
-      state.active = normalizeThread(res.data || state.active);
-      state.active.messages = res.data?.messages || [];
-      state.active.signals = res.data?.signals || {};
+      if (state.active?.id === savedId && $("note").value === savedNote && $("new-tag").value === savedNewTag && JSON.stringify(state.active.tags) === JSON.stringify(savedTags)) {
+        state.editorDirty = false;editorDrafts.delete(savedId);
+        state.active = normalizeThread(res.data || state.active);
+        state.active.messages = res.data?.messages || [];
+        state.active.signals = res.data?.signals || {};
+        renderActive();
+      }
+      } finally { savingThread = false;$("save-thread").disabled = false; }
       await loadAll(true);
     }
 
@@ -831,7 +909,6 @@
         if(res.data.skipped)$("ai-health").textContent+='（冷卻中或正在檢查，未重複呼叫）';}
       catch(error){safetyError(error);}finally{$("ai-self-test").disabled=false;}
     });
-    setInterval(()=>{if(!document.hidden)loadSafety().catch(safetyError);},30000);
 
     function toggleAnalysis(open) {
       const followLatest = isAtLatest(), previousTop = $("messages").scrollTop;
@@ -863,6 +940,8 @@
     }));
     document.querySelectorAll(".status-btn").forEach(btn => btn.addEventListener("click", () => saveThread(btn.dataset.status).catch(notifyError)));
     $("search").addEventListener("input", renderThreads);
+    $("note").addEventListener("input", () => { state.editorDirty = true; });
+    $("new-tag").addEventListener("input", () => { state.editorDirty = true; });
     $("refresh").addEventListener("click", () => refreshNow());
     $("analyze-top").addEventListener("click", () => backfillSignals().catch(notifyError));
     $("import-members").addEventListener("click", () => alert("會員資料已由 Worker/D1 讀取；若要重新匯入 Excel，請回管理站執行匯入。"));
@@ -873,6 +952,8 @@
     });
     $("add-tag").addEventListener("click", () => {
       if (!state.active) return;
+      state.editorDirty = true;
+      state.active.note = $("note").value;
       const tag = $("new-tag").value.trim();
       if (tag && !state.active.tags.includes(tag)) state.active.tags.push(tag);
       $("new-tag").value = "";

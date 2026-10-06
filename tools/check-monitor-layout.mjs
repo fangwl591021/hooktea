@@ -22,8 +22,9 @@ test('all constrained chat ancestors have min-height zero and a single scroll vi
   assert.match(html,/#messages \{ flex: 1 1 0;/);
   assert.match(html,/id="messages" tabindex="0" role="region"/);
 });
-test('tools, review, notes, and analysis default collapsed without deleting existing controls',()=>{
-  for(const id of ['management-tools','safety-panel','thread-editor']) assert.match(html,new RegExp('<details id="'+id+'"(?![^>]*\\bopen\\b)'));
+test('notes default open while tools, review, and analysis stay compact',()=>{
+  for(const id of ['management-tools','safety-panel']) assert.match(html,new RegExp('<details id="'+id+'"(?![^>]*\\bopen\\b)'));
+  assert.match(html,/<details id="thread-editor" open>/);
   assert.match(html,/<aside id="analysis-panel" hidden/);
   for(const id of ['ai-self-test','analyze-top','save-thread','save-learning','create-broadcast','feedback-more','import-members']) assert.match(html,new RegExp('id="'+id+'"'));
 });
