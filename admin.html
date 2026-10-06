@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
+    <meta name="hooktea-auth-release" content="20261006-auth-resume-v1">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>HookTea 管理站</title>
@@ -52,13 +53,21 @@
 </head>
 <body>
     <div id="app" v-cloak>
-        <div v-if="!isAuthenticated" class="min-h-screen flex items-center justify-center bg-[#F8FAFC] px-4 relative text-center">
+        <div v-if="isCheckingAuth" class="min-h-screen flex items-center justify-center bg-[#F8FAFC] px-4 text-center" role="status" aria-live="polite">
+            <div class="bg-white rounded-2xl border border-slate-200 p-8">
+                <i class="fas fa-spinner fa-spin text-emerald-500 text-2xl"></i>
+                <h2 class="mt-4 text-xl font-bold">正在確認既有登入</h2>
+                <p class="mt-2 text-sm text-slate-500">請稍候，不需要再按 LINE 登入。</p>
+            </div>
+        </div>
+        <div v-else-if="!isAuthenticated" class="min-h-screen flex items-center justify-center bg-[#F8FAFC] px-4 relative text-center">
             <div class="max-w-[360px] w-full bg-white rounded-2xl shadow-sm p-8 border border-slate-200 relative overflow-hidden">
                 <div class="absolute top-0 left-0 w-full h-1.5 bg-[#06C755]"></div>
                 <div class="mb-8">
                     <div class="w-14 h-14 bg-[#f0fdf4] text-[#06C755] rounded-xl flex items-center justify-center text-2xl mx-auto mb-4 border border-[#dcfce7]"><i class="fas fa-shield-alt"></i></div>
                     <h2 class="text-xl font-bold text-slate-800">HookTea 管理站</h2>
                     <p class="text-slate-500 text-sm mt-1.5 font-medium">系統安全驗證</p>
+                    <p v-if="authCheckMessage" role="status" class="text-amber-700 text-sm mt-3">{{ authCheckMessage }}</p>
                 </div>
                 <div class="space-y-4">
                     <button @click="lineLogin" :disabled="isLoading" class="w-full py-3.5 bg-[#06C755] text-white rounded-lg font-bold text-sm shadow-sm hover:bg-[#05b04a] transition flex items-center justify-center gap-2 active:scale-95">
@@ -1865,6 +1874,8 @@
             createApp({
                 setup() {
                     const isAuthenticated = ref(false);
+                    const isCheckingAuth = ref(true);
+                    const authCheckMessage = ref('');
                     const loginForm = ref({ account: '', password: '' });
                     const view = ref('dashboard');
                     const groups = ref({ groupA: true, groupB: true });
@@ -2149,6 +2160,36 @@
                         }
                         return finalLiffId;
                     };
+                    // One initialization per page; navigation must not race the login button.
+                    let crmLiffInit = null;
+                    const withAuthTimeout = async (promise) => {
+                        let timer;
+                        try {
+                            return await Promise.race([promise, new Promise((_, reject) => {
+                                timer = setTimeout(() => reject(new Error('授權確認逾時，請稍後重試')), 20000);
+                            })]);
+                        } finally { clearTimeout(timer); }
+                    };
+                    const initCrmLiff = async (liffId) => {
+                        if (!crmLiffInit) crmLiffInit = withAuthTimeout(liff.init({ liffId })).catch(error => { crmLiffInit = null; throw error; });
+                        return await crmLiffInit;
+                    };
+                    const acceptVerifiedLogin = (checkRes) => {
+                        if (!checkRes || !(checkRes.isAdmin || checkRes.canCrmLogin)) return false;
+                        currentAccess.value = { isAdmin: !!checkRes.isAdmin, canCrmLogin: !!checkRes.canCrmLogin, canHeadquarter: !!checkRes.canHeadquarter, isTeacher: !!checkRes.isTeacher, canSystemTools: !!checkRes.canSystemTools, userId: checkRes.userId || '', name: checkRes.name || '', pictureUrl: checkRes.pictureUrl || '' };
+                        // Optional cache failures must never undo a server-verified login.
+                        try {
+                            const cachedAccess = JSON.parse(localStorage.getItem('act_crm_access') || '{}');
+                            if (cachedAccess.userId && cachedAccess.userId !== currentAccess.value.userId) localStorage.removeItem(CACHE_KEY);
+                        } catch (_) { localStorage.removeItem(CACHE_KEY); }
+                        isAuthenticated.value = true;
+                        try {
+                            localStorage.setItem('act_crm_logged_in', 'true');
+                            localStorage.setItem('act_crm_access', JSON.stringify(currentAccess.value));
+                        } catch (_) { /* Verified login works without localStorage cache. */ }
+                        if (!isAdminRole.value) view.value = operatorDefaultView;
+                        return true;
+                    };
                     const ensureLineToken = () => {
                         if (typeof liff === 'undefined' || typeof liff.isLoggedIn !== 'function') return null;
                         if (!liff.isLoggedIn()) {
@@ -2182,6 +2223,7 @@
                             const res = await fetch(WORKER_URL, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
+                                ...(['GET_SETTINGS', 'CHECK_USER'].includes(act) ? { signal: AbortSignal.timeout(20000) } : {}),
                                 body: JSON.stringify({ action: act, payload: requestPayload, userProfile: liffProfile.value || {}, idToken: token, accessToken: lineAccessToken })
                             });
                             const text = await res.text();
@@ -2372,38 +2414,38 @@
                     // End operations status.
                     const autoLineLogin = async () => {
                         try {
+                            if (sessionStorage.getItem('act_admin_pwd')) {
+                                const checkRes = await callApi('CHECK_USER', {}, true);
+                                if (acceptVerifiedLogin(checkRes)) return;
+                                sessionStorage.removeItem('act_admin_pwd');
+                            }
                             const data = await callApi('GET_SETTINGS', {}, true);
                             if (String(data.crm_line_login_enabled || 'false') !== 'true') return;
                             let finalLiffId = resolveCrmLiffId(data);
                             if (finalLiffId) {
-                                await liff.init({ liffId: finalLiffId });
+                                await initCrmLiff(finalLiffId);
                                 if (liff.isLoggedIn()) {
-                                    if (!ensureLineToken()) return;
-                                    liffProfile.value = await liff.getProfile();
+                                    // Silent resume never logs out or starts another OAuth redirect.
+                                    if (!liff.getIDToken() && !(typeof liff.getAccessToken === 'function' && liff.getAccessToken())) return;
+                                    liffProfile.value = await withAuthTimeout(liff.getProfile());
                                     const checkRes = await callApi('CHECK_USER', {}, true);
-                                    if (checkRes && (checkRes.isAdmin || checkRes.canCrmLogin)) {
-                                        currentAccess.value = { isAdmin: !!checkRes.isAdmin, canCrmLogin: !!checkRes.canCrmLogin, canHeadquarter: !!checkRes.canHeadquarter, isTeacher: !!checkRes.isTeacher, canSystemTools: !!checkRes.canSystemTools, userId: checkRes.userId || liffProfile.value.userId || '', name: checkRes.name || liffProfile.value.displayName || '', pictureUrl: checkRes.pictureUrl || liffProfile.value.pictureUrl || '' };
-                                        const cachedAccess = JSON.parse(localStorage.getItem('act_crm_access') || '{}');
-                                        if (cachedAccess.userId && cachedAccess.userId !== currentAccess.value.userId) localStorage.removeItem(CACHE_KEY);
-                                        isAuthenticated.value = true;
-                                        localStorage.setItem('act_crm_logged_in', 'true');
-                                        localStorage.setItem('act_crm_access', JSON.stringify(currentAccess.value));
-                                        if (!isAdminRole.value) view.value = operatorDefaultView;
-                                        fetchData(true);
+                                    if (acceptVerifiedLogin(checkRes)) {
+                                        return;
                                     } else if (checkRes && checkRes.isTeacher) {
                                         alert('\u8b1b\u5e2b\u6392\u73ed\u529f\u80fd\u66ab\u6642\u96b1\u85cf\uff0c\u8acb\u5148\u4f7f\u7528\u5176\u4ed6\u7ba1\u7406\u529f\u80fd\u3002');
                                     }
                                 }
-                            } else if (res && res.message) {
-                                alert(res.message);
                             }
                         } catch (e) {
+                            authCheckMessage.value = '目前無法完成既有授權確認，請重試登入；不代表您的帳號已失效。';
                             console.log('Silent LIFF login skip:', e);
                         }
                     };
 
                     const lineLogin = async () => {
+                        if (isCheckingAuth.value || isLoading.value) return;
                         isLoading.value = true;
+                        authCheckMessage.value = '';
                         try {
                             const data = await callApi('GET_SETTINGS', {}, false);
                             if (String(data.crm_line_login_enabled || 'false') !== 'true') {
@@ -2413,21 +2455,15 @@
                             let finalLiffId = resolveCrmLiffId(data);
                             if (!finalLiffId) throw new Error('尚未設定後台 CRM LIFF ID。請先用密碼登入，並在系統設定新增一個 Endpoint URL 為 /admin.html 的 LIFF。');
 
-                            await liff.init({ liffId: finalLiffId });
+                            await initCrmLiff(finalLiffId);
                             if (!ensureLineToken()) return;
 
                             liffProfile.value = await liff.getProfile();
                             const checkRes = await callApi('CHECK_USER', {}, false);
 
-                            if (checkRes && (checkRes.isAdmin || checkRes.canCrmLogin)) {
-                                currentAccess.value = { isAdmin: !!checkRes.isAdmin, canCrmLogin: !!checkRes.canCrmLogin, canHeadquarter: !!checkRes.canHeadquarter, isTeacher: !!checkRes.isTeacher, canSystemTools: !!checkRes.canSystemTools, userId: checkRes.userId || liffProfile.value.userId || '', name: checkRes.name || liffProfile.value.displayName || '', pictureUrl: checkRes.pictureUrl || liffProfile.value.pictureUrl || '' };
-                                const cachedAccess = JSON.parse(localStorage.getItem('act_crm_access') || '{}');
-                                if (cachedAccess.userId && cachedAccess.userId !== currentAccess.value.userId) localStorage.removeItem(CACHE_KEY);
-                                isAuthenticated.value = true;
-                                localStorage.setItem('act_crm_logged_in', 'true');
-                                localStorage.setItem('act_crm_access', JSON.stringify(currentAccess.value));
-                                if (!isAdminRole.value) view.value = operatorDefaultView;
-                                fetchData(false);
+                            if (acceptVerifiedLogin(checkRes)) {
+                                applyRequestedAdminView();
+                                await fetchData(false);
                             } else if (checkRes && checkRes.isTeacher) {
                                 alert('\u8b1b\u5e2b\u6392\u73ed\u529f\u80fd\u66ab\u6642\u96b1\u85cf\uff0cCRM \u50c5\u9650 Admin / \u64cd\u4f5c\u54e1\u4f7f\u7528\u3002');
                             } else {
@@ -2441,6 +2477,7 @@
                     };
 
                     const handleLogin = async () => {
+                        if (isCheckingAuth.value || isLoading.value) return;
                         const acc = String(loginForm.value.account || '').trim().toLowerCase();
                         const pwd = String(loginForm.value.password || '').trim();
                         if (acc !== 'admin' || !['@1234', 'Tonyffang123'].includes(pwd)) {
@@ -2452,22 +2489,9 @@
                             sessionStorage.setItem('act_admin_pwd', pwd);
                             liffProfile.value = { userId: 'tonyfang', displayName: 'Tonyfang', pictureUrl: '' };
                             const checkRes = await callApi('CHECK_USER', {}, false);
-                            currentAccess.value = {
-                                isAdmin: true,
-                                canCrmLogin: true,
-                                canHeadquarter: true,
-                                isTeacher: false,
-                                canSystemTools: true,
-                                userId: checkRes?.userId || 'tonyfang',
-                                name: checkRes?.name || 'Tonyfang',
-                                pictureUrl: checkRes?.pictureUrl || ''
-                            };
-                            const cachedAccess = JSON.parse(localStorage.getItem('act_crm_access') || '{}');
-                            if (cachedAccess.userId && cachedAccess.userId !== currentAccess.value.userId) localStorage.removeItem(CACHE_KEY);
-                            isAuthenticated.value = true;
-                            localStorage.setItem('act_crm_logged_in', 'true');
-                            localStorage.setItem('act_crm_access', JSON.stringify(currentAccess.value));
-                            fetchData(false);
+                            if (!acceptVerifiedLogin(checkRes)) throw new Error('管理員授權未通過');
+                            applyRequestedAdminView();
+                            await fetchData(false);
                         } catch (e) {
                             alert(`登入失敗: ${e.message}`);
                         } finally {
@@ -2547,6 +2571,11 @@
                         if (isAuthenticated.value) {
                             callApi('LOG_ADMIN_EVENT', { view: viewName, message: `切換後台頁面：${viewName}` }, true).catch(() => {});
                         }
+                    };
+                    const applyRequestedAdminView = () => {
+                        if (!isAuthenticated.value) return;
+                        const requested = new URL(window.location.href).searchParams.get('view');
+                        if (['dashboard', 'members', 'points_ledger', 'paid_broadcast', 'richmenu'].includes(requested)) switchView(requested);
                     };
 
                     const currentViewName = computed(() => {
@@ -4888,13 +4917,18 @@
                     const currentCourseOrders = computed(() => selectedCourseOrders.value);
 
                     onMounted(async () => {
-                        loadCache();
-                        await autoLineLogin();
-                        if (isAuthenticated.value) fetchData(true);
+                        try {
+                            loadCache();
+                            await autoLineLogin();
+                        } finally { isCheckingAuth.value = false; }
+                        if (isAuthenticated.value) {
+                            applyRequestedAdminView();
+                            await fetchData(true);
+                        }
                     });
 
                     return {
-                        isAuthenticated, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
+                        isAuthenticated, isCheckingAuth, authCheckMessage, loginForm, view, groups, isLoading, liffProfile, memberTiers, courseStageOptions, productStatusOptions,
                         users, teachers, courses, products, orders, cartActivityLogs, cartActivityDiagnostic, isLoadingCartActivity, sysSettings, paymentLogs, lineBindReviews, flexRules, pointsLedger, auditLogs, broadcastTags, broadcastCampaigns, activeShopModuleTab, shopModuleTabs, wasabiCheck, wasabiExportResult, wasabiVerifyResult, wasabiHighRiskExportResult, wasabiHighRiskVerifyResult, wasabiDailyCheckResult,
                         currentAccess, isAdminRole, isSystemRole, isOperatorRole, canViewFinance, canManagePoints, canManageRichMenu, canEditMemberProfile, activeReferrerName,
                         adminOrderStatusText, adminOrderStatusClass, adminOrderAmountText, adminOrderPaymentText, shippingAddressText, shippingCarrierText, shippingStoreInfoText, trackingLookupUrl, orderCourseName, orderPurchasedItems, orderSnapshotNumber, orderSnapshotMoney,

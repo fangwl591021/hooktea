@@ -27,6 +27,15 @@ test('tools, review, notes, and analysis default collapsed without deleting exis
   assert.match(html,/<aside id="analysis-panel" hidden/);
   for(const id of ['ai-self-test','analyze-top','save-thread','save-learning','create-broadcast','feedback-more','import-members']) assert.match(html,new RegExp('id="'+id+'"'));
 });
+test('expanded editor scrolls only tags and notes, not the fixed action footer',()=>{
+  assert.match(html,/#editor-content \{[^\n]*display: flex; flex-direction: column/);
+  assert.match(html,/#editor-body \{[^\n]*min-height: 0; overflow-y: auto/);
+  assert.match(html,/#editor-actions \{ flex-shrink: 0;/);
+  assert.doesNotMatch(html,/#thread-editor \{[^\n]*overflow-y: auto/);
+  const editor=html.slice(html.indexOf('<details id="thread-editor"'),html.indexOf('<aside id="analysis-panel"'));
+  assert.match(editor,/<\/div>\s*<div id="editor-actions">/);
+  assert(editor.indexOf('id="new-tag"')>editor.indexOf('id="editor-actions"'));
+});
 test('chronological display uses a copy and does not leave old point audit after newest chat',()=>{
   const h=harness(),messages=[{text:'newest',createdAt:'2026-10-06T06:25:00Z'},{text:'audit',createdAt:'2026-09-09T02:26:00Z'},{text:'same',createdAt:'2026-10-06T06:25:00Z'}];
   const sorted=h.api.chronologicalMessages(messages);

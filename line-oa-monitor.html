@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookTea LINE 聊天室監控</title>
   <meta name="hooktea-release" content="20260917-passive-monitor-v1">
-  <meta name="hooktea-layout-release" content="20261006-chat-focus-v1">
+  <meta name="hooktea-layout-release" content="20261006-fixed-editor-v2">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { box-sizing: border-box; }
@@ -36,8 +36,12 @@
     #conversation-column { overflow: hidden; }
     #messages { flex: 1 1 0; overscroll-behavior: contain; overflow-wrap: anywhere; }
     #messages:focus-visible { outline: 2px solid #10b981; outline-offset: -2px; }
-    #thread-editor { flex-shrink: 0; border-top: 1px solid #e2e8f0; max-height: 30%; overflow-y: auto; background: white; }
+    #thread-editor { flex-shrink: 0; border-top: 1px solid #e2e8f0; background: white; }
     #thread-editor > summary { cursor: pointer; padding: 8px 16px; font-size: 12px; font-weight: 700; color: #475569; }
+    #editor-content { height: min(220px, 28dvh); display: flex; flex-direction: column; min-height: 0; }
+    #editor-body { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 8px 16px; }
+    #note { display: block; min-height: 64px; resize: vertical; }
+    #editor-actions { flex-shrink: 0; display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid #e2e8f0; background: white; }
     #analysis-panel[hidden] { display: none; }
     #toggle-threads { display: none; }
     @media (max-width: 1000px) {
@@ -82,11 +86,11 @@
           <summary class="cursor-pointer text-sm font-bold text-slate-600">管理工具</summary>
         <div class="grid grid-cols-2 gap-2 mt-3">
           <a class="feature bg-slate-950 text-white" href="/admin.html">後台首頁</a>
-          <a class="feature bg-emerald-500 text-white" href="/admin.html">學員 CRM</a>
+          <a class="feature bg-emerald-500 text-white" href="/admin.html?view=members">學員 CRM</a>
           <button id="analyze-top" class="feature bg-sky-600 text-white">AI 分析</button>
-          <a class="feature bg-violet-600 text-white" href="/admin.html">點數總表</a>
-          <a class="feature bg-amber-500 text-white" href="/admin.html">付費推播</a>
-          <a class="feature bg-blue-600 text-white" href="/admin.html">圖文選單</a>
+          <a class="feature bg-violet-600 text-white" href="/admin.html?view=points_ledger">點數總表</a>
+          <a class="feature bg-amber-500 text-white" href="/admin.html?view=paid_broadcast">付費推播</a>
+          <a class="feature bg-blue-600 text-white" href="/admin.html?view=richmenu">圖文選單</a>
         </div>
 
         <button id="import-members" class="mt-5 w-full rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-black text-white">
@@ -152,13 +156,15 @@
 
           <details id="thread-editor">
             <summary>內部備註與會員標籤（不會傳給客戶）</summary>
-          <div class="p-4">
+          <div id="editor-content">
+          <div id="editor-body" class="scrollbar-thin">
             <div class="flex flex-wrap items-center gap-2 mb-3">
               <span class="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700">帶入建議</span>
               <div id="active-tags" class="flex flex-wrap gap-2"></div>
             </div>
             <textarea id="note" rows="3" class="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-emerald-500" placeholder="內部備註"></textarea>
-            <div class="mt-3 flex gap-2">
+          </div>
+            <div id="editor-actions">
               <input id="new-tag" class="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="新增標籤">
               <button id="add-tag" class="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-black text-white">新增</button>
               <button id="save-thread" class="rounded-xl bg-slate-950 px-5 py-2.5 text-sm font-black text-white">儲存</button>
