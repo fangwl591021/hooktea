@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HookTea LINE 聊天室監控</title>
   <meta name="hooktea-release" content="20260917-passive-monitor-v1">
+  <meta name="hooktea-layout-release" content="20261006-chat-focus-v1">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { box-sizing: border-box; }
@@ -13,6 +14,50 @@
     .scrollbar-thin::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
     .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
     .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    /* Every flex/grid ancestor must allow the message viewport to shrink. */
+    #monitor-app { height: 100vh; height: 100dvh; position: relative; }
+    #thread-sidebar { width: 300px; min-height: 0; }
+    #sidebar-controls { flex-shrink: 0; max-height: 55%; overflow-y: auto; }
+    #thread-list, #monitor-main, #conversation-column, #messages, #analysis-panel { min-height: 0; }
+    #conversation-header { height: auto; min-height: 64px; max-height: 28%; overflow-y: auto; padding: 10px 16px; gap: 12px; }
+    #active-header { flex: 1; }
+    #active-header img { width: 40px; height: 40px; flex-shrink: 0; }
+    #active-header h2 { font-size: 18px; }
+    #member-details { font-size: 11px; color: #64748b; margin-top: 3px; }
+    #member-details summary { cursor: pointer; }
+    #conversation-toolbar { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid #e2e8f0; }
+    #conversation-toolbar .monitor-notice { flex: 1; font-size: 11px; color: #64748b; }
+    .view-btn { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 12px; font-weight: 700; background: white; white-space: nowrap; }
+    #safety-panel { padding: 8px 16px; max-height: 32%; overflow-y: auto; }
+    #safety-panel > summary { font-size: 13px; }
+    #safety-summary { font-size: 11px; }
+    #conversation-workspace { position: relative; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+    #conversation-workspace.analysis-open { grid-template-columns: minmax(0, 1fr) 320px; }
+    #conversation-column { overflow: hidden; }
+    #messages { flex: 1 1 0; overscroll-behavior: contain; overflow-wrap: anywhere; }
+    #messages:focus-visible { outline: 2px solid #10b981; outline-offset: -2px; }
+    #thread-editor { flex-shrink: 0; border-top: 1px solid #e2e8f0; max-height: 30%; overflow-y: auto; background: white; }
+    #thread-editor > summary { cursor: pointer; padding: 8px 16px; font-size: 12px; font-weight: 700; color: #475569; }
+    #analysis-panel[hidden] { display: none; }
+    #toggle-threads { display: none; }
+    @media (max-width: 1000px) {
+      #thread-sidebar { width: 250px; }
+      #conversation-workspace.analysis-open { grid-template-columns: minmax(0, 1fr); }
+      #analysis-panel { position: absolute; z-index: 20; inset: 0 0 0 auto; width: min(340px, 100%); box-shadow: -8px 0 24px #0f172a20; }
+    }
+    @media (max-width: 700px) {
+      #toggle-threads { display: inline-block; }
+      #thread-sidebar { display: none; }
+      #monitor-app.show-threads #thread-sidebar { display: flex; position: absolute; z-index: 30; top: 110px; bottom: 0; left: 0; width: min(300px, 88vw); box-shadow: 8px 0 24px #0f172a20; }
+      #conversation-header { flex-wrap: wrap; padding: 8px 12px; }
+      #conversation-header .status-btn { padding: 5px 8px; font-size: 12px; }
+      #conversation-toolbar { padding: 6px 10px; flex-wrap: wrap; }
+      #conversation-toolbar .monitor-notice { flex-basis: 100%; }
+      #safety-panel { padding: 6px 10px; }
+      #safety-summary { display: block; margin-top: 3px; }
+      #messages { padding: 12px; }
+      #messages .message-bubble { max-width: 94%; padding: 12px; }
+    }
   </style>
 </head>
 <body class="bg-slate-100 text-slate-950">
@@ -23,8 +68,8 @@
     <p class="mt-4 text-sm text-slate-500">登入後，點選「AI 後台監控」即可進入，不需另外輸入密碼。</p>
   </section>
   <div id="monitor-app" class="h-screen overflow-hidden flex">
-    <aside class="w-[360px] shrink-0 bg-white border-r border-slate-200 flex flex-col">
-      <div class="p-4 border-b border-slate-100">
+    <aside id="thread-sidebar" class="shrink-0 bg-white border-r border-slate-200 flex flex-col">
+      <div id="sidebar-controls" class="p-4 border-b border-slate-100">
         <div class="flex items-start justify-between gap-4">
           <div>
             <h1 class="text-xl font-black tracking-normal">LINE 聊天室監控</h1>
@@ -33,7 +78,9 @@
           <a href="/admin.html" class="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">後台</a>
         </div>
 
-        <div class="grid grid-cols-2 gap-2 mt-5">
+        <details id="management-tools" class="mt-3">
+          <summary class="cursor-pointer text-sm font-bold text-slate-600">管理工具</summary>
+        <div class="grid grid-cols-2 gap-2 mt-3">
           <a class="feature bg-slate-950 text-white" href="/admin.html">後台首頁</a>
           <a class="feature bg-emerald-500 text-white" href="/admin.html">學員 CRM</a>
           <button id="analyze-top" class="feature bg-sky-600 text-white">AI 分析</button>
@@ -45,6 +92,7 @@
         <button id="import-members" class="mt-5 w-full rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-black text-white">
           匯入母站會員名單
         </button>
+        </details>
 
         <div class="flex gap-2 mt-3">
           <input id="search" class="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-emerald-500" placeholder="搜尋姓名、ID、訊息或標籤">
@@ -61,8 +109,8 @@
       <div id="thread-list" class="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2"></div>
     </aside>
 
-    <main class="flex-1 min-w-0 flex flex-col bg-white">
-      <header class="h-[116px] shrink-0 border-b border-slate-200 px-6 py-4 flex items-center justify-between gap-4">
+    <main id="monitor-main" class="flex-1 min-w-0 flex flex-col bg-white">
+      <header id="conversation-header" class="shrink-0 border-b border-slate-200 flex items-center justify-between">
         <div id="active-header" class="min-w-0 flex items-center gap-4">
           <div class="h-12 w-12 rounded-full bg-slate-100 grid place-items-center text-xl font-black text-slate-400">?</div>
           <div class="min-w-0">
@@ -70,17 +118,20 @@
             <p class="mt-1 text-xs text-slate-500">左側名單依 LINE OA 最新訊息排序，高風險可用篩選查看。</p>
           </div>
         </div>
-        <div class="flex shrink-0 gap-3">
+        <div class="flex shrink-0 gap-2">
           <button class="status-btn" data-status="open">待回覆</button>
           <button class="status-btn" data-status="pending">處理中</button>
           <button class="status-btn" data-status="closed">完成</button>
         </div>
       </header>
 
-      <div class="bg-slate-700 px-6 py-2.5 text-sm font-black text-white">
-        此頁只提供管理員監看與草稿，不消耗 LINE reply token。
+      <div id="conversation-toolbar">
+        <span class="monitor-notice">只供管理員監看與草稿，不自動回覆、不消耗 LINE reply token。</span>
+        <button id="toggle-threads" class="view-btn" aria-expanded="false" aria-controls="thread-sidebar">會員名單</button>
+        <button id="jump-latest" class="view-btn" aria-controls="messages">回到最新</button>
+        <button id="toggle-analysis" class="view-btn" aria-expanded="false" aria-controls="analysis-panel">分析與工具</button>
       </div>
-      <details open class="shrink-0 border-b px-5 py-3">
+      <details id="safety-panel" class="shrink-0 border-b">
         <summary class="cursor-pointer font-bold">客戶反饋與系統待查 <span id="safety-summary" class="text-sm font-normal">讀取中</span></summary>
         <div class="mt-2 flex flex-wrap gap-3 items-center text-sm">
           <span id="ai-health">AI 尚未完成自測</span>
@@ -95,11 +146,13 @@
         <details class="mt-2 text-sm"><summary class="cursor-pointer">最近系統錯誤與 Telegram 送達狀態</summary><div id="operational-errors" class="max-h-32 overflow-auto whitespace-pre-wrap"></div></details>
       </details>
 
-      <section class="flex-1 min-h-0 grid grid-cols-[1fr_360px]">
-        <div class="min-w-0 flex flex-col">
-          <div id="messages" class="flex-1 overflow-y-auto scrollbar-thin bg-slate-100 p-5 space-y-4"></div>
+      <section id="conversation-workspace" class="flex-1 min-h-0 grid">
+        <div id="conversation-column" class="min-w-0 flex flex-col">
+          <div id="messages" tabindex="0" role="region" aria-label="聊天室訊息" class="overflow-y-auto scrollbar-thin bg-slate-100 p-5 space-y-4"></div>
 
-          <div class="shrink-0 border-t border-slate-200 bg-white p-4">
+          <details id="thread-editor">
+            <summary>內部備註與會員標籤（不會傳給客戶）</summary>
+          <div class="p-4">
             <div class="flex flex-wrap items-center gap-2 mb-3">
               <span class="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700">帶入建議</span>
               <div id="active-tags" class="flex flex-wrap gap-2"></div>
@@ -111,9 +164,11 @@
               <button id="save-thread" class="rounded-xl bg-slate-950 px-5 py-2.5 text-sm font-black text-white">儲存</button>
             </div>
           </div>
+          </details>
         </div>
 
-        <aside class="border-l border-slate-200 bg-white overflow-y-auto scrollbar-thin p-4">
+        <aside id="analysis-panel" hidden class="border-l border-slate-200 bg-white overflow-y-auto scrollbar-thin p-4">
+          <button id="close-analysis" class="view-btn mb-3">收合分析與工具</button>
           <section class="rounded-2xl border border-slate-200 p-4">
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-lg font-black">受眾分析</h3>
@@ -410,9 +465,29 @@
       document.querySelectorAll(".risk-card").forEach(btn => btn.addEventListener("click", () => loadThread(btn.dataset.id).catch(notifyError)));
     }
 
+    let renderedThreadId = null;
+    function isAtLatest() {
+      const viewport = $("messages");
+      return viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 32;
+    }
+    function positionMessages(followLatest, previousTop, threadId = renderedThreadId) {
+      const apply = () => {
+        if (threadId !== renderedThreadId) return;
+        const viewport = $("messages");
+        viewport.scrollTop = followLatest ? viewport.scrollHeight : previousTop;
+      };
+      apply();
+      requestAnimationFrame(apply);
+    }
+    function chronologicalMessages(messages) {
+      // Sort a copy: point audit entries may be appended after newer chat events.
+      const time = message => Number.isFinite(Date.parse(message.createdAt)) ? Date.parse(message.createdAt) : 0;
+      return (Array.isArray(messages) ? messages : []).slice().sort((a, b) => time(a) - time(b));
+    }
     function renderActive() {
       const thread = state.active;
       if (!thread) {
+        renderedThreadId = null;
         $("messages").innerHTML = `<div class="grid h-full place-items-center text-lg font-bold text-slate-400">請先從左側選擇會員</div>`;
         $("signals").innerHTML = `<p class="font-bold text-slate-400">尚未選擇會員</p>`;
         return;
@@ -421,14 +496,19 @@
       $("active-header").innerHTML = `
         <img src="${esc(thread.pictureUrl || avatarUrl(thread.name))}" class="h-14 w-14 rounded-full object-cover bg-slate-100" alt="">
         <div class="min-w-0">
-          <h2 class="truncate text-xl font-black">${esc(thread.name)}</h2>
-          <p class="mt-1 text-sm text-slate-500">${esc(thread.unread || 0)} 則訊息</p>
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h2 class="truncate text-xl font-black">${esc(thread.name)}</h2>
+            <span class="text-xs text-slate-500">${esc(thread.unread || 0)} 則訊息</span>
+          </div>
+          <details id="member-details">
+          <summary>會員詳細資料與標籤</summary>
           <div class="mt-2 flex max-w-full flex-wrap gap-1.5">${uidBadges(thread)}</div>
           <div class="mt-2 flex flex-wrap gap-2">
             <span class="rounded-full px-3 py-1.5 text-xs font-black ${statusClass(thread.status)}">${esc(statusLabel(thread.status))}</span>
             ${thread.tags.slice(0, 5).map(tag => `<span class="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-black text-sky-700">${esc(tag)}</span>`).join("")}
             <span class="rounded-full px-3 py-1.5 text-xs font-black ${riskClass(thread.riskLevel)}">${esc(riskLabel(thread.riskLevel))}風險</span>
           </div>
+          </details>
         </div>
       `;
 
@@ -454,12 +534,14 @@
         </div>
       `).join("") || `<p class="font-bold text-slate-400">尚無 AI 訊號</p>`;
 
-      const messages = Array.isArray(thread.messages) ? thread.messages : [];
+      const followLatest = renderedThreadId !== thread.id || isAtLatest();
+      const previousTop = $("messages").scrollTop;
+      const messages = chronologicalMessages(thread.messages);
       $("messages").innerHTML = messages.map(message => {
         const isStaff = message.senderRole === "staff" || message.type === "admin";
         return `
           <div class="flex ${isStaff ? "justify-end" : "justify-start"}">
-            <div class="max-w-[70%] rounded-2xl border p-4 shadow-sm ${isStaff ? "bg-slate-950 text-white border-slate-950" : "bg-white border-slate-200"}">
+            <div class="message-bubble max-w-[85%] rounded-2xl border p-4 shadow-sm ${isStaff ? "bg-slate-950 text-white border-slate-950" : "bg-white border-slate-200"}">
               <div class="mb-2 flex items-center justify-between gap-4">
                 <span class="text-sm font-black ${isStaff ? "text-white" : "text-slate-500"}">${esc(message.senderName || message.title || "LINE 訊息")}</span>
                 <span class="shrink-0 text-xs ${isStaff ? "text-slate-300" : "text-slate-400"}">${esc(dateText(message.createdAt))}</span>
@@ -469,7 +551,8 @@
           </div>
         `;
       }).join("") || `<div class="rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center font-bold text-slate-400">尚無聊天室訊息，請先在 LINE OA 測試留言後按同步。</div>`;
-      $("messages").scrollTop = $("messages").scrollHeight;
+      renderedThreadId = thread.id;
+      positionMessages(followLatest, previousTop);
     }
 
     function avatarUrl(name) {
@@ -618,6 +701,8 @@
       state.active.signals = res.data?.signals || {};
       state.active.note = res.data?.note || "";
       renderActive();
+      $("monitor-app").classList.remove("show-threads");
+      $("toggle-threads").setAttribute("aria-expanded", "false");
       await loadLearningCases(state.active.id);
       if (rerenderList) renderThreads();
     }
@@ -742,6 +827,28 @@
     });
     setInterval(()=>{if(!document.hidden)loadSafety().catch(safetyError);},30000);
 
+    function toggleAnalysis(open) {
+      const followLatest = isAtLatest(), previousTop = $("messages").scrollTop;
+      $("analysis-panel").hidden = !open;
+      $("conversation-workspace").classList.toggle("analysis-open", open);
+      $("toggle-analysis").setAttribute("aria-expanded", String(open));
+      $("toggle-analysis").textContent = open ? "收合分析" : "分析與工具";
+      positionMessages(followLatest, previousTop);
+    }
+    $("toggle-analysis").addEventListener("click", () => toggleAnalysis($("analysis-panel").hidden));
+    $("close-analysis").addEventListener("click", () => toggleAnalysis(false));
+    $("jump-latest").addEventListener("click", () => positionMessages(true, 0));
+    $("toggle-threads").addEventListener("click", () => {
+      const open = $("monitor-app").classList.toggle("show-threads");
+      $("toggle-threads").setAttribute("aria-expanded", String(open));
+    });
+    // Reflow from collapsed tools must keep the latest message visible.
+    for (const id of ["safety-panel", "thread-editor", "management-tools"]) {
+      $(id).addEventListener("click", event => {
+        if (event.target.tagName === "SUMMARY" && isAtLatest()) requestAnimationFrame(() => positionMessages(true, 0));
+      });
+    }
+
     document.querySelectorAll(".filter").forEach(btn => btn.addEventListener("click", () => {
       document.querySelectorAll(".filter").forEach(item => item.classList.remove("active"));
       btn.classList.add("active");
@@ -782,10 +889,6 @@
       .metric { border-radius: 16px; padding: 13px; min-height: 74px; }
       .metric span { display: block; color: #64748b; font-size: 12px; font-weight: 800; }
       .metric strong { display: block; margin-top: 6px; font-size: 22px; line-height: 1; }
-      @media (max-width: 1200px) {
-        aside.w-\\[360px\\] { width: 340px; }
-        section.grid-cols-\\[1fr_360px\\] { grid-template-columns: 1fr 320px; }
-      }
     `;
     document.head.appendChild(style);
 
