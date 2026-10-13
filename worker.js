@@ -2527,19 +2527,50 @@ async function handleShopKeywordReward(env, ctx, event, settings = null) {
   if (!lineUid || !keyword) return false;
   if (!reward.enabled || !reward.points) return true;
   const hash = await sha256HexBody(text);
+  const eventHash = await sha256HexBody(String(event.webhookEventId || event.message.id || ''));
+  const traceId = crypto.randomUUID();
+  let diagnosticWrites = Promise.resolve();
+  const observe = detail => {
+    // Operational evidence only: no UID, reply token, customer text or balance.
+    const value = { release: '20261013-keyword-reply-v1', traceId, eventHash,
+      keywordHash: hash, ...detail, updatedAt: new Date().toISOString() };
+    console.log(JSON.stringify({ event: 'hooktea_keyword_reward', ...value }));
+    // Separate immutable stage keys avoid KV's same-key write rate limit.
+    // The last-result pointer is best effort; per-attempt evidence is retained.
+    diagnosticWrites = diagnosticWrites.then(async () => {
+      await putKvJsonOnly(env, 'KEYWORD_REWARD_EVENT_' + eventHash.slice(0, 32) + '_' + traceId + '_' + value.phase, value, { expirationTtl: 86400 * 7 });
+      if (value.phase === 'reply_result') await putKvJsonOnly(env, 'KEYWORD_REWARD_LAST', value, { expirationTtl: 86400 * 7 });
+    }).catch(() => {});
+    if (ctx) ctx.waitUntil(diagnosticWrites);
+  };
+  observe({ phase: 'claim_started' });
   let result;
+  let errorCode = '';
   try {
     result = await claimHookTeaReward(env, ctx, { lineUid, kind: 'keyword_reward', key: hash,
       amount: Number(reward.points), reason: '關鍵字贈點：' + keyword,
       recordKey: 'KEYWORD_REWARD_' + lineUid + '_' + hash.slice(0, 24), eventId: event.webhookEventId || event.message.id || '' });
   } catch (error) {
+    const code = String(error?.message || '');
+    const identityBlocked = /IDENTITY|ENROLLMENT|CHILD_EXISTING_ACCOUNT_REVIEW/.test(code);
+    errorCode = identityBlocked ? 'MEMBER_VERIFICATION_REQUIRED' : 'REWARD_PROCESSING_UNAVAILABLE';
     result = { ok: false, pending: true, status: 'unavailable' };
-    console.error('Keyword reward journal unavailable', error);
+    observe({ phase: 'claim_unavailable', errorCode });
   }
+  observe({ phase: 'claim_result', confirmed: result.ok === true,
+    duplicate: result.duplicate === true, recovered: result.recovered === true, errorCode,
+    status: ['confirmed','queued','pending_member','pending_config','sending','reconciling','rejected','legacy_review','unavailable'].includes(result.status) ? result.status : 'unknown' });
   const message = result.ok
     ? (result.duplicate ? '這組活動關鍵字已領取過，不能重複領取。' : (result.recovered ? '先前待確認的活動點數已入帳，共 ' : '恭喜您獲得 ') + (result.amount ?? reward.points) + ' 點。')
     : '活動點數尚待確認，請稍後至會員專區查看；系統不會重複加點。';
-  await deliverKeywordRewardReply(env, lineUid, event.replyToken || '', textLineMessage(message)).catch(() => {});
+  let delivery;
+  try { delivery = await deliverKeywordRewardReply(env, lineUid, event.replyToken || '', textLineMessage(message)); }
+  catch { delivery = { ok: false }; }
+  observe({ phase: 'reply_result', confirmed: result.ok === true, duplicate: result.duplicate === true, errorCode,
+    replyOk: delivery?.ok === true, replyMethod: ['reply','push'].includes(delivery?.method) ? delivery.method : 'unknown',
+    replyStatus: Number(delivery?.status || delivery?.reply?.status || 0),
+    pushStatus: Number(delivery?.push?.status || 0), ambiguous: delivery?.ambiguous === true });
+  if (!ctx) await diagnosticWrites;
   return true;
 }
 
@@ -9863,6 +9894,12 @@ export default {
         if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) !== 'true') return {event,owner};
         const uid = event?.source?.userId;
         if (!/^U[0-9a-f]{32}$/.test(uid || '')) return {event,owner:'silent'};
+        // A keyword reward already verifies/enrolls the member inside its
+        // idempotent claim handler. Do not run that slow/fallible check twice
+        // before acknowledgement, or swallow it into a silent routing result.
+        // No point write or identity bypass occurs here; the owned handler is
+        // attached to waitUntil and returns a fixed pending reply on failure.
+        if (owner === 'keyword_reward') return {event,owner};
         try {
           // Enrollment happens before either branch: follow/new message cannot
           // create a mother account or trigger a mother welcome reward first.

@@ -20,6 +20,7 @@ export default {
       alertRelease:ALERT_RELEASE,telegramAlertsEnabled:String(env.HOOKTEA_TELEGRAM_ALERTS)==='true',
       monitorRelease:MONITOR_RELEASE,passiveMonitorEnabled:monitorEnabled(env),
       keywordOnly:String(env.HOOKTEA_KEYWORD_ONLY)==='true',
+      keywordRewardRelease:'20261013-keyword-reply-v1',
     },{headers:{'Cache-Control':'no-store'}});
     if(request.method==='OPTIONS')return worker.fetch(request,env,ctx);
     // GET callbacks may mutate orders too. Do not exempt them as read-only.
