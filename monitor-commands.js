@@ -32,7 +32,11 @@ export async function loadMonitorCommandPolicy(env) {
     const templateKeywords = Array.isArray(template.keywords) ? template.keywords
       : String(template.keyword || template.trigger || '簽到贈點活動').split(/[\n,，]/);
     // Paused commands still are commands, not customer questions.
-    return {ready:true, keywords:[...new Set([...rewards, ...templateKeywords].map(normalizeMonitorCommand).filter(Boolean))]};
+    const points=Math.max(0,Math.floor(Number(settings.shop_keyword_reward_points||0))||0);
+    const daily=Number([env.HOOKTEA_DAILY_SIGNIN_POINTS,settings.hooktea_daily_signin_points,settings.shop_checkin_reward_points].find(v=>v!==undefined&&v!==null&&v!=='')??5);
+    return {ready:true, keywords:[...new Set([...rewards, ...templateKeywords].map(normalizeMonitorCommand).filter(Boolean))],
+      reward:{keywords:rewards.map(normalizeMonitorCommand).filter(Boolean),points,enabled:!['false','0'].includes(String(settings.shop_keyword_reward_enabled??'true').toLowerCase())&&Number.isSafeInteger(points)&&points>0},
+      dailyPoints:!['false','0'].includes(String(settings.hooktea_daily_signin_enabled??'true').toLowerCase())&&Number.isSafeInteger(daily)&&daily>0?daily:0};
   } catch {
     return {ready:false, keywords:[]};
   } finally { clearTimeout(timer); }

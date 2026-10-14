@@ -26,7 +26,10 @@ export async function trackCrmRequest({db,ctx,run,id=crypto.randomUUID(),onIssue
   if(metadata){try{await db.prepare('INSERT INTO crm_request_metadata(lease_id,route,method,operation) VALUES(?,?,?,?)')
     .bind(id,metadata.route,metadata.method,metadata.operation).run();}
     catch{onIssue({category:'tracking',code:'finish_failed'});}}
-  const trackedCtx={setOperation:async action=>{
+  const trackedCtx={deferDiagnostic(promise){
+    // Non-business telemetry is observed, but is not a business completion gate.
+    ctx.waitUntil(Promise.resolve(promise).catch(()=>console.error(JSON.stringify({event:'crm_diagnostic_failed',traceId:id}))));
+  },setOperation:async action=>{
     // No raw action, URL, query string, body, UID or member data in diagnostics.
     const allowed=new Set(['REGISTER_USER','DAILY_CHECKIN','ADMIN_MANAGE_POINTS','GET_USER_POINTS','ADMIN_GET_POINTS_LEDGER','ADMIN_GET_CRM_DETAIL',
       'ADMIN_SAVE_USER','ADMIN_PREPARE_LEGACY_TRANSFER','ADMIN_ACTIVATE_LEGACY_TRANSFER','CREATE_ADMIN_SESSION']);

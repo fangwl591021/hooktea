@@ -50,6 +50,8 @@ try {
  await db.prepare("INSERT INTO crm_request_leases(lease_id,release,state,started_at) VALUES(?,'old','active','2026-01-01 00:00:00')").bind(oldId).run();
  const sql=readFileSync(new URL('migrations/0011_monitor_safety.sql',root),'utf8').replace(/^--.*$/gm,'').trim();
  for(const s of sql.split(/;\s*(?=CREATE\s|INSERT\s)/).map(s=>s.trim()).filter(Boolean))await db.prepare(s).run();
+ const completion=readFileSync(new URL('migrations/0012_command_completion.sql',root),'utf8').replace(/^--.*$/gm,'').trim();
+ for(const s of completion.split(';').map(s=>s.trim()).filter(Boolean))await db.prepare(s).run();
  const call=(p,options={})=>mf.dispatchFetch('https://test.invalid'+p,options);
  const post=(p,body,headers=admin)=>call(p,{method:'POST',headers,body:JSON.stringify(body)});
  const countAlerts=async(code)=>(await db.prepare('SELECT COUNT(*) n FROM operational_alerts WHERE code=?').bind(code).first()).n;

@@ -10,8 +10,9 @@ import { createNewMemberPointService } from './new-member-points.js';
 import { reportIssue, observePointService, alertStatus, enqueueAlert } from './operational-alerts.js';
 import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
 import {createLegacyPointTransfer, renderLegacyTransferPage} from './legacy-point-transfer.js';
-import {captureMonitorEvents,runAiSelfTest,aiHealthStatus,listFeedback,categoryLabels,processMonitorFeedback} from './monitor-safety.js';
+import {captureMonitorEvents,runAiSelfTest,aiHealthStatus,listFeedback,categoryLabels,processMonitorFeedback,markThreadFeedbackHandled} from './monitor-safety.js';
 import {trackingStatus} from './tracking-incidents.js';
+import {recordCommandResult,commandStatus} from './command-completion.js';
 
 const utils = {
   hexToBytes: (hex) => {
@@ -131,6 +132,7 @@ async function safeGetKV(env, key, defaultVal, options = {}) {
   } catch (e) {
       console.error(`[SafeGetKV] 解析失敗 Key: ${key}`, e);
       reportIssue(env,'storage','storage_failed');
+      if (options.strict) throw Error('SETTINGS_READ_UNAVAILABLE');
       return defaultVal;
   }
 }
@@ -2514,7 +2516,9 @@ async function handleHookTeaDailySigninReward(env, ctx, event) {
       ? '\n' + (result.duplicate ? '該次簽到入帳後總點數：' : '本次入帳後總點數：') + balance + ' 點。' + (result.duplicate ? '\n目前總點數請至會員專區查看。' : '')
       : '\n總點數暫時無法確認，請至會員專區查看。';
   }
-  if (!event.hookTeaSuppressReply) await deliverKeywordRewardReplyFast(env, lineUid, event.replyToken || '', textLineMessage(message), 2200).catch(() => {});
+  let delivery=null;
+  if (!event.hookTeaSuppressReply) delivery=await deliverKeywordRewardReplyFast(env, lineUid, event.replyToken || '', textLineMessage(message), 2200).catch(() => null);
+  if(String(env.HOOKTEA_MONITOR_SAFETY)==='true') await recordCommandResult(env,event.webhookEventId||event.message.id,result,delivery).catch(()=>console.error('command_result_record_failed'));
   return true;
 }
 
@@ -2541,7 +2545,7 @@ async function handleShopKeywordReward(env, ctx, event, settings = null) {
       await putKvJsonOnly(env, 'KEYWORD_REWARD_EVENT_' + eventHash.slice(0, 32) + '_' + traceId + '_' + value.phase, value, { expirationTtl: 86400 * 7 });
       if (value.phase === 'reply_result') await putKvJsonOnly(env, 'KEYWORD_REWARD_LAST', value, { expirationTtl: 86400 * 7 });
     }).catch(() => {});
-    if (ctx) ctx.waitUntil(diagnosticWrites);
+    if (ctx) (ctx.deferDiagnostic ? ctx.deferDiagnostic(diagnosticWrites) : ctx.waitUntil(diagnosticWrites));
   };
   observe({ phase: 'claim_started' });
   let result;
@@ -2570,6 +2574,7 @@ async function handleShopKeywordReward(env, ctx, event, settings = null) {
     replyOk: delivery?.ok === true, replyMethod: ['reply','push'].includes(delivery?.method) ? delivery.method : 'unknown',
     replyStatus: Number(delivery?.status || delivery?.reply?.status || 0),
     pushStatus: Number(delivery?.push?.status || 0), ambiguous: delivery?.ambiguous === true });
+  if(String(env.HOOKTEA_MONITOR_SAFETY)==='true') await recordCommandResult(env,event.webhookEventId||event.message.id,result,delivery).catch(()=>console.error('command_result_record_failed'));
   if (!ctx) await diagnosticWrites;
   return true;
 }
@@ -5027,7 +5032,7 @@ async function handleHookTeaMonitorApi(request, env) {
       return new Response('METHOD_NOT_ALLOWED',{status:405});
     }
     if(url.pathname==='/api/line-oa/safety-status'&&request.method==='GET')return Response.json({success:true,data:{
-      ai:await aiHealthStatus(env),tracking:await trackingStatus(env),
+      ai:await aiHealthStatus(env),tracking:await trackingStatus(env),commands:await commandStatus(env),
       feedbackCounts:await env.DB.prepare(`SELECT COUNT(*) total,SUM(category<>'none' AND review_state<>'resolved') openFeedback,
         SUM(analysis_state='pending') pendingAnalysis,SUM(analysis_state='review') failedAnalysis FROM monitor_feedback`).first(),
       operationalErrors:(await env.DB.prepare(`SELECT category,code,route,trace_id,occurrences,created_at,sent_at,last_error
@@ -5135,6 +5140,7 @@ async function handleHookTeaMonitorApi(request, env) {
       status: String(body.status || "open"),
       updatedAt: new Date().toISOString(),
     });
+    await markThreadFeedbackHandled(env,id,body.status);
     return json({ success: true, data: await getHookTeaMonitorThread(env, id) });
   }
   if (url.pathname === "/api/line-oa/backfill-signals" && ["GET", "POST"].includes(request.method)) {
@@ -9882,15 +9888,22 @@ export default {
           text: event?.message?.type === "text" ? String(event.message.text || "").slice(0, 80) : "",
         })).slice(0, 10),
       }, { expirationTtl: 86400 }).catch(() => {});
-      if (ctx) ctx.waitUntil(receiptTask);
+      if (ctx) (ctx.deferDiagnostic ? ctx.deferDiagnostic(receiptTask) : ctx.waitUntil(receiptTask));
 
-      const webhookSettings = await safeGetKV(env, "SYSTEM_SETTINGS", {});
+      let settingsTimer;
+      const webhookSettings = await Promise.race([
+        safeGetKV(env, "SYSTEM_SETTINGS", {}, {strict:true}),
+        new Promise((_,reject)=>{settingsTimer=setTimeout(()=>reject(Error('WEBHOOK_SETTINGS_TIMEOUT')),1500);}),
+      ]).finally(()=>clearTimeout(settingsTimer));
       const template = await getHookTeaCheckinTemplate(env).catch(() => null);
-      const routedEvents = await Promise.all(events.map(async event => {
+      const routedEvents = events.map(event => {
         let owner = selectLineWebhookEventOwner(event, webhookSettings, template);
         // Independent of point-authority flags: free text/non-keyword events
         // must never reach a downstream AI or consume a reply token.
         if(String(env.HOOKTEA_KEYWORD_ONLY)==='true'&&owner==='mother')owner='silent';
+        return {event,owner};
+      });
+      const prepareRoutedEvent = async ({event,owner}) => {
         if (String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) !== 'true') return {event,owner};
         const uid = event?.source?.userId;
         if (!/^U[0-9a-f]{32}$/.test(uid || '')) return {event,owner:'silent'};
@@ -9900,6 +9913,9 @@ export default {
         // No point write or identity bypass occurs here; the owned handler is
         // attached to waitUntil and returns a fixed pending reply on failure.
         if (owner === 'keyword_reward') return {event,owner};
+        // Passive messages/follows do not need foreground CRM enrichment.
+        // The signed monitor path still creates the member with the same guards.
+        if (owner === 'silent') return {event,owner};
         try {
           // Enrollment happens before either branch: follow/new message cannot
           // create a mother account or trigger a mother welcome reward first.
@@ -9923,39 +9939,45 @@ export default {
           reportIssue(env,'member','enrollment_failed');
           return {event,owner:'silent'};
         }
-      }));
-      const motherEvents = routedEvents.filter(item => item.owner.startsWith("mother")).map(item => item.event);
-      const localEvents = routedEvents.filter(item => !item.owner.startsWith("mother"));
+      };
+      const strictRouting = String(env.HOOKTEA_NEW_MEMBER_CHILD_POINTS) === 'true';
+      const motherEvents = strictRouting ? [] : routedEvents.filter(item => item.owner.startsWith("mother")).map(item => item.event);
+      const localEvents = strictRouting ? routedEvents : routedEvents.filter(item => !item.owner.startsWith("mother"));
       const forwardEvents = async (batch) => {
         if (!batch.length) return;
+        const forwardDiagnostic=promise=>{
+          if(!ctx)return promise;
+          ctx.deferDiagnostic ? ctx.deferDiagnostic(promise) : ctx.waitUntil(promise);
+          return Promise.resolve();
+        };
         const forwardWebhook = getMotherWebhookUrl(env, webhookSettings);
         try {
           const forwardRequest = await buildLineWebhookForwardRequest(env, parsedPayload, rawText, signature, batch);
           // Dispatch before diagnostic writes. Only this downstream owns these
           // reply tokens; never mirror them to GAS or blindly retry a timeout.
           const [response] = await Promise.all([
-            fetch(forwardWebhook, forwardRequest),
-            safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
+            fetch(forwardWebhook, {...forwardRequest,signal:AbortSignal.timeout(8000)}),
+            forwardDiagnostic(safePutKV(env, "WEBHOOK_FORWARD_ATTEMPT_LAST", {
               url: forwardWebhook, route: "per_event_owner", eventCount: batch.length,
               texts: batch.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
               attemptedAt: new Date().toISOString(),
-            }, { expirationTtl: 86400 }).catch(() => {}),
+            }, { expirationTtl: 86400 }).catch(() => {})),
           ]);
           const responseText = await response.text().catch(() => "");
           if(!response.ok)reportIssue(env,'line','line_forward_failed');
-          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+          await forwardDiagnostic(safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook, route: "per_event_owner", status: response.status, ok: response.ok,
             eventCount: batch.length,
             texts: batch.map(event => String(event?.message?.text || "").slice(0, 80)).filter(Boolean),
             response: responseText.slice(0, 300), forwardedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
+          }, { expirationTtl: 86400 }).catch(() => {}));
         } catch (error) {
           console.error("Forward Webhook Error:", error);
           reportIssue(env,'line','line_forward_failed');
-          await safePutKV(env, "WEBHOOK_FORWARD_LAST", {
+          await forwardDiagnostic(safePutKV(env, "WEBHOOK_FORWARD_LAST", {
             url: forwardWebhook, route: "per_event_owner", ok: false, error: error?.message || String(error),
             eventCount: batch.length, forwardedAt: new Date().toISOString(),
-          }, { expirationTtl: 86400 }).catch(() => {});
+          }, { expirationTtl: 86400 }).catch(() => {}));
         }
       };
       // Start the mother branch before any local reward, binding, or monitoring
@@ -9963,7 +9985,9 @@ export default {
       const motherTask = forwardEvents(motherEvents);
       if (ctx) ctx.waitUntil(motherTask);
       const releasedEvents = new Set();
-      const handleLocalEvent = async ({ event, owner }) => {
+      const handleLocalEvent = async item => {
+        let {event,owner} = await prepareRoutedEvent(item);
+        if (owner.startsWith('mother')) { await forwardEvents([event]); return; }
         if (owner === 'silent') return;
         // Selecting an owner is separate from success: a local handler may have
         // spent its reply token or awarded points before returning/throwing.
@@ -10033,11 +10057,12 @@ export default {
 
       // Monitoring also establishes LINE-only members for follow events. It has
       // no reply ownership and must not delay the reply/forward critical path.
-      const monitorTask = Promise.all(events.map(event => appendLineMonitorEvent(env, ctx, event).catch(error => {
+      const diagnosticCtx = ctx ? {...ctx,waitUntil(p){ctx.deferDiagnostic ? ctx.deferDiagnostic(p) : ctx.waitUntil(p);}} : ctx;
+      const monitorTask = Promise.all(events.map(event => appendLineMonitorEvent(env, diagnosticCtx, event).catch(error => {
         console.error("LINE Monitor Append Error:", error);
         reportIssue(env,'member','enrollment_failed');
       })));
-      if (ctx) ctx.waitUntil(monitorTask);
+      if (ctx) (ctx.deferDiagnostic ? ctx.deferDiagnostic(monitorTask) : ctx.waitUntil(monitorTask));
       else await monitorTask;
 
       const diagnosticTask = Promise.all([safePutKV(env, "WEBHOOK_FORWARD_DECISION_LAST", {
@@ -10056,14 +10081,20 @@ export default {
           route: "forward_only", receivedAt: new Date().toISOString(),
         }, { expirationTtl: 86400 * 7 }).catch(() => {});
       })]);
-      if (ctx) ctx.waitUntil(diagnosticTask);
+      if (ctx) (ctx.deferDiagnostic ? ctx.deferDiagnostic(diagnosticTask) : ctx.waitUntil(diagnosticTask));
       else await Promise.all([receiptTask, motherTask, localTask, diagnosticTask]);
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Webhook processing error:", error);
-      await safePutKV(env, "WEBHOOK_PROCESSING_ERROR_LAST", {
-        error: error?.message || String(error), eventCount: events.length, failedAt: new Date().toISOString(),
-      }, { expirationTtl: 86400 }).catch(() => {});
+      // A storage outage must not make its own error diagnostic hold ingress open.
+      if(ctx){
+        const diagnostic=safePutKV(env, "WEBHOOK_PROCESSING_ERROR_LAST", {
+          error: error?.message || String(error), eventCount: events.length, failedAt: new Date().toISOString(),
+        }, { expirationTtl: 86400 }).catch(() => {});
+        ctx.deferDiagnostic ? ctx.deferDiagnostic(diagnostic) : ctx.waitUntil(diagnostic);
+      }
+      if(['WEBHOOK_SETTINGS_TIMEOUT','SETTINGS_READ_UNAVAILABLE'].includes(error?.message))
+        return new Response('WEBHOOK_SETTINGS_UNAVAILABLE',{status:503});
       return new Response("WEBHOOK_PROCESSING_FAILED", { status: 500 });
     }
   },

@@ -23,11 +23,18 @@ const mf=new Miniflare({modules:true,script:bundle.outputFiles[0].text,compatibi
 let groups=0;const pass=s=>{groups++;console.log('PASS '+s);};
 try{
  const db=await mf.getD1Database('DB'),kv=await mf.getKVNamespace('ACTION_DATA');
- for(const name of ['0001_line_monitor.sql','0006_crm_write_tracking.sql','0008_operational_alerts.sql','0011_monitor_safety.sql']){
+ for(const name of ['0001_line_monitor.sql','0006_crm_write_tracking.sql','0008_operational_alerts.sql','0011_monitor_safety.sql','0012_command_completion.sql']){
   const sql=readFileSync(new URL('migrations/'+name,root),'utf8').replace(/^--.*$/gm,'').trim();
-  for(const s of sql.split(/;\s*(?=CREATE\s|INSERT\s)/).filter(s=>s.trim()))await db.prepare(s).run();
+  for(const s of sql.split(name==='0012_command_completion.sql'?/;/:/;\s*(?=CREATE\s|INSERT\s)/).filter(s=>s.trim()))await db.prepare(s).run();
  }
- const call=(path,body={})=>mf.dispatchFetch('https://isolated.test'+path,{method:'POST',body:JSON.stringify(body)});
+ const call=async(path,body={})=>{
+  // This suite exercises formatting after the wait; clock-boundary tests are separate.
+  if(path==='/drain'){
+   await db.prepare("UPDATE monitor_feedback SET notification_due_at=? WHERE notification_policy='unanswered-v1'").bind(Math.floor(Date.now()/1000)-1).run();
+   await db.prepare('UPDATE operational_alerts SET next_attempt_at=0 WHERE attempts=0').run();
+  }
+  return mf.dispatchFetch('https://isolated.test'+path,{method:'POST',body:JSON.stringify(body)});
+ };
  const event=(id,text)=>({type:'message',timestamp:1789712941000,webhookEventId:id,source:{type:'user',userId:uid},message:{type:'text',text}});
  await db.prepare("INSERT INTO line_threads(id,source_user_id,display_name) VALUES('thread',?,'本機測試客戶')").bind(uid).run();
  const question='請問在平台購買，因為沒有註冊頁面，只有填 Email，回饋也是透過相同 Email 連結嗎？';
@@ -35,7 +42,7 @@ try{
  await Promise.all([call('/drain'),call('/drain'),call('/drain')]);
  assert.equal(telegram.length,1);const text=telegram[0].text;
  assert(text.includes('客戶：本機測試客戶'));assert(text.includes(question));assert(text.includes('14:29'));
- assert(text.includes('請先確認 LINE 官方帳號是否已有人回覆'));assert(!text.includes('入口：cron'));assert(!text.includes('追蹤：'));assert(!text.includes(uid));
+ assert(text.includes('請先查看 LINE 官方帳號'));assert(!text.includes('入口：cron'));assert(!text.includes('追蹤：'));assert(!text.includes(uid));
  await call('/drain');assert.equal(telegram.length,1);pass('actual capture and concurrent drain deliver one named exact-question notification without claiming neglect');
  const sensitive='購物有問題，Email me@example.com 電話 0912345678 '+uid+' 密碼：private-value https://example.com/secret';
  await call('/capture',[event('redacted',sensitive)]);await call('/drain');

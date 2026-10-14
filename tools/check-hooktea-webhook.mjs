@@ -35,7 +35,7 @@ function harness(options = {}) {
   };
   const sandbox = {
     reportIssue,
-    crypto: webcrypto, TextEncoder, Uint8Array, btoa, atob, Request, Response, AbortSignal, URLSearchParams,
+    crypto: webcrypto, TextEncoder, Uint8Array, btoa, atob, Request, Response, AbortSignal, URLSearchParams,setTimeout,clearTimeout,
     console: { error: (...args) => calls.errors.push(args) },
     getLineChannelSecret: env => env.LINE_CHANNEL_SECRET,
     getLineChannelAccessToken: () => "configured",
@@ -388,6 +388,28 @@ test("child member area exception or rejected reply never falls through to mothe
   }
 });
 
+test('strict child routing isolates one slow member-area verification from another reward',async()=>{
+  const gate=deferred(),a='U'+'a'.repeat(32),b='U'+'b'.repeat(32);
+  const h=harness({env:{HOOKTEA_NEW_MEMBER_CHILD_POINTS:'true',HOOKTEA_KEYWORD_ONLY:'true'}});
+  h.sandbox.ensureLineOnlyCrmMember=async()=>{await gate.promise;return {};};
+  h.sandbox.createHookTeaPointService=()=>({wallet:async()=>null,fence:async()=>null});
+  try{
+    const r=await h.post([{...message('會員專區','slow'),source:{userId:a}},{...message('954e','independent'),source:{userId:b}}],{drain:false});
+    assert.equal(r.status,200);await until(()=>h.calls.reward.length===1);assert.equal(h.calls.memberArea.length,0);
+  }finally{gate.resolve();await Promise.all(h.pending||[]);}
+  assert.equal(h.calls.memberArea.length,1);assert.equal(h.calls.fetch.length,0);
+});
+test('silent follow enrichment does not block the same member reward in strict mode',async()=>{
+  const uid='U'+'c'.repeat(32),h=harness({env:{HOOKTEA_NEW_MEMBER_CHILD_POINTS:'true',HOOKTEA_KEYWORD_ONLY:'true'}});let calls=0;
+  h.sandbox.ensureLineOnlyCrmMember=async()=>{calls++;throw Error('must be deferred');};
+  await h.post([{...follow,source:{userId:uid}},{...message('954e'),source:{userId:uid}}]);
+  assert.equal(calls,0);assert.equal(h.calls.reward.length,1);assert.equal(h.calls.fetch.length,0);
+});
+test('settings deadline prevents a stalled read from leaving webhook ingress unanswered',async()=>{
+  const h=harness({env:{HOOKTEA_NEW_MEMBER_CHILD_POINTS:'true'}});
+  h.sandbox.safeGetKV=()=>new Promise(()=>{});h.sandbox.safePutKV=()=>new Promise(()=>{});h.sandbox.setTimeout=fn=>setTimeout(fn,5);
+  const r=await h.post([message('954e')],{drain:false});assert.equal(r.status,503);assert.equal(h.calls.reward.length,0);
+});
 const filter = process.argv.find(arg => arg.startsWith("--filter="))?.slice(9);
 const selected = tests.filter(test => !filter || test.name.includes(filter));
 for (const { name, body } of selected) {

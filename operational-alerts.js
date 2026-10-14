@@ -1,13 +1,14 @@
 // System alerts use fixed labels. Owner-approved feedback includes a redacted
 // excerpt and display name, never CRM fields, raw events or credentials.
 import {isMonitorCommand,loadMonitorCommandPolicy} from './monitor-commands.js';
+import {commandAlertText} from './command-completion.js';
 export const ALERT_RELEASE = '20260919-command-feedback-filter-v1';
 // Missing bookkeeping is not evidence of a customer-facing failure.
 // Keep its audit/review in D1, but do not notify (including old queued rows).
 // A failed background classification does not establish a customer incident.
 // Its source message and analysis state remain in monitor_feedback for review.
 const LOCAL_ONLY_CODES = new Set(['tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered']);
-const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered') AND last_error<>'feedback_system_command'";
+const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered') AND last_error NOT IN ('feedback_system_command','feedback_legacy_review','feedback_handled','feedback_replied','command_resolved')";
 const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test','ai','feedback']);
 const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_failed','background_failed',
   'identity_conflict','enrollment_failed','points_pending','points_unavailable','points_failed',
@@ -15,7 +16,7 @@ const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_fa
   'tracking_unresolved','tracking_recovered','ai_recovered','ai_not_configured','ai_authentication_failed',
   'ai_quota_exhausted','ai_rate_limited','ai_provider_unavailable','ai_request_rejected','ai_invalid_response',
   'ai_timeout','ai_network_error','ai_analysis_failed','ai_analysis_recovered','feedback_points','feedback_shopping','feedback_identity',
-  'feedback_usability','feedback_feedback']);
+  'feedback_usability','feedback_feedback','command_points_rejected','command_reply_rejected']);
 const ROUTES = new Set(['/','/line-webhook','/api/huaxu/member','/api/huaxu/register','/api/huaxu/checkin',
   '/api/huaxu/orders','/linepay/confirm','/linepay/cancel','/api','cron']);
 const enabled = env => String(env.HOOKTEA_TELEGRAM_ALERTS) === 'true';
@@ -67,24 +68,35 @@ export function redactOwnerExcerpt(value,limit=900) {
 
 async function ownerFeedbackText(env,row) {
   // Resolve the exact recorded evidence; never substitute an AI-invented summary.
-  const matches=(await env.DB.prepare(`SELECT message_text,event_at,review_state,thread_id,analysis_error
+  const matches=(await env.DB.prepare(`SELECT message_text,event_at,review_state,thread_id,analysis_error,notification_due_at,notification_policy
     FROM monitor_feedback WHERE trace_id=? LIMIT 2`).bind(row.trace_id).all()).results||[];
-  if(matches.length!==1 || matches[0].review_state==='resolved')return null;
+  if(matches.length!==1)return null;
   const feedback=matches[0];
   const policy=await loadMonitorCommandPolicy(env);
   if(feedback.analysis_error==='system_command'||isMonitorCommand(feedback.message_text,policy))
     return {blocked:'feedback_system_command'};
   if(!policy.ready)return {blocked:'feedback_command_config_unavailable'};
-  const names=(await env.DB.prepare(`SELECT DISTINCT display_name FROM line_threads
+  if(feedback.notification_policy!=='unanswered-v1')return {blocked:'feedback_legacy_review'};
+  if(feedback.review_state!=='new')return {blocked:'feedback_handled'};
+  const due=Number(feedback.notification_due_at),now=Math.floor(Date.now()/1000);
+  if(!Number.isSafeInteger(due)||due<=0)return null;
+  if(now<due)return {blocked:'feedback_waiting',delay:due-now};
+  const names=(await env.DB.prepare(`SELECT id,display_name,status FROM line_threads
     WHERE (source_user_id=? OR id=?) AND TRIM(display_name)<>'' LIMIT 2`)
     .bind(feedback.thread_id,feedback.thread_id).all()).results||[];
   if(names.length!==1)return null;
+  // Staff messages in this monitor may be drafts, not actually sent replies.
+  const reply=await env.DB.prepare(`SELECT 1 replied FROM line_messages WHERE thread_id=? AND sender_role='staff'
+    AND json_extract(CASE WHEN json_valid(raw_json) THEN raw_json ELSE '{}' END,'$.deliveryConfirmed')=1
+    AND COALESCE(strftime('%s',created_at),strftime('%s',inserted_at))>=? LIMIT 1`)
+    .bind(names[0].id,feedback.event_at).first();
+  if(reply)return {blocked:'feedback_replied'};
   const name=redactOwnerExcerpt(names[0].display_name,80),excerpt=redactOwnerExcerpt(feedback.message_text);
   if(!name || !excerpt || !Number.isFinite(feedback.event_at) || feedback.event_at<=0)return null;
   const time=new Date(feedback.event_at*1000).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
-  return ['📋 HookTea 客戶訊息，請確認並回覆',`客戶：${name}`,`提問時間：${time}（台灣）`,
+  return ['📋 HookTea 客戶詢問已等待超過 10 分鐘',`客戶：${name}`,`提問時間：${time}（台灣）`,
     '客戶內容（節錄；聯絡資訊已遮蔽）：',`「${excerpt}」`,
-    '請先確認 LINE 官方帳號是否已有人回覆；若尚未回覆，請人工接手。',
+    '後台尚未記錄已處理或確認送出的回覆；請先查看 LINE 官方帳號，若已回覆請標記處理，否則請人工接手。',
     '這是客戶的詢問／反饋，不代表已確認系統故障。',
     '查看對話： https://hooktea.fangwl591021.workers.dev/line-oa-monitor.html',
     'AI 不會自動回覆客戶。'].join('\n');
@@ -107,14 +119,15 @@ async function send(env,row) {
     feedback_points:'收到點數使用反饋，請人工核對',feedback_shopping:'收到購物／付款反饋，請人工核對',
     feedback_identity:'收到登入／會員反饋',feedback_usability:'收到操作體驗反饋',feedback_feedback:'收到客戶反饋'};
   const heading=row.category==='test'?'✅ HookTea 告警測試':row.code.endsWith('_recovered')?'✅ HookTea 狀態恢復':row.category==='feedback'?'📋 HookTea 客戶反饋（尚未核實）':'🚨 HookTea 系統待查';
-  const text=row.category==='feedback' ? await ownerFeedbackText(env,row) : [heading,descriptions[row.code]||'系統異常',
+  const command=['command_points_rejected','command_reply_rejected'].includes(row.code);
+  const text=command?await commandAlertText(env,row):row.category==='feedback' ? await ownerFeedbackText(env,row) : [heading,descriptions[row.code]||'系統異常',
     `類型：${row.category} / ${row.code}`,`入口：${row.route}`,
     `時間：${new Date(row.created_at*1000).toISOString()}`,`追蹤：${row.trace_id}`,
     `告警：${row.alert_id}`,`同類累計：${row.occurrences}`,
     '請至後台 AI 監控查看；通知不會自動補點、退款或回覆客戶。'].join('\n');
   // Incomplete evidence remains visible in the backend; no vague owner message.
-  if(!text)return {ok:false,suppressed:true,error:'feedback_evidence_unavailable',delay:86400};
-  if(text.blocked)return {ok:false,suppressed:true,error:text.blocked,delay:86400};
+  if(!text)return {ok:false,suppressed:true,error:command?'command_evidence_unavailable':'feedback_evidence_unavailable',delay:86400};
+  if(text.blocked)return {ok:false,suppressed:true,error:text.blocked,delay:text.delay||86400};
   try {
     const response=await fetch('https://api.telegram.org/bot'+token+'/sendMessage',{
       method:'POST',headers:{'content-type':'application/json'},signal:AbortSignal.timeout(5000),
@@ -191,13 +204,14 @@ export function createIssueReporter(env,ctx,route,traceId) {
 
 // Caller uses this statement in the SAME D1 batch as incident state/evidence.
 // Stable outbox identities are retained, so unchanged issues do not re-alert tomorrow.
-export function durableAlertStatement(env,key,category,code,traceId,condition='1',bindings=[]) {
+export function durableAlertStatement(env,key,category,code,traceId,condition='1',bindings=[],dueAt=0) {
   const now=Math.floor(Date.now()/1000);
   if(!CATEGORIES.has(category)||!CODES.has(code)||String(key).length>300)throw Error('INVALID_ALERT_LABEL');
   return env.DB.prepare(`INSERT OR IGNORE INTO operational_alerts
     (alert_id,fingerprint,category,code,route,trace_id,created_at,updated_at,next_attempt_at)
     SELECT ?,?,?,?,?,?,?,?,? WHERE (${condition}) AND ${LOCAL_ONLY_CODES.has(code)?'0':'1'}`)
-    .bind(crypto.randomUUID(),'durable:'+key,category,code,'cron',traceId,now,now,now,...bindings);
+    .bind(crypto.randomUUID(),'durable:'+key,category,code,'cron',traceId,now,now,
+      category==='feedback'?(Number.isSafeInteger(dueAt)&&dueAt>0?Math.max(now,dueAt):now+600):now,...bindings);
 }
 
 export async function drainAlerts(env) {

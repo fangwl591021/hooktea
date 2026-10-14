@@ -1,6 +1,7 @@
 // Backend-only classification. This module has no LINE token, reply or push path.
 import {durableAlertStatement} from './operational-alerts.js';
 import {isMonitorCommand,loadMonitorCommandPolicy} from './monitor-commands.js';
+import {commandStatement} from './command-completion.js';
 export const MONITOR_RELEASE='20260917-passive-monitor-v1';
 export const monitorEnabled=env=>String(env.HOOKTEA_MONITOR_SAFETY)==='true';
 export const aiKey=env=>['OPENAI_API_KEY','OpenAI API key','OpenAI_API_key','OPENAI KEY'].map(k=>String(env[k]||'').trim()).find(Boolean)||'';
@@ -96,12 +97,14 @@ export async function captureMonitorEvents(env,events) {
     const trace=crypto.randomUUID();
     // Keep the original event even when it is an excluded system command.
     const statements=[];
+    const commandRecord=command&&policy.ready?await commandStatement(env,event,policy,trace):null;
+    if(commandRecord)statements.push(commandRecord);
     if(policy.ready&&!command&&rule.category!=='none')statements.push(durableAlertStatement(env,`feedback:${eventId}`,'feedback',`feedback_${rule.category}`,trace,
       'NOT EXISTS(SELECT 1 FROM monitor_feedback WHERE event_id=?)',[eventId]));
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO monitor_feedback
-      (event_id,thread_id,message_text,received_at,event_at,category,severity,trace_id,analysis_state,analysis_error)
-      VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(eventId,uid,text,now,Math.floor(Number(event.timestamp||Date.now())/1000),rule.category,rule.severity,trace,
-        command?'done':'pending',command?'system_command':''));
+      (event_id,thread_id,message_text,received_at,event_at,category,severity,trace_id,analysis_state,analysis_error,notification_due_at,notification_policy)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(eventId,uid,text,now,Math.floor(Number(event.timestamp||Date.now())/1000),rule.category,rule.severity,trace,
+        command?'done':'pending',command?'system_command':'',command?0:now+600,command?'':'unanswered-v1'));
     await env.DB.batch(statements);
   }
 }
@@ -131,7 +134,7 @@ export async function processMonitorFeedback(env) {
     const category=row.category!=='none'?row.category:(result.ok?result.category:'none');
     const severity=result.ok&&severityRank[result.severity]>severityRank[row.severity]?result.severity:row.severity;
     const statements=[];
-    if(category!=='none')statements.push(durableAlertStatement(env,`feedback:${event_id}`,'feedback',`feedback_${category}`,row.trace_id));
+    if(category!=='none')statements.push(durableAlertStatement(env,`feedback:${event_id}`,'feedback',`feedback_${category}`,row.trace_id,'1',[],Number(row.notification_due_at)));
     statements.push(env.DB.prepare(`UPDATE monitor_feedback SET category=?,severity=?,analysis_state=?,analysis_error=?,
       analyzed_at=?,next_attempt_at=?,lock_token=NULL,lock_until=0 WHERE event_id=? AND lock_token=?`)
       .bind(category,severity,result.ok?'done':row.attempts>=3?'review':'pending',result.ok?'':result.code,
@@ -149,4 +152,16 @@ export async function listFeedback(env,{before=Number.MAX_SAFE_INTEGER,limit=50,
     WHERE rowid<? ${all?'':"AND (category<>'none' OR analysis_state='review')"} ORDER BY rowid DESC LIMIT ?`)
     .bind(before,Math.max(1,Math.min(100,limit))).all()).results||[];
   return rows;
+}
+
+export async function markThreadFeedbackHandled(env,id,status) {
+  if(!monitorEnabled(env)||!['pending','closed'].includes(status))return;
+  const rows=(await env.DB.prepare('SELECT DISTINCT source_user_id FROM line_threads WHERE id=? OR source_user_id=? LIMIT 2').bind(id,id).all()).results||[];
+  if(rows.length!==1||!/^U[0-9a-f]{32}$/i.test(rows[0].source_user_id))return;
+  // Apply the human action only to questions already received. A later question
+  // must not inherit an old conversation's closed/pending status forever.
+  const time=nowSeconds();
+  await env.DB.prepare(`UPDATE monitor_feedback SET review_state=?,reviewed_at=?
+    WHERE thread_id=? AND review_state='new' AND received_at<=?`)
+    .bind(status==='closed'?'resolved':'acknowledged',time,rows[0].source_user_id,time).run();
 }

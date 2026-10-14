@@ -4,6 +4,7 @@ import {NEW_MEMBER_POINTS_RELEASE} from './new-member-points.js';
 import {ALERT_RELEASE,alertRoute,createIssueReporter,inspectAlertResponse,drainAlerts} from './operational-alerts.js';
 import {MONITOR_RELEASE,monitorEnabled,runAiSelfTest,processMonitorFeedback} from './monitor-safety.js';
 import {reconcileTrackingIncidents} from './tracking-incidents.js';
+import {reconcileCommands,COMMAND_COMPLETION_RELEASE} from './command-completion.js';
 
 export default {
   async fetch(request,env,ctx) {
@@ -21,12 +22,13 @@ export default {
       monitorRelease:MONITOR_RELEASE,passiveMonitorEnabled:monitorEnabled(env),
       keywordOnly:String(env.HOOKTEA_KEYWORD_ONLY)==='true',
       keywordRewardRelease:'20261013-keyword-reply-v1',
+      commandCompletionRelease:COMMAND_COMPLETION_RELEASE,
     },{headers:{'Cache-Control':'no-store'}});
     if(request.method==='OPTIONS')return worker.fetch(request,env,ctx);
     // GET callbacks may mutate orders too. Do not exempt them as read-only.
     const traceId=crypto.randomUUID();
     const report=createIssueReporter(env,ctx,alertRoute(request),traceId);
-    const scopedEnv={...env,HOOKTEA_REPORT_ISSUE:report};
+    const scopedEnv={...env,HOOKTEA_REPORT_ISSUE:report,HOOKTEA_REQUEST_TRACE_ID:traceId};
     try {
       const path=url.pathname;
       const staticPage=request.method==='GET'&&['/admin.html','/line-oa-monitor.html','/huaxu-shop.html','/favicon.ico'].includes(path);
@@ -42,7 +44,7 @@ export default {
   async scheduled(event,env,ctx) {
     ctx.waitUntil((async()=>{
       if(monitorEnabled(env))await Promise.all([
-        runAiSelfTest(env),processMonitorFeedback(env),reconcileTrackingIncidents(env),
+        runAiSelfTest(env),processMonitorFeedback(env),reconcileTrackingIncidents(env),reconcileCommands(env),
       ].map(p=>p.catch(()=>console.error(JSON.stringify({event:'monitor_scheduled_failed'})))));
       await drainAlerts(env);
     })());
