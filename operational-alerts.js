@@ -2,6 +2,7 @@
 // excerpt and display name, never CRM fields, raw events or credentials.
 import {isMonitorCommand,loadMonitorCommandPolicy} from './monitor-commands.js';
 import {commandAlertText} from './command-completion.js';
+import {ALERT_DIAGNOSTIC_RELEASE,ALERT_DIAGNOSTIC_STAGES,classifyAlertError,recordAlertDiagnostic,recordDiagnosticDelivery,recentAlertDiagnostics,alertDiagnosticText} from './alert-diagnostics.js';
 export const ALERT_RELEASE = '20260919-command-feedback-filter-v1';
 // Missing bookkeeping is not evidence of a customer-facing failure.
 // Keep its audit/review in D1, but do not notify (including old queued rows).
@@ -16,7 +17,8 @@ const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_fa
   'tracking_unresolved','tracking_recovered','ai_recovered','ai_not_configured','ai_authentication_failed',
   'ai_quota_exhausted','ai_rate_limited','ai_provider_unavailable','ai_request_rejected','ai_invalid_response',
   'ai_timeout','ai_network_error','ai_analysis_failed','ai_analysis_recovered','feedback_points','feedback_shopping','feedback_identity',
-  'feedback_usability','feedback_feedback','command_points_rejected','command_reply_rejected']);
+  'feedback_usability','feedback_feedback','command_points_rejected','command_reply_rejected',
+  ...Object.values(ALERT_DIAGNOSTIC_STAGES).map(stage=>stage.code)]);
 const ROUTES = new Set(['/','/line-webhook','/api/huaxu/member','/api/huaxu/register','/api/huaxu/checkin',
   '/api/huaxu/orders','/linepay/confirm','/linepay/cancel','/api','cron']);
 const enabled = env => String(env.HOOKTEA_TELEGRAM_ALERTS) === 'true';
@@ -120,7 +122,8 @@ async function send(env,row) {
     feedback_identity:'收到登入／會員反饋',feedback_usability:'收到操作體驗反饋',feedback_feedback:'收到客戶反饋'};
   const heading=row.category==='test'?'✅ HookTea 告警測試':row.code.endsWith('_recovered')?'✅ HookTea 狀態恢復':row.category==='feedback'?'📋 HookTea 客戶反饋（尚未核實）':'🚨 HookTea 系統待查';
   const command=['command_points_rejected','command_reply_rejected'].includes(row.code);
-  const text=command?await commandAlertText(env,row):row.category==='feedback' ? await ownerFeedbackText(env,row) : [heading,descriptions[row.code]||'系統異常',
+  const diagnosticCode=Object.values(ALERT_DIAGNOSTIC_STAGES).some(stage=>stage.code===row.code);
+  const text=diagnosticCode?alertDiagnosticText(row.diagnostic):command?await commandAlertText(env,row):row.category==='feedback' ? await ownerFeedbackText(env,row) : [heading,descriptions[row.code]||'系統異常',
     `類型：${row.category} / ${row.code}`,`入口：${row.route}`,
     `時間：${new Date(row.created_at*1000).toISOString()}`,`追蹤：${row.trace_id}`,
     `告警：${row.alert_id}`,`同類累計：${row.occurrences}`,
@@ -141,30 +144,56 @@ async function send(env,row) {
   } catch { return {ok:false,error:'telegram_network_error',delay:60}; }
 }
 
-async function deliver(env,id,now=Math.floor(Date.now()/1000)) {
+async function deliver(env,id,now=Math.floor(Date.now()/1000),context={route:'cron'}) {
   const lease=crypto.randomUUID();
-  const row=await env.DB.prepare(`UPDATE operational_alerts SET lease_token=?,lease_until=?,attempts=attempts+1
+  let row;
+  try{row=await env.DB.prepare(`UPDATE operational_alerts SET lease_token=?,lease_until=?,attempts=attempts+1
     WHERE alert_id=? AND sent_at IS NULL AND next_attempt_at<=? AND lease_until<=? AND ${NOT_LOCAL_ONLY_SQL} RETURNING *`)
-    .bind(lease,now+90,id,now,now).first();
+    .bind(lease,now+90,id,now,now).first();}
+  catch(error){return alertPipelineFailure(env,'delivery_claim',error,{...context,alertId:id});}
   if(!row)return {ok:false,skipped:true};
-  const result=await send(env,row);
+  let receipt=null;
+  try{const saved=await env.ACTION_DATA.get('HOOKTEA_ALERT_ACCEPTED_V1_'+id,'json');if(saved?.alertId===id&&Number.isSafeInteger(saved.at)&&saved.at>0)receipt=saved;}catch{}
+  const result=receipt?{ok:true,acceptedEarlier:true}:await send(env,row);
   const retry=Math.max(result.delay||60,Math.min(3600,60*2**Math.min(row.attempts-1,6)));
-  await env.DB.prepare(`UPDATE operational_alerts SET sent_at=?,last_error=?,next_attempt_at=?,lease_until=0,lease_token=NULL
-    WHERE alert_id=? AND lease_token=?`).bind(result.ok?now:null,result.error||'',now+retry,id,lease).run();
+  try{const saved=await env.DB.prepare(`UPDATE operational_alerts SET sent_at=?,last_error=?,next_attempt_at=?,lease_until=0,lease_token=NULL
+    WHERE alert_id=? AND lease_token=?`).bind(result.ok?(receipt?.at||now):null,result.error||'',now+retry,id,lease).run();
+    if(saved.success!==true||saved.meta?.changes!==1)throw Error('ALERT_DELIVERY_STATE_UNCONFIRMED');}
+  catch(error){
+    // Telegram acceptance and D1 bookkeeping are different facts. Do not re-send a known accepted notification.
+    if(result.ok&&!receipt)try{await env.ACTION_DATA.put('HOOKTEA_ALERT_ACCEPTED_V1_'+id,JSON.stringify({alertId:id,at:now}),{expirationTtl:30*86400});}catch{}
+    const failure=await alertPipelineFailure(env,'delivery_state',error,{alertId:id,route:row.route,requestTrace:row.trace_id,deliveryAccepted:result.ok});
+    return {...failure,deliveryAccepted:result.ok,deliveryStateRecorded:false};
+  }
   log({alertId:id,traceId:row.trace_id,delivery:result.ok?'sent':result.error});
   return result;
 }
 
-async function storageFallback(env,traceId,now) {
-  // D1 outage escape hatch. KV dedup is best-effort, not an atomic claim.
+async function alertPipelineFailure(env,stage,error,context={}) {
+  // Keep evidence independently of D1. Cleanup/bookkeeping failures are local diagnostics, not storage outages.
+  let diagnostic;
+  try{diagnostic=await recordAlertDiagnostic(env,{stage,error,...context});}
+  catch{log({delivery:'diagnostic_unavailable',stage});return {ok:false,error:ALERT_DIAGNOSTIC_STAGES[stage].code};}
+  const code=ALERT_DIAGNOSTIC_STAGES[stage].code;
+  if(diagnostic.localOnly)return {ok:false,error:code,diagnosticId:diagnostic.id,localOnly:true};
+  const now=Math.floor(Date.now()/1000);
+  // Preserve the existing best-effort KV fallback throttle; do not claim atomic cross-isolate deduplication.
   try {
     const key='TELEGRAM_ALERT_D1_OUTAGE_'+Math.floor(now/300);
-    if(await env.ACTION_DATA.get(key))return;
+    if(await env.ACTION_DATA.get(key)){
+      await recordDiagnosticDelivery(env,diagnostic.id,'throttled');
+      return {ok:false,error:code,diagnosticId:diagnostic.id,throttled:true};
+    }
     await env.ACTION_DATA.put(key,'1',{expirationTtl:600});
-    const result=await send(env,{category:'storage',code:'storage_failed',route:'/api',trace_id:traceId,
+    const result=await send(env,{category:'tracking',code,route:diagnostic.route,trace_id:diagnostic.id,diagnostic,
       alert_id:crypto.randomUUID(),created_at:now,occurrences:1});
-    log({traceId,delivery:result.ok?'fallback_sent':result.error});
-  } catch {log({traceId,delivery:'fallback_unavailable'});}
+    await recordDiagnosticDelivery(env,diagnostic.id,result.ok?'accepted':result.error);
+    log({traceId:diagnostic.id,delivery:result.ok?'fallback_sent':result.error});
+    return {ok:false,error:code,diagnosticId:diagnostic.id,notificationAccepted:result.ok,notificationError:result.error||null};
+  } catch {
+    await recordDiagnosticDelivery(env,diagnostic.id,'fallback_unavailable');
+    log({traceId:diagnostic.id,delivery:'fallback_unavailable'});return {ok:false,error:code,diagnosticId:diagnostic.id,notificationError:'fallback_unavailable'};
+  }
 }
 
 export async function enqueueAlert(env,input) {
@@ -184,12 +213,11 @@ export async function enqueueAlert(env,input) {
       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(fingerprint) DO UPDATE SET
       occurrences=occurrences+1,updated_at=excluded.updated_at RETURNING alert_id,sent_at`)
       .bind(id,fingerprint,category,code,route,traceId,now,now,now).first();
-  } catch {
-    await storageFallback(env,traceId,now);
-    return {ok:false,error:'alert_storage_unavailable'};
+  } catch(error) {
+    return alertPipelineFailure(env,'queue_write',error,{route,requestTrace:traceId});
   }
-  try {return {alertId:row.alert_id,...await deliver(env,row.alert_id,now)};}
-  catch {log({alertId:row.alert_id,traceId,delivery:'delivery_state_unknown'});return {alertId:row.alert_id,ok:false,error:'delivery_state_unknown'};}
+  try {return {alertId:row.alert_id,...await deliver(env,row.alert_id,now,{route,requestTrace:traceId})};}
+  catch(error) {return {alertId:row.alert_id,...await alertPipelineFailure(env,'delivery_state',error,{route,requestTrace:traceId,alertId:row.alert_id})};}
 }
 
 export function createIssueReporter(env,ctx,route,traceId) {
@@ -217,22 +245,29 @@ export function durableAlertStatement(env,key,category,code,traceId,condition='1
 export async function drainAlerts(env) {
   if(!enabled(env))return;
   const now=Math.floor(Date.now()/1000);
+  let rows;
   try {
-    const rows=(await env.DB.prepare(`SELECT alert_id FROM operational_alerts WHERE sent_at IS NULL
-      AND next_attempt_at<=? AND lease_until<=? AND ${NOT_LOCAL_ONLY_SQL} ORDER BY created_at LIMIT 10`).bind(now,now).all()).results||[];
-    // Bounded fan-out: <= 10 deliveries, each HTTP deadline 5 seconds.
-    await Promise.all(rows.map(row=>deliver(env,row.alert_id,now).catch(()=>log({delivery:'retry_state_unknown'}))));
-    await env.DB.prepare("DELETE FROM operational_alerts WHERE sent_at IS NOT NULL AND updated_at<? AND fingerprint NOT LIKE 'durable:%'").bind(now-7*86400).run();
-  } catch {await storageFallback(env,crypto.randomUUID(),now);}
+    const selected=await env.DB.prepare(`SELECT alert_id FROM operational_alerts WHERE sent_at IS NULL
+      AND next_attempt_at<=? AND lease_until<=? AND ${NOT_LOCAL_ONLY_SQL} ORDER BY created_at LIMIT 10`).bind(now,now).all();
+    if(selected.success===false||!Array.isArray(selected.results))throw Error('ALERT_QUEUE_READ_UNCONFIRMED');
+    rows=selected.results;
+  }catch(error){await alertPipelineFailure(env,'queue_read',error,{route:'cron'});return;}
+  // Bounded fan-out: <= 10 deliveries, each HTTP deadline 5 seconds.
+  await Promise.all(rows.map(row=>deliver(env,row.alert_id,now).catch(error=>alertPipelineFailure(env,'delivery_state',error,{route:'cron',alertId:row.alert_id}))));
+  try{
+    const cleaned=await env.DB.prepare("DELETE FROM operational_alerts WHERE sent_at IS NOT NULL AND updated_at<? AND fingerprint NOT LIKE 'durable:%'").bind(now-7*86400).run();
+    if(cleaned.success!==true)throw Error('ALERT_CLEANUP_UNCONFIRMED');
+  }catch(error){await alertPipelineFailure(env,'cleanup',error,{route:'cron'});}
 }
 
 export async function alertStatus(env) {
   const config=await telegramAlertConfig(env);
-  const counts=(await env.DB.prepare(`SELECT COUNT(*) total,
+  let counts=null,countsError=null;
+  try{counts=await env.DB.prepare(`SELECT COUNT(*) total,
     SUM(CASE WHEN sent_at IS NULL AND ${NOT_LOCAL_ONLY_SQL} THEN 1 ELSE 0 END) pending,
     SUM(CASE WHEN sent_at IS NULL AND NOT (${NOT_LOCAL_ONLY_SQL}) THEN 1 ELSE 0 END) localOnly,
-    MAX(sent_at) lastSentAt FROM operational_alerts`).first());
-  return {release:ALERT_RELEASE,enabled:enabled(env),configured:!!(config.token&&config.chatId),...counts};
+    MAX(sent_at) lastSentAt FROM operational_alerts`).first();}catch(error){countsError=classifyAlertError(error);}
+  return {release:ALERT_RELEASE,diagnosticRelease:ALERT_DIAGNOSTIC_RELEASE,enabled:enabled(env),configured:!!(config.token&&config.chatId),...counts,countsAvailable:counts!==null,countsError,diagnostics:await recentAlertDiagnostics(env)};
 }
 
 function expectedError(error) {

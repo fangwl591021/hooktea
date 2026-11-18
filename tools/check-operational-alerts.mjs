@@ -119,7 +119,8 @@ try {
  }
  await db.prepare('DROP TABLE operational_alerts').run();
  const before=telegram.length;await alert('points','points_failed');await alert('points','points_failed');
- assert.equal(telegram.length,before+1);assert(telegram.at(-1).text.includes('storage_failed'));
- pass('alert D1 outage uses independent KV-throttled Telegram fallback');
+ assert.equal(telegram.length,before+1);assert(telegram.at(-1).text.includes('alert_queue_write_failed'));
+ assert(!telegram.at(-1).text.includes('資料儲存服務異常'));assert(telegram.at(-1).text.includes('失敗步驟：寫入告警佇列'));
+ pass('alert D1 write failure uses accurately scoped KV-throttled notification, not a storage outage claim');
  console.log(groups+' actual workerd alert groups passed; no real Telegram/customer calls');
 }finally{await mf.dispose();}

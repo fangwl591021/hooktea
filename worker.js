@@ -8,6 +8,7 @@
 import { createPointService } from './point-service.js';
 import { createNewMemberPointService } from './new-member-points.js';
 import { reportIssue, observePointService, alertStatus, enqueueAlert } from './operational-alerts.js';
+import {recentAlertDiagnostics} from './alert-diagnostics.js';
 import { exportCrmPointRoster, exportCrmPointHistory, renderCrmPointExportPage } from './crm-history-export.js';
 import {createLegacyPointTransfer, renderLegacyTransferPage} from './legacy-point-transfer.js';
 import {captureMonitorEvents,runAiSelfTest,aiHealthStatus,listFeedback,categoryLabels,processMonitorFeedback,markThreadFeedbackHandled} from './monitor-safety.js';
@@ -5037,6 +5038,7 @@ async function handleHookTeaMonitorApi(request, env) {
         SUM(analysis_state='pending') pendingAnalysis,SUM(analysis_state='review') failedAnalysis FROM monitor_feedback`).first(),
       operationalErrors:(await env.DB.prepare(`SELECT category,code,route,trace_id,occurrences,created_at,sent_at,last_error
         FROM operational_alerts WHERE category NOT IN ('feedback','test') ORDER BY created_at DESC LIMIT 30`).all()).results||[],
+      alertDiagnostics:await recentAlertDiagnostics(env),
       customerAiReplies:false,keywordOnly:String(env.HOOKTEA_KEYWORD_ONLY)==='true',
     }},options);
     if(url.pathname==='/api/line-oa/feedback'&&request.method==='GET')return Response.json({success:true,
