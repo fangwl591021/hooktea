@@ -9,12 +9,13 @@ const {Miniflare}=require('miniflare'),{build}=require('esbuild');
 const root=new URL('../',import.meta.url);
 const bundled=await build({stdin:{resolveDir:fileURLToPath(root),contents:`
  import worker from './tracked-worker.js';
- import {captureMonitorEvents,processMonitorFeedback} from './monitor-safety.js';
+ import {captureMonitorEvents,processMonitorFeedback,callMonitorAi} from './monitor-safety.js';
  import {reconcileTrackingIncidents} from './tracking-incidents.js';
  export default {async fetch(request,env,ctx){
    const p=new URL(request.url).pathname;
    if(p==='/__capture'){await captureMonitorEvents(env,await request.json());return new Response('ok');}
    if(p==='/__process'){await processMonitorFeedback(env);return new Response('ok');}
+   if(p==='/__classify')return Response.json(await callMonitorAi(env,'合成測試'));
    if(p==='/__tracking'){await reconcileTrackingIncidents(env);return new Response('ok');}
    return worker.fetch(request,env,ctx);
  }};`},bundle:true,write:false,format:'esm',platform:'browser'});
@@ -31,6 +32,15 @@ const mf=new Miniflare({modules:true,script:bundled.outputFiles[0].text,compatib
    if(mode==='quota')return Response.json({error:{code:'insufficient_quota'}},{status:429});
    if(mode==='auth')return Response.json({error:{message:'never leak this secret'}},{status:401});
    const self=body.input.length===1;
+   if(!self){
+    assert.equal(body.text.format.type,'json_schema');
+    assert.equal(body.text.format.strict,true);
+    assert.deepEqual(body.text.format.schema.required,['category','severity']);
+    if(mode==='bad_envelope')return new Response('not JSON');
+    if(mode==='incomplete')return Response.json({status:'incomplete'});
+    if(mode==='refusal')return Response.json({status:'completed',output:[{content:[{type:'refusal',refusal:'synthetic'}]}]});
+    if(mode==='bad_json'||mode==='bad_schema')return Response.json({status:'completed',output:[{content:[{type:'output_text',text:mode==='bad_json'?'not JSON':'null'}]}]});
+   }else assert.equal(body.text,undefined);
    return Response.json({status:'completed',output:[{content:[{type:'output_text',text:mode==='invalid'?'':self?'HOOKTEA_OK':JSON.stringify({category:'points',severity:'high'})}]}]});
   }
   if(url.hostname==='api.line.me'){lineCalls++;throw Error('LINE_MUST_NOT_BE_CALLED');}
@@ -91,6 +101,13 @@ try {
   await Promise.all(Array.from({length:4},()=>post('/__process',{})));
   assert.equal(aiCalls.length,before+1);assert.equal(lineCalls,0);assert.equal(await countAlerts('feedback_points'),1);
   const row=await db.prepare("SELECT * FROM monitor_feedback WHERE event_id='complaint'").first();assert.equal(row.analysis_state,'done');
+ });
+ await check('classification diagnoses preserve fixed reason codes only',async()=>{
+  for(const [testMode,code] of [['bad_envelope','invalid_api_json'],['incomplete','incomplete_response'],['refusal','model_refusal'],['invalid','empty_output'],['bad_json','invalid_output_json'],['bad_schema','invalid_output_schema']]){
+   mode=testMode;
+   assert.deepEqual(await(await call('/__classify')).json(),{ok:false,code});
+  }
+  mode='healthy';
  });
  await check('analysis failures keep original evidence and become review after bounded retries',async()=>{
   await post('/__capture',[event('failure','這樣每次都要找人幫忙')]);mode='auth';

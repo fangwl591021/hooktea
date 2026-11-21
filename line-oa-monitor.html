@@ -866,6 +866,7 @@
 
     let safetyLoading=false,feedbackCursor=null;
     const healthLabels={not_tested:'尚未完成自測',healthy:'連線正常',not_configured:'未設定金鑰',authentication_failed:'認證失敗',quota_exhausted:'額度不足',rate_limited:'受到限流',provider_unavailable:'服務暫時不可用',request_rejected:'請求未被接受',invalid_response:'回應格式異常',timeout:'連線逾時',network_error:'網路異常'};
+    const analysisLabels={...healthLabels,healthy:'分類成功',invalid_api_json:'API 回應無法解析',incomplete_response:'生成未完成',unexpected_response:'API 回應狀態異常',model_refusal:'模型拒絕分類',empty_output:'沒有分類輸出',invalid_output_json:'分類輸出並非有效 JSON',invalid_output_schema:'分類欄位不符規格'};
     function safetyError(error){
       if(error.authRequired)return;
       $("safety-summary").textContent='狀態讀取失敗，不能視為正常';
@@ -878,8 +879,8 @@
           fetchJson('/api/line-oa/feedback?all='+($("feedback-all").checked?'1':'0')+(older&&feedbackCursor?'&before='+feedbackCursor:'')),
         ]);
         const data=status.data,c=data.feedbackCounts||{},t=data.tracking.counts||{};
-        $("safety-summary").textContent=`｜未結反饋 ${c.openFeedback||0}｜待分析 ${c.pendingAnalysis||0}｜分析待查 ${c.failedAnalysis||0}｜新增追蹤 ${t.newUnresolved||0}｜已知待查 ${t.knownUnresolved||0}`;
-        $("ai-health").textContent='AI：'+(healthLabels[data.ai.status]||'狀態待查')+(data.ai.checked_at?'（'+new Date(data.ai.checked_at*1000).toLocaleString('zh-TW')+'）':'');
+        $("safety-summary").textContent=`｜未結反饋 ${c.openFeedback||0}｜待分析 ${c.pendingAnalysis||0}｜分類待查 ${c.failedAnalysis||0}｜新缺完成紀錄 ${t.newUnresolved||0}｜已知追蹤待查 ${t.knownUnresolved||0}`;
+        $("ai-health").textContent='生成自測：'+(healthLabels[data.ai.status]||'狀態待查')+(data.ai.checked_at?'（'+new Date(data.ai.checked_at*1000).toLocaleString('zh-TW')+'）':'')+'｜最近分類：'+(analysisLabels[data.ai.analysis_status]||'狀態待查');
         $("tracking-list").textContent=data.tracking.rows.map(row=>`${row.review_status==='known_unresolved'?'已知待查':'新增待查'}｜${row.started_at} UTC｜${row.operation||'舊紀錄未記功能'}｜${row.phase||'階段不明'}`).join('\n')||'沒有待查追蹤';
         $("tracking-list").style.whiteSpace='pre-wrap';
         const commandLabels={accepted:'已收到，處理中',credited:'已確認入帳',rejected:'交易有拒絕紀錄',review:'完成證據待查',sent:'LINE API 已接受',unknown:'回覆未確認',CREDIT_UNCONFIRMED:'入帳結果未確認',REPLY_UNCONFIRMED:'回覆結果未確認',EXECUTION_UNCONFIRMED:'已收到但缺少完成紀錄',LINE_REPLY_REJECTED:'LINE API 拒絕通知',POINTS_REJECTED:'點數交易拒絕'};
@@ -893,7 +894,7 @@
         $("operational-errors").textContent=[...errorLines,...diagnosticLines].join('\n')||'目前無錯誤紀錄';
         const rows=feedback.data||[],labels=feedback.categoryLabels||{};
         const markup=rows.map(row=>`<article class="border-b py-3">
-          <div class="font-bold">${esc(labels[row.category]||row.category)}｜${esc(row.review_state==='resolved'?'已處理':row.review_state==='acknowledged'?'處理中':'待處理')}｜${esc(row.analysis_state==='done'?'AI 已分類（需人工核對）':row.analysis_state==='review'?'分析未完成，原文保留':'規則初判／等待 AI 分析')}</div>
+          <div class="font-bold">${esc(labels[row.category]||row.category)}｜${esc(row.review_state==='resolved'?'已處理':row.review_state==='acknowledged'?'處理中':'待處理')}｜${esc(row.analysis_state==='done'?'分類完成':row.analysis_state==='review'?(analysisLabels[row.analysis_error]||'分析未完成'):'規則初判／等待 AI 分析')}</div>
           <div class="text-slate-500">${esc(new Date(row.event_at*1000).toLocaleString('zh-TW'))}｜LINE ${esc(row.thread_id)}</div>
           <p class="whitespace-pre-wrap my-2">${esc(row.message_text)}</p>
           <p class="text-xs text-slate-500 mb-2">追蹤 ${esc(row.trace_id)}</p>

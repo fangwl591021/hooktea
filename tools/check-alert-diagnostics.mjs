@@ -8,7 +8,7 @@ const {Miniflare}=require('miniflare'),{build}=require('esbuild');
 const root=new URL('../',import.meta.url);
 const bundle=await build({stdin:{resolveDir:fileURLToPath(root),contents:`
 import {enqueueAlert,drainAlerts,alertStatus} from './operational-alerts.js';
-function faultyDB(db,mode){return {prepare(sql){
+function faultyDB(db,mode){let readFailed=false;return {prepare(sql){
  const text=sql.trimStart();
  const stage=text.startsWith('SELECT alert_id FROM operational_alerts')?'queue_read':text.startsWith('INSERT INTO operational_alerts')?'queue_write':text.startsWith('UPDATE operational_alerts SET lease_token=')?'delivery_claim':text.startsWith('UPDATE operational_alerts SET sent_at=')?'delivery_state':text.startsWith('DELETE FROM operational_alerts')?'cleanup':'other';
  const wrap=stmt=>({bind(...args){return wrap(stmt.bind(...args));},
@@ -16,7 +16,12 @@ function faultyDB(db,mode){return {prepare(sql){
   async first(){fail();return stmt.first();},
   async run(){fail();if(mode===stage+'_zero')return {success:true,meta:{changes:0}};if(mode===stage+'_false')return {success:false};return stmt.run();}
  });
- function fail(){if(mode!==stage&&mode!==stage+'_unknown'&&mode!=='no_io')return;
+ function fail(){
+  if(mode==='queue_read_once'&&stage==='queue_read'&&!readFailed){
+   readFailed=true;
+   throw new Error('D1_ERROR: synthetic intermittent failure');
+  }
+  if(mode!==stage&&mode!==stage+'_unknown'&&mode!=='no_io')return;
   const e=new Error((mode.endsWith('_unknown')?'unclassified':'D1_ERROR: SQLITE_BUSY')+' synthetic-private-name-甲 synthetic-person@example.invalid 0912345678 https://example.invalid/?token=synthetic-secret U'+ 'a'.repeat(32));
   if(!mode.endsWith('_unknown'))e.code='SQLITE_BUSY';throw e;
  }
@@ -54,6 +59,9 @@ try{
 
  await call('/drain');assert.equal(telegram.length,0);assert.deepEqual((await status()).diagnostics,[]);
  pass('healthy empty queue has no warning and no diagnostic writes');
+
+ await call('/drain?mode=queue_read_once');assert.equal(telegram.length,0);assert.deepEqual((await status()).diagnostics,[]);
+ pass('one intermittent D1 read failure is retried without sending a system alert');
 
  await call('/drain?mode=cleanup');assert.equal(telegram.length,0);
  let diag=await latest('cleanup');assert.equal(diag.code,'alert_cleanup_failed');assert.equal(diag.localOnly,true);assert.equal(diag.originalCode,'SQLITE_BUSY');assert.equal(diag.reason,'busy');

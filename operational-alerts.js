@@ -2,6 +2,7 @@
 // excerpt and display name, never CRM fields, raw events or credentials.
 import {isMonitorCommand,loadMonitorCommandPolicy} from './monitor-commands.js';
 import {commandAlertText} from './command-completion.js';
+import {isRoutineAcknowledgement} from './feedback-rules.js';
 import {ALERT_DIAGNOSTIC_RELEASE,ALERT_DIAGNOSTIC_STAGES,classifyAlertError,recordAlertDiagnostic,recordDiagnosticDelivery,recentAlertDiagnostics,alertDiagnosticText} from './alert-diagnostics.js';
 export const ALERT_RELEASE = '20260919-command-feedback-filter-v1';
 // Missing bookkeeping is not evidence of a customer-facing failure.
@@ -9,7 +10,7 @@ export const ALERT_RELEASE = '20260919-command-feedback-filter-v1';
 // A failed background classification does not establish a customer incident.
 // Its source message and analysis state remain in monitor_feedback for review.
 const LOCAL_ONLY_CODES = new Set(['tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered']);
-const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered') AND last_error NOT IN ('feedback_system_command','feedback_legacy_review','feedback_handled','feedback_replied','command_resolved')";
+const NOT_LOCAL_ONLY_SQL = "code NOT IN ('tracking_unresolved','tracking_recovered','ai_analysis_failed','ai_analysis_recovered') AND last_error NOT IN ('feedback_system_command','feedback_legacy_review','feedback_handled','feedback_replied','feedback_routine_acknowledgement','command_resolved')";
 const CATEGORIES = new Set(['request','tracking','background','member','points','line','payment','storage','test','ai','feedback']);
 const CODES = new Set(['internal_error','http_5xx','admission_failed','finish_failed','background_failed',
   'identity_conflict','enrollment_failed','points_pending','points_unavailable','points_failed',
@@ -77,6 +78,7 @@ async function ownerFeedbackText(env,row) {
   const policy=await loadMonitorCommandPolicy(env);
   if(feedback.analysis_error==='system_command'||isMonitorCommand(feedback.message_text,policy))
     return {blocked:'feedback_system_command'};
+  if(isRoutineAcknowledgement(feedback.message_text))return {blocked:'feedback_routine_acknowledgement'};
   if(!policy.ready)return {blocked:'feedback_command_config_unavailable'};
   if(feedback.notification_policy!=='unanswered-v1')return {blocked:'feedback_legacy_review'};
   if(feedback.review_state!=='new')return {blocked:'feedback_handled'};
@@ -246,12 +248,31 @@ export async function drainAlerts(env) {
   if(!enabled(env))return;
   const now=Math.floor(Date.now()/1000);
   let rows;
-  try {
+  const readDue = async () => {
     const selected=await env.DB.prepare(`SELECT alert_id FROM operational_alerts WHERE sent_at IS NULL
       AND next_attempt_at<=? AND lease_until<=? AND ${NOT_LOCAL_ONLY_SQL} ORDER BY created_at LIMIT 10`).bind(now,now).all();
     if(selected.success===false||!Array.isArray(selected.results))throw Error('ALERT_QUEUE_READ_UNCONFIRMED');
-    rows=selected.results;
-  }catch(error){await alertPipelineFailure(env,'queue_read',error,{route:'cron'});return;}
+    return selected.results;
+  };
+  try {
+    rows=await readDue();
+  } catch (error) {
+    const {originalCode,reason}=classifyAlertError(error);
+    const retryable=['busy','timeout','network','rate_limited'].includes(reason)||
+      (originalCode==='D1_ERROR'&&reason==='unknown');
+    if(retryable){
+      try{
+        rows=await readDue();
+        log({stage:'queue_read',outcome:'retry_succeeded',originalCode});
+      }catch(retryError){
+        await alertPipelineFailure(env,'queue_read',retryError,{route:'cron'});
+        return;
+      }
+    }else{
+      await alertPipelineFailure(env,'queue_read',error,{route:'cron'});
+      return;
+    }
+  }
   // Bounded fan-out: <= 10 deliveries, each HTTP deadline 5 seconds.
   await Promise.all(rows.map(row=>deliver(env,row.alert_id,now).catch(error=>alertPipelineFailure(env,'delivery_state',error,{route:'cron',alertId:row.alert_id}))));
   try{

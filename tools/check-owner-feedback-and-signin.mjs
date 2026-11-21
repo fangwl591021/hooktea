@@ -44,6 +44,17 @@ try{
  assert(text.includes('客戶：本機測試客戶'));assert(text.includes(question));assert(text.includes('14:29'));
  assert(text.includes('請先查看 LINE 官方帳號'));assert(!text.includes('入口：cron'));assert(!text.includes('追蹤：'));assert(!text.includes(uid));
  await call('/drain');assert.equal(telegram.length,1);pass('actual capture and concurrent drain deliver one named exact-question notification without claiming neglect');
+ const acknowledgement='沒問題，謝謝您 👍';
+ await call('/capture',[event('acknowledgement',acknowledgement)]);
+ const routine=await db.prepare("SELECT trace_id,category,attempts,analysis_state FROM monitor_feedback WHERE event_id='acknowledgement'").first();
+ assert.equal(routine.category,'none');assert.equal(routine.analysis_state,'done');assert.equal(routine.attempts,0);
+ assert.equal((await db.prepare("SELECT COUNT(*) n FROM operational_alerts WHERE trace_id=?").bind(routine.trace_id).first()).n,0);
+ await db.prepare("UPDATE monitor_feedback SET category='feedback' WHERE event_id='acknowledgement'").run();
+ await db.prepare("INSERT INTO operational_alerts(alert_id,fingerprint,category,code,route,trace_id,created_at,updated_at,next_attempt_at) VALUES('old-ack','old-ack','feedback','feedback_feedback','cron',?,0,0,0)").bind(routine.trace_id).run();
+ await call('/drain');await call('/drain');
+ assert.equal(telegram.length,1);
+ assert.equal((await db.prepare("SELECT last_error FROM operational_alerts WHERE alert_id='old-ack'").first()).last_error,'feedback_routine_acknowledgement');
+ pass('new routine acknowledgement stays silent and a previously queued false positive is suppressed at delivery');
  const sensitive='購物有問題，Email me@example.com 電話 0912345678 '+uid+' 密碼：private-value https://example.com/secret';
  await call('/capture',[event('redacted',sensitive)]);await call('/drain');
  assert.equal(telegram.length,2);const redacted=telegram.at(-1).text;
@@ -102,7 +113,7 @@ try{
  await db.prepare("INSERT INTO operational_alerts(alert_id,fingerprint,category,code,route,trace_id,created_at,updated_at,next_attempt_at) VALUES('missing','missing','feedback','feedback_shopping','cron','missing',0,0,0)").run();
  await call('/drain');assert.equal(telegram.length,sentBefore);pass('missing source text cannot fall back to an opaque shopping alert');
  await db.prepare("UPDATE line_threads SET display_name='本機測試客戶' WHERE id='thread'").run();
- await call('/capture',[event('mixed-command','會員專區'),event('mixed-question','請問茶會苦嗎？')]);await call('/drain');
+ await call('/capture',[event('mixed-command','會員專區'),event('mixed-question','好的，請問茶會苦嗎？')]);await call('/drain');
  assert.equal(telegram.length,sentBefore+1);assert(telegram.at(-1).text.includes('請問茶會苦嗎？'));
  assert.equal((await db.prepare("SELECT COUNT(*) n FROM operational_alerts WHERE fingerprint='durable:feedback:mixed-command'").first()).n,0);
  pass('one mixed batch excludes the system command and preserves the actual product question');
